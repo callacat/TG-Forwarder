@@ -1,107 +1,47 @@
 # .github/workflows/docker-publish.yml
+# 当你推送到 main 分支时，自动构建 Docker 镜像并推送到 Docker Hub
 
-name: Automatic Versioning and Release
+name: Build and Push to Docker Hub
 
 on:
   push:
     branches:
-      - main
-
-# [CORE FIX 1] Grant permissions for creating PRs and Releases
-permissions:
-  contents: write
-  pull-requests: write
-  actions: write
+      - main  # 只在 main 分支 push 时触发
+  workflow_dispatch: # 允许手动触发
 
 jobs:
-  release:
-    name: Create Release
+  build_and_push:
     runs-on: ubuntu-latest
-    outputs:
-      # [CORE FIX 2] Ensure the correct output variable name is used
-      new_release_published: ${{ steps.release.outputs.release_created }}
-      new_release_version: ${{ steps.release.outputs.version }}
-      new_release_tag: ${{ steps.release.outputs.tag_name }}
-
+    
     steps:
-      - name: Checkout code
+      - name: Checkout repository
         uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
 
-      - name: Automatic Versioning and Release Creation
-        id: release
-        # [FIX] Use the new, non-deprecated action name
-        uses: googleapis/release-please-action@v4
-        with:
-          release-type: go
-          # [FIX] Removed the unsupported 'package-name' input
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v3
+        
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
 
-      # [NEW] Auto-merge the release PR created by Release Please
-      - name: Auto-merge the release PR
-        if: ${{ steps.release.outputs.pull_request_number }}
-        uses: pascalgn/automerge-action@v0.15.6
-        env:
-          GITHUB_TOKEN: "${{ secrets.GITHUB_TOKEN }}"
-          MERGE_LABELS: ""
-          MERGE_METHOD: "squash"
-          PULL_REQUEST: "${{ steps.release.outputs.pull_request_number }}"
+      - name: Login to Docker Hub
+        uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKER_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - name: Build and push Docker image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: ./Dockerfile
+          push: true
+          tags: |
+            ${{ secrets.DOCKER_USERNAME }}/tgf:latest
+            ${{ secrets.DOCKER_USERNAME }}/rgf:${{ github.sha }}
+          platforms: linux/amd64,linux/arm64 # 构建多种架构
 
       - name: Delete workflow runs
         uses: Mattraks/delete-workflow-runs@v2
         with:
             retain_days: 0
             keep_minimum_runs: 2
-
-  build-and-publish:
-    name: Build Binaries and Push Docker on Release
-    needs: release
-    # Only run this job if a new release was actually created
-    if: needs.release.outputs.new_release_published == 'true'
-    runs-on: ubuntu-latest
-    steps:
-      # ... Subsequent build steps remain the same ...
-      - name: Checkout code
-        uses: actions/checkout@v4
-
-      - name: Set up Go
-        uses: actions/setup-go@v5
-        with:
-          go-version: '1.25'
-
-      - name: Set up QEMU
-        uses: docker/setup-qemu-action@v3
-
-      - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v3
-
-      - name: Log in to Docker Hub
-        uses: docker/login-action@v3
-        with:
-          username: ${{ secrets.DOCKER_USERNAME }}
-          password: ${{ secrets.DOCKERHUB_TOKEN }}
-
-      - name: Build binaries for release
-        run: |
-          echo "Building binaries for release version ${{ needs.release.outputs.new_release_version }}..."
-          mkdir -p release_assets
-          CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o release_assets/cfst-client-linux-amd64 ./cmd/main.go
-          CGO_ENABLED=0 GOOS=linux GOARCH=arm64 go build -o release_assets/cfst-client-linux-arm64 ./cmd/main.go
-          CGO_ENABLED=0 GOOS=windows GOARCH=amd64 go build -o release_assets/cfst-client-windows-amd64.exe ./cmd/main.go
-          CGO_ENABLED=0 GOOS=windows GOARCH=386 go build -o release_assets/cfst-client-windows-386.exe ./cmd/main.go
-
-      - name: Upload Binaries to Release
-        uses: softprops/action-gh-release@v2
-        with:
-          tag_name: ${{ needs.release.outputs.new_release_tag }}
-          files: release_assets/*
-
-      - name: Build and push Docker image
-        run: |
-          VERSION_TAG=${{ needs.release.outputs.new_release_version }}
-          docker buildx build \
-            --platform linux/amd64,linux/arm64 \
-            --tag docker.io/${{ secrets.DOCKER_USERNAME }}/cfst-client:${VERSION_TAG} \
-            --tag docker.io/${{ secrets.DOCKER_USERNAME }}/cfst-client:latest \
-            --output type=registry \
-            .
