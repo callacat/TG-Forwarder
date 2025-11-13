@@ -1,0 +1,5 @@
+telethon
+pydantic
+pyyaml
+httpx
+beautifulsoup4
