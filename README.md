@@ -1,8 +1,8 @@
-TG Ultimate Forwarder - 终极 Telegram 转发器
+# TG Ultimate Forwarder - 终极 Telegram 转发器
 
 本项目融合了 tgforwarder 和 tg_zf 的核心优势，并加入了话题分发、多模式转发等新功能，旨在提供一个稳定、强大且高度可配置的 Telegram 内容聚合工具。
 
-✨ 核心功能
+# ✨ 核心功能
 
 多账号支持: 使用多个账号轮换转发，有效规避 FloodWait 和账号限制。
 
@@ -44,11 +44,11 @@ Copy 模式: 复制消息内容，作为新消息发送，可突破源频道的�
 
 频道/话题导出: (新) export 模式帮助你获取配置所需的频道和话题 ID。
 
-🚀 部署指南 (Docker)
+# 🚀 部署指南 (Docker)
 
 使用 Docker 是最推荐的部署方式。
 
-准备配置文件:
+*准备配置文件:*
 
 在你的服务器上创建一个目录，例如 ~/tg_forwarder。
 
@@ -56,7 +56,7 @@ mkdir -p ~/tg_forwarder/data
 
 将 config_template.yaml 复制到该目录，并重命名为 config.yaml。
 
-获取 Session String:
+*获取 Session String:*
 
 你需要将你的账号转换为 String Session (而不是 session_name 文件)。
 
@@ -64,7 +64,7 @@ mkdir -p ~/tg_forwarder/data
 
 安全提示: String Session 等同于你的账号密码，请妥善保管。
 
-编辑 config.yaml:
+*编辑 config.yaml:*
 
 accounts: 填入你的 api_id, api_hash 和 session_string。
 
@@ -74,23 +74,24 @@ targets: 填入默认的目标频道 ID。
 
 targets.distribution_rules: (可选) 参照模板配置你的话题分发规则。
 
-运行 Docker 容器:
+*运行 Docker 容器:*
 
+```bash
 docker run -d \
   --name tg-forwarder \
   -v ~/tg_forwarder/config.yaml:/app/config.yaml \
   -v ~/tg_forwarder/data:/app/data \
   --restart always \
   [你的DockerHub用户名]/[镜像仓库名]:latest
-
+```
 
 (请将 [你的DockerHub用户名]/[镜像仓库名] 替换为你实际的镜像地址，见下方 GitHub Actions 部分)
 
-🛠️ 本地运行 (开发/调试)
+# 🛠️ 本地运行 (开发/调试)
 
-克隆仓库: git clone ...
+克隆仓库: `git clone` ...
 
-安装依赖: pip install -r requirements.txt
+安装依赖: `pip install -r requirements.txt`
 
 生成 Session: (参见上文)
 
@@ -98,14 +99,15 @@ docker run -d \
 
 运行:
 
-启动转发: python ultimate_forwarder.py run
+启动转发: `python ultimate_forwarder.py run`
 
-检测链接: python ultimate_forwarder.py checklinks
+检测链接: `python ultimate_forwarder.py checklinks`
 
-导出ID: python ultimate_forwarder.py export
+导出ID: `python ultimate_forwarder.py export`
 
-⚙️ 配置文件详解 (config.yaml)
+# ⚙️ 配置文件详解 (config.yaml)
 
+```yaml
 sources (监控源)
 
 id 必须是数字ID (运行 export 模式获取)。
@@ -127,8 +129,9 @@ forwarding (转发行为)
 mode: "copy": 推荐。可以突破源频道"禁止转发"的限制。
 
 forward_new_only: true: 推荐。true 表示只处理新消息；false 表示会从头扫描所有源频道的历史消息。
+```
 
-📦 GitHub Actions (自动发布到 Docker Hub)
+# 📦 GitHub Actions (自动发布到 Docker Hub)
 
 我已为你提供了 .github/workflows/docker-publish.yml 文件。
 
@@ -152,12 +155,3 @@ DOCKERHUB_TOKEN: 你的 Docker Hub 访问令牌 (Access Token)。
 
 之后你就可以在服务器上 docker pull 你的最新镜像了。
 
-⚠️ 关于 Webhook
-
-你提到了 "Webhook 方式"。在 Telethon (用户账号) 的上下文中，我们不使用 Webhook。
-
-取而代之的是，我们使用事件驱动 (Event-Driven) 的方式 (events.NewMessage)。
-
-效果: 你的客户端会与 Telegram 保持一个持久连接。一旦源频道有新消息，Telegram 会 立即 将该消息推送给你的客户端，客户端会 立即 (毫秒级) 触发 handle_new_message 函数。
-
-结论: 这比 Webhook 更快、更高效，并且完全满足你 "实时获取更新" 的需求。
