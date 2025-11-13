@@ -37,7 +37,7 @@ jobs:
           push: true
           tags: |
             ${{ secrets.DOCKER_USERNAME }}/tgf:latest
-            ${{ secrets.DOCKER_USERNAME }}/rgf:${{ github.sha }}
+            ${{ secrets.DOCKER_USERNAME }}/tgf:${{ github.sha }}
           platforms: linux/amd64,linux/arm64 # 构建多种架构
 
       - name: Delete workflow runs
