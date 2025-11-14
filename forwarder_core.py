@@ -7,7 +7,7 @@ import httpx
 import time
 from datetime import datetime, timezone
 from telethon import TelegramClient, events, errors
-from telethon.tl.types import MessageEntityTextUrl
+from telethon.tl.types import MessageEntityTextUrl, MessageMediaDocument
 
 # --- 类型提示 ---
 from typing import List, Optional, Tuple, Dict, Set, Any
@@ -52,18 +52,45 @@ class SourceConfig(BaseModel):
 
 class TargetDistributionRule(BaseModel):
     name: str # 规则名称
-    keywords: List[str] = []
+    keywords: List[str] = Field(default_factory=list)
+    file_types: List[str] = Field(default_factory=list) # (新功能) 例如: "video/mp4", "image/jpeg"
+    file_name_patterns: List[str] = Field(default_factory=list) # (新功能) 例如: "*.mkv", "S01E*.mp4"
+
     target_id: int # 目标频道/群组 ID
     topic_id: Optional[int] = None # (新功能) 目标话题 ID
     
-    def check(self, text: str) -> bool:
-        """检查文本是否匹配此规则的任何一个关键词"""
-        if not self.keywords:
-            return False
-        text_lower = text.lower()
-        for keyword in self.keywords:
-            if keyword.lower() in text_lower:
+    def check(self, text: str, media: Any) -> bool:
+        """检查文本和媒体是否匹配此规则"""
+        
+        # 1. 检查关键词
+        if self.keywords:
+            text_lower = text.lower()
+            if any(keyword.lower() in text_lower for keyword in self.keywords):
                 return True
+        
+        # 2. 检查媒体
+        if media and isinstance(media, MessageMediaDocument):
+            doc = media.document
+            if not doc:
+                return False
+
+            # 2a. 检查文件类型 (MIME Type)
+            if self.file_types and doc.mime_type:
+                if any(ft.lower() in doc.mime_type.lower() for ft in self.file_types):
+                    return True
+
+            # 2b. 检查文件名
+            file_name = next((attr.file_name for attr in doc.attributes if hasattr(attr, 'file_name')), None)
+            if self.file_name_patterns and file_name:
+                for pattern_str in self.file_name_patterns:
+                    # 将 glob 模式 (*.mkv) 转换为正则表达式 (.*\.mkv$)
+                    try:
+                        pattern = re.compile(pattern_str.replace('.', r'\.').replace('*', r'.*') + '$', re.IGNORECASE)
+                        if re.search(pattern, file_name):
+                            return True
+                    except re.error:
+                        logger.warning(f"规则 '{self.name}' 中的文件名模式 '{pattern_str}' 无效")
+                        
         return False
 
 class TargetConfig(BaseModel):
@@ -293,7 +320,7 @@ class UltimateForwarder:
                     continue
                 
                 # 6. 查找目标
-                target_id, topic_id = self._find_target(msg_data['text'])
+                target_id, topic_id = self._find_target(msg_data['text'], msg_data['media'])
                 
                 # 7. 执行发送
                 logger.info(f"消息 {chat_id}/{message.id} [将被发送] -> 目标 {target_id}/(Topic:{topic_id})")
@@ -414,6 +441,16 @@ class UltimateForwarder:
         text = text or ""
         text_lower = text.lower()
         
+        # --- 过滤逻辑 ---
+        # 优先级 1: 白名单 (如果启用)
+        #   - 如果命中白名单 -> [通过] (并跳过所有黑名单)
+        #   - 如果未命中白名单 -> [过滤]
+        # 优先级 2: 黑名单 (如果白名单未启用)
+        #   - 如果命中黑名单 -> [过滤]
+        #   - 如果未命中黑名单 -> [通过]
+        # 优先级 3: 默认
+        #   - 如果所有过滤都未启用 -> [通过]
+        
         # 1. 白名单 (最高优先级)
         if self.config.whitelist and self.config.whitelist.enable:
             if not any(kw.lower() in text_lower for kw in self.config.whitelist.keywords):
@@ -423,7 +460,7 @@ class UltimateForwarder:
                 logger.debug(f"Filter [Whitelist]: 命中白名单，通过。")
                 return False # 在白名单中，不再进行后续过滤
 
-        # 2. 广告过滤
+        # 2. 广告过滤 (黑名单)
         if self.config.ad_filter and self.config.ad_filter.enable:
             # 关键词
             if any(kw.lower() in text_lower for kw in self.config.ad_filter.keywords):
@@ -465,7 +502,8 @@ class UltimateForwarder:
             if hasattr(media, 'photo'):
                 return f"photo:{media.photo.id}"
             if hasattr(media, 'document'):
-                return f"doc:{media.document.id}:{media.document.size}"
+                # 结合 ID 和 size 提高唯一性
+                return f"doc:{media.document.id}:{getattr(media.document, 'size', '0')}"
         
         # 其次使用文本 (如果文本很短，可能误判)
         text = message_data.get('text', "")
@@ -500,7 +538,7 @@ class UltimateForwarder:
             # TODO: 优化为批量保存
             self._save_dedup_db()
 
-    def _find_target(self, text: str) -> Tuple[int, Optional[int]]:
+    def _find_target(self, text: str, media: Any) -> Tuple[int, Optional[int]]:
         """
         步骤 5: 查找目标。
         根据分发规则，返回 (target_id, topic_id)
@@ -508,7 +546,7 @@ class UltimateForwarder:
         rules = self.config.targets.distribution_rules
         if rules:
             for rule in rules:
-                if rule.check(text):
+                if rule.check(text, media): # (已更新) 传入 media
                     logger.debug(f"命中分发规则: '{rule.name}'")
                     return rule.target_id, rule.topic_id
                     

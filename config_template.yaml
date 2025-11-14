@@ -11,8 +11,12 @@
 #   password: ""
 
 # --- 2. 账号配置 (必需) ---
-# 在 https://my.telegram.org/apps 获取 API ID 和 Hash
-# 使用 https://github.com/TelethonP/StringSession/blob/master/generate.py 生成 String Session
+# api_id 和 api_hash 在 https://my.telegram.org/apps 获取
+#
+# session_string 是你的 "登录凭证"
+# 为什么不用 session_name? 因为在 Docker 或服务器上，你无法进行交互式登录 (输入手机和验证码)。
+# String Session 是一个允许程序 "粘贴" 登录状态的文本串。
+# 推荐使用: https://github.com/TelethonP/StringSession 来生成
 accounts:
   - api_id: 123456
     api_hash: "0123456789abcdef0123456789abcdef"
@@ -28,33 +32,40 @@ accounts:
 
 # --- 3. 监控源 (必需) ---
 # 运行 `python ultimate_forwarder.py export` 来获取频道/群组的数字ID
+# `sources` 是一个列表，你可以添加任意多个源
 sources:
   - id: -1001234567890 # (必需) 源频道/群组 ID
     check_replies: true    # (可选) 是否检查此频道的评论区 (TODO)
     replies_limit: 5       # (可选) 检查评论区的最后5条
     forward_new_only: null # (可选) 覆盖全局设置, true/false
+  # - id: -1001234567891 # 源2
+  # - id: -1001234567892 # 源3
 
 # --- 4. 转发目标 (必需) ---
+# 目标可以是频道，也可以是群组
 targets:
   # (必需) 默认转发到的频道/群组 ID
   default_target: -1009876543210
   
   # (可选) 分发规则 (新功能)
-  # 按顺序匹配，第一个命中的规则生效
+  # 按顺序匹配，第一个命中的规则生效。
+  # 规则的条件 (keywords, file_types, file_name_patterns) 是 "OR" (或) 关系
+  # 只要满足 *任意一个* 条件，就会命中该规则。
   distribution_rules:
-    # 示例1: 转发到默认群组的 "电影" 话题
-    - name: "电影分发"
-      keywords: ["#电影", "#1080p", "BluRay"] # 包含任一关键词
-      target_id: -1009876543210 # 目标群组ID (这里是默认群组)
-      topic_id: 123              # 目标话题ID (运行 export 获取)
-    
-    # 示例2: 转发到 "动漫" 话题
+    # 示例1: (新) 根据文件名和文件类型分发
+    - name: "视频分发"
+      file_types: ["video/mp4", "video/x-mkv"] # 匹配 MIME Type
+      file_name_patterns: ["*.mkv", "*.rmvb", "*1080p*"] # 匹配文件名 (支持 * 通配符)
+      target_id: -1009876543210 # 目标群组ID
+      topic_id: 123              # 视频话题ID
+
+    # 示例2: 根据关键词分发
     - name: "动漫分发"
-      keywords: ["#动漫", "#BDRip"]
+      keywords: ["#动漫", "#BDRip", "新番"] # 包含任一关键词
       target_id: -1009876543210
-      topic_id: 456
+      topic_id: 456 # 动漫话题ID
     
-    # 示例3: 转发到 *另一个* 专门的 "剧集" 频道
+    # 示例3: 转发到 *另一个* 专门的频道
     - name: "剧集分发 (到另一频道)"
       keywords: ["#剧集", "#S01E", "第一季"]
       target_id: -10011112222333 # 另一个频道的ID
@@ -73,8 +84,19 @@ forwarding:
   forward_new_only: true
 
 # --- 6. 过滤器 (可选) ---
-# 注意: 过滤器在 "白名单" 模式下不生效
-
+#
+# 过滤逻辑优先级:
+# 1. 白名单 (Whitelist):
+#    - 如果 `whitelist: enable: true`:
+#    - 只有 *命中* 白名单的消息会 [通过]，并跳过所有黑名单。
+#    - 未命中白名单的消息会被 [过滤]。
+# 2. 黑名单 (Ad/Content Filter):
+#    - 如果 `whitelist: enable: false`:
+#    - 消息默认 [通过]。
+#    - 但如果 *命中* `ad_filter` 或 `content_filter`，消息会被 [过滤]。
+# 3. 默认:
+#    - 如果所有过滤器都 `enable: false`，所有消息 [通过]。
+#
 # 广告过滤器 (黑名单)
 ad_filter:
   enable: true
@@ -85,14 +107,13 @@ ad_filter:
   patterns: # 正则表达式
     - "group[0-9]{3,}"
 
-# 内容质量过滤器
+# 内容质量过滤器 (黑名单)
 content_filter:
   enable: true
   meaningless_words: ["顶", "up", "1", "mark"]
   min_meaningful_length: 10 # 纯文本消息的最小长度 (无媒体时)
 
 # 白名单过滤器 (高优先级)
-# 如果启用，只有包含白名单关键词的消息 *才会被转发*
 whitelist:
   enable: false
   keywords:
