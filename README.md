@@ -196,7 +196,7 @@
 
 1. *在 GitHub 仓库中设置 Secrets*:
 
-  * `DOCKERHUB_USERNAME`: 你的 Docker Hub 用户名。
+  * `DOCKER_USERNAME`: 你的 Docker Hub 用户名。
 
   * `DOCKERHUB_TOKEN`: 你的 Docker Hub 访问令牌 (Access Token)。
 
