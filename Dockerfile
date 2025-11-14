@@ -20,7 +20,8 @@ RUN ln -snf /usr/share/zoneinfo/$TZ /etc/localtime && echo $TZ > /etc/timezone
 # (新) 确保 /app/data 目录存在并设置权限
 # 会话文件 (.session) 和数据库 (.json) 将存储在这里
 RUN mkdir -p /app/data && \
-    chmod -R 755 /app/data
+    chmod -R 755 /app/data && \
+    cp /app/config_template.yaml /app/config.yaml
 
 # 设置数据卷 (用于持久化)
 VOLUME /app/data
