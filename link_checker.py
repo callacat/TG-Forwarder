@@ -3,6 +3,7 @@ import logging
 import asyncio
 import httpx
 import json
+import os
 from telethon import TelegramClient
 from telethon.errors import RPCError
 from bs4 import BeautifulSoup
@@ -28,7 +29,8 @@ class LinkChecker:
         ]
         
         # 链接检测状态数据库
-        self.db_path = "link_checker_db.json"
+        # (新) 默认路径指向 /app/data
+        self.db_path = "/app/data/link_checker_db.json"
         self.link_db: Dict[str, Dict[str, Any]] = self._load_db()
 
     def _load_db(self) -> Dict[str, Dict[str, Any]]:
@@ -43,6 +45,8 @@ class LinkChecker:
     def _save_db(self):
         """保存链接状态数据库"""
         try:
+            # (新) 确保 /app/data 目录存在
+            os.makedirs(os.path.dirname(self.db_path), exist_ok=True)
             with open(self.db_path, 'w', encoding='utf-8') as f:
                 json.dump(self.link_db, f, indent=2)
         except Exception as e:
@@ -103,6 +107,9 @@ class LinkChecker:
         new_links_found = 0
         try:
             async for message in self.client.iter_messages(self.target_channel, min_id=last_processed_id):
+                if not message.text: # (新) 忽略没有文本的消息
+                    continue
+                
                 links = self._extract_links(message.text)
                 if links:
                     for link in links:
@@ -129,7 +136,7 @@ class LinkChecker:
 
         # TODO: 使用 asyncio.Semaphore 实现并发限制
         
-        invalid_messages = {} # 存储失效链接对应的 message_id
+        invalid_messages: Dict[int, List[str]] = {} # 存储失效链接对应的 message_id
 
         for link in links_to_check:
             is_valid = await self._check_link_validity(link)
@@ -142,9 +149,10 @@ class LinkChecker:
                 data['status'] = 'invalid'
                 logger.warning(f"检测到失效链接: {link} (Message ID: {data['message_id']})")
                 
-                if data['message_id'] not in invalid_messages:
-                    invalid_messages[data['message_id']] = []
-                invalid_messages[data['message_id']].append(link)
+                msg_id = data['message_id']
+                if msg_id not in invalid_messages:
+                    invalid_messages[msg_id] = []
+                invalid_messages[msg_id].append(link)
 
         # 3. 根据模式 (mode) 执行操作
         if self.checker_config.mode == "log":
@@ -158,6 +166,11 @@ class LinkChecker:
                     if not message or not message.text:
                         continue
                     
+                    # (新) 检查是否已经标记过，避免重复编辑
+                    if "[链接已失效]" in message.text:
+                        logger.debug(f"消息 {msg_id} 已被标记，跳过。")
+                        continue
+
                     new_text = message.text
                     for link in links:
                         # 简单的在链接后添加失效标记

@@ -1,6 +1,9 @@
 # config_template.yaml
 # TG Ultimate Forwarder - 终极转发器 配置文件
 
+# --- (新) 全局配置 ---
+docker_container_name: "tgf" # (新) 你 `docker run --name` 时使用的容器名，用于登录提示
+
 # --- 1. 代理配置 (可选) ---
 # proxy:
 #   enabled: true
@@ -11,23 +14,21 @@
 #   password: ""
 
 # --- 2. 账号配置 (必需) ---
-# api_id 和 api_hash 在 https://my.telegram.org/apps 获取
-#
-# session_string 是你的 "登录凭证"
-# 为什么不用 session_name? 因为在 Docker 或服务器上，你无法进行交互式登录 (输入手机和验证码)。
-# String Session 是一个允许程序 "粘贴" 登录状态的文本串。
-# 推荐使用: https://github.com/TelethonP/StringSession 来生成
+# (已修改) 仅支持 方式 A (会话文件)
+
 accounts:
+  # --- 方式 A: 会话文件 (推荐 Docker / 本地) ---
+  # (程序启动时会要求你交互式登录，文件会保存在 /app/data 中)
   - api_id: 123456
     api_hash: "0123456789abcdef0123456789abcdef"
-    session_string: "AQ...YOUR_SESSION_STRING...="
-    session_name: "account_1" # 仅用于日志，可随意填写
+    session_name: "account_1" # 会话文件名 (例如 "account_1")
     enabled: true
   
+  # --- 方式 B: Session String (推荐 Heroku / PaaS / CI/CD) ---
+  # (已移除)
   # - api_id: 123457
   #   api_hash: "0123456789abcdef0123456789abcde0"
-  #   session_string: "AQ...ANOTHER_SESSION_STRING...="
-  #   session_name: "account_2"
+  #   session_string: "AQ...YOUR_SESSION_STRING...="
   #   enabled: true
 
 # --- 3. 监控源 (必需) ---
@@ -125,7 +126,7 @@ whitelist:
 # 内容去重
 deduplication:
   enable: true
-  db_path: "data/dedup_db.json" # 存储哈希的JSON文件路径
+  db_path: "/app/data/dedup_db.json" # 存储哈希的JSON文件路径
 
 # 高级链接提取
 link_extraction:

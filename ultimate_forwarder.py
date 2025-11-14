@@ -1,23 +1,25 @@
-# ultimate_forwarder.py
 import asyncio
 import logging
 import argparse
 import yaml
 import sys
+import os
+# import base64 (Removed)
 from telethon import TelegramClient, events, errors
 from telethon.sessions import StringSession
 
+# 假设 forwarder_core 和 link_checker 在同一目录下
 from forwarder_core import UltimateForwarder, Config
+from link_checker import LinkChecker
 
 # --- 日志配置 ---
 # CRITICAL 50, ERROR 40, WARNING 30, INFO 20, DEBUG 10
-LOG_LEVEL = logging.INFO
+LOG_LEVEL = os.environ.get('LOG_LEVEL', 'INFO').upper()
 logging.basicConfig(
     format='%(asctime)s - [%(levelname)s] - %(message)s',
     level=LOG_LEVEL,
     handlers=[
         logging.StreamHandler(sys.stdout) # 输出到控制台
-        # logging.FileHandler("forwarder.log") # 输出到文件
     ]
 )
 logging.getLogger('telethon').setLevel(logging.WARNING) # 屏蔽Telethon的DEBUG日志
@@ -25,7 +27,6 @@ logger = logging.getLogger(__name__)
 
 # --- 全局客户端列表 ---
 clients = []
-current_client_index = 0
 
 def load_config(path):
     """加载 YAML 配置文件"""
@@ -33,8 +34,11 @@ def load_config(path):
     try:
         with open(path, 'r', encoding='utf-8') as f:
             config_data = yaml.safe_load(f)
-        logger.info("✅ 配置文件加载成功。")
-        return Config(config_data) # 使用Pydantic模型验证和构建配置
+        
+        # 将 Pydantic 模型用于验证和构建
+        config_obj = Config(**config_data)
+        logger.info("✅ 配置文件加载并验证成功。")
+        return config_obj
     except FileNotFoundError:
         logger.critical(f"❌ 致命错误: 配置文件 {path} 未找到。")
         sys.exit(1)
@@ -43,44 +47,59 @@ def load_config(path):
         sys.exit(1)
 
 async def initialize_clients(config: Config):
-    """初始化所有 Telethon 客户端"""
+    """初始化所有 Telethon 客户端 (支持混合登录)"""
     global clients
     logger.info(f"正在初始化 {len(config.accounts)} 个账号...")
     
     for i, acc in enumerate(config.accounts):
         if not acc.enabled:
-            logger.warning(f"账号 {i+1} (Session: {acc.session_name[:5]}...) 已被禁用，跳过。")
+            logger.warning(f"账号 {i+1} (Session: {acc.session_name}) 已被禁用，跳过。") # (Modified)
             continue
         
         try:
+            # (Modified) 简化为只支持 session_name
+            logger.info(f"账号 {i+1} 正在使用会话文件: {acc.session_name}...")
+            # 确保会话文件保存在持久化目录 /app/data 中
+            session_path = f"/app/data/{acc.session_name}"
+            session_data = session_path
+            session_identifier = f"SessionFile ({acc.session_name})"
+
+            
             client = TelegramClient(
-                StringSession(acc.session_string),
+                session_data, # (已修改)
                 acc.api_id,
                 acc.api_hash,
                 proxy=config.proxy.get_telethon_proxy() if config.proxy else None
             )
             
+            # (已修改) 仅在 方式A (Session File) 且未登录时才提示
+            if acc.session_name and not await client.is_user_authorized():
+                logger.warning(f"账号 {acc.session_name} 未登录。")
+                logger.warning("请在控制台输入手机号 (例如 +861234567890) 和验证码。")
+                container_name = config.docker_container_name or "YOUR_CONTAINER_NAME"
+                logger.warning(f"如果使用 Docker, 请运行: docker attach {container_name}")
+            
             await client.start()
             me = await client.get_me()
-            logger.info(f"✅ 账号 {i+1} ({me.first_name}) 登录成功。")
+            logger.info(f"✅ 账号 {i+1} ({me.first_name if me.first_name else me.username}) 登录成功。")
             clients.append(client)
             
         except errors.SessionPasswordNeededError:
-            logger.error(f"❌ 账号 {i+1} (Session: {acc.session_name[:5]}...) 需要两步验证密码，请在本地运行一次以授权。")
+            logger.error(f"❌ 账号 {session_identifier} 需要两步验证密码 (Two-Step Verification)。") # (Modified)
+            logger.warning("请在控制台 (docker attach) 中输入你的密码。")
         except errors.AuthKeyUnregisteredError:
-             logger.error(f"❌ 账号 {i+1} (Session: {acc.session_string}) Session已失效，请重新生成。")
+             logger.error(f"❌ 账号 {session_identifier} 的 Session 已失效，请删除 data 目录下的 {acc.session_name}.session 文件后重试。") # (Modified)
         except Exception as e:
-            logger.error(f"❌ 账号 {i+1} (Session: {acc.session_name[:5]}...) 启动失败: {e}")
+            logger.error(f"❌ 账号 {session_identifier} 启动失败: {e}") # (Modified)
     
     if not clients:
-        logger.critical("❌ 致命错误: 没有可用的账号。请检查配置或 Session 字符串。")
+        logger.critical("❌ 致命错误: 没有可用的账号。请检查配置或 Session。")
         sys.exit(1)
     
     logger.info(f"✅ 成功启动 {len(clients)} 个客户端。")
 
-async def run_forwarder(config_path: str):
+async def run_forwarder(config: Config):
     """运行转发器主逻辑"""
-    config = load_config(config_path)
     await initialize_clients(config)
     
     # 获取第一个客户端作为主客户端（用于监听）
@@ -109,11 +128,8 @@ async def run_forwarder(config_path: str):
     logger.info(f"🚀 终极转发器已启动。正在监听 {len(config.sources)} 个源。")
     await main_client.run_until_disconnected()
 
-async def run_link_checker(config_path: str):
+async def run_link_checker(config: Config):
     """运行失效链接检测器"""
-    from link_checker import LinkChecker
-    
-    config = load_config(config_path)
     if not config.link_checker or not config.link_checker.enabled:
         logger.warning("LinkChecker 未在 config.yaml 中启用，退出。")
         return
@@ -125,9 +141,8 @@ async def run_link_checker(config_path: str):
     await checker.run()
     logger.info("✅ 失效链接检测完成。")
 
-async def export_dialogs(config_path: str):
+async def export_dialogs(config: Config):
     """导出频道和话题信息"""
-    config = load_config(config_path)
     await initialize_clients(config)
     main_client = clients[0]
 
@@ -154,8 +169,10 @@ async def export_dialogs(config_path: str):
                     except Exception as e:
                         logger.warning(f"获取话题失败 for {dialog.title}: {e}")
 
+        print("\n\n" + "="*30)
         print(output)
         print(topics_output)
+        print("="*30 + "\n")
         
         logger.info("---")
         logger.info("如何使用:")
@@ -165,7 +182,7 @@ async def export_dialogs(config_path: str):
     except Exception as e:
         logger.error(f"导出对话失败: {e}")
 
-
+# ... (run_forwarder, run_link_checker, export_dialogs remain the same) ...
 async def main():
     parser = argparse.ArgumentParser(description="TG Ultimate Forwarder - 终极 Telegram 转发器")
     parser.add_argument(
@@ -186,14 +203,24 @@ async def main():
         help="配置文件路径 (默认: config.yaml)"
     )
     args = parser.parse_args()
+    
+    # (Modified) 移除 CONFIG_BASE64 逻辑
+    config_path = args.config
+
+    
+    # 将配置加载移到 main() 中，以便 Docker 提示可以读取 container_name
+    config = load_config(config_path)
+    # 将容器名存入类变量，以便日志提示
+    Config.docker_container_name = config.docker_container_name if config.docker_container_name else "YOUR_CONTAINER_NAME"
+
 
     try:
         if args.mode == 'run':
-            await run_forwarder(args.config)
+            await run_forwarder(config) # (已修改) 传递 config 对象
         elif args.mode == 'checklinks':
-            await run_link_checker(args.config)
+            await run_link_checker(config) # (已修改) 传递 config 对象
         elif args.mode == 'export':
-            await export_dialogs(args.config)
+            await export_dialogs(config) # (已修改) 传递 config 对象
             
     except (KeyboardInterrupt, asyncio.CancelledError):
         logger.info("程序被用户中断。")

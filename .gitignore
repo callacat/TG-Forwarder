@@ -15,7 +15,7 @@ downloads/
 eggs/
 .eggs/
 lib/
-lib64/
+lib6f/
 parts/
 sdist/
 var/
@@ -94,12 +94,6 @@ ipython_config.py
 #   install all needed dependencies.
 #Pipfile.lock
 
-# UV
-#   Similar to Pipfile.lock, it is generally recommended to include uv.lock in version control.
-#   This is especially recommended for binary packages to ensure reproducibility, and is more
-#   commonly ignored for libraries.
-#uv.lock
-
 # poetry
 #   Similar to Pipfile.lock, it is generally recommended to include poetry.lock in version control.
 #   This is especially recommended for binary packages to ensure reproducibility, and is more
@@ -114,10 +108,8 @@ ipython_config.py
 #   in version control.
 #   https://pdm.fming.dev/latest/usage/project/#working-with-version-control
 .pdm.toml
-.pdm-python
-.pdm-build/
 
-# PEP 582; used by e.g. github.com/David-OConnor/pyflow and github.com/pdm-project/pdm
+# PEP 582; used by e.g. github.com/David-OConnor/pyflow
 __pypackages__/
 
 # Celery stuff
@@ -167,15 +159,17 @@ cython_debug/
 #  option (not recommended) you can uncomment the following to ignore the entire idea folder.
 #.idea/
 
-# Ruff stuff:
-.ruff_cache/
+# --- (新) TG Forwarder Specific ---
+# 忽略 Telethon 会话文件
+*.session
+*.session-journal
 
-# PyPI configuration file
-.pypirc
+# 忽略所有持久化数据 (数据库, 日志等)
+data/
+/data/
 
-# Cursor  
-#  Cursor is an AI-powered code editor.`.cursorignore` specifies files/directories to 
-#  exclude from AI features like autocomplete and code analysis. Recommended for sensitive data
-#  refer to https://docs.cursor.com/context/ignore-files
-.cursorignore
-.cursorindexingignore
+# 忽略本地配置文件
+config.yaml
+
+# 忽略日志文件
+*.log

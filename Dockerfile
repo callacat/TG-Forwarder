@@ -17,7 +17,12 @@ COPY . .
 ENV TZ=Asia/Shanghai
 RUN ln -snf /usr/share/zoneinfo/$TZ /etc/localtime && echo $TZ > /etc/timezone
 
-# 设置数据卷 (可选，用于持久化)
+# (新) 确保 /app/data 目录存在并设置权限
+# 会话文件 (.session) 和数据库 (.json) 将存储在这里
+RUN mkdir -p /app/data && \
+    chmod -R 755 /app/data
+
+# 设置数据卷 (用于持久化)
 VOLUME /app/data
 
 # 默认启动命令

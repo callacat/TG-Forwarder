@@ -5,13 +5,14 @@ import re
 import asyncio
 import httpx
 import time
+import json
 from datetime import datetime, timezone
 from telethon import TelegramClient, events, errors
 from telethon.tl.types import MessageEntityTextUrl, MessageMediaDocument
 
 # --- 类型提示 ---
 from typing import List, Optional, Tuple, Dict, Set, Any
-from pydantic import BaseModel, Field, HttpUrl, field_validator
+from pydantic import BaseModel, Field, HttpUrl, field_validator, model_validator
 
 logger = logging.getLogger(__name__)
 
@@ -34,15 +35,24 @@ class ProxyConfig(BaseModel):
 class AccountConfig(BaseModel):
     api_id: int
     api_hash: str
-    session_string: str # 使用 StringSession，而不是 session_name
-    session_name: Optional[str] = "default" # 兼容旧配置，但提示
+    session_name: str # (已修改) 必须提供
+    # session_string: Optional[str] = None (Removed)
     enabled: bool = True
 
-    @field_validator('session_string', mode='before')
-    def check_session_string(cls, v):
-        if not v:
-            raise ValueError("session_string 不能为空。请生成 StringSession。")
-        return v
+    @model_validator(mode='before')
+    @classmethod
+    def check_session_auth(cls, data: Any) -> Any:
+        """(新) 验证 session_name""" # (Modified)
+        if isinstance(data, dict):
+            if not data.get('session_name'): # (Modified)
+                raise ValueError("必须提供 session_name (会话文件)。")
+            
+            # (新) 确保 session_name 不包含路径
+            if data.get('session_name'):
+                name = data['session_name']
+                if '/' in name or '\\' in name:
+                    raise ValueError("session_name 不能包含路径分隔符。")
+        return data
 
 class SourceConfig(BaseModel):
     id: int # 频道ID (必须是数字ID)
@@ -85,6 +95,7 @@ class TargetDistributionRule(BaseModel):
                 for pattern_str in self.file_name_patterns:
                     # 将 glob 模式 (*.mkv) 转换为正则表达式 (.*\.mkv$)
                     try:
+                        # 简单的 glob 转 regex，只支持 *
                         pattern = re.compile(pattern_str.replace('.', r'\.').replace('*', r'.*') + '$', re.IGNORECASE)
                         if re.search(pattern, file_name):
                             return True
@@ -95,7 +106,7 @@ class TargetDistributionRule(BaseModel):
 
 class TargetConfig(BaseModel):
     default_target: int # 默认目标频道/群组 ID
-    distribution_rules: List[TargetDistributionRule] = []
+    distribution_rules: List[TargetDistributionRule] = Field(default_factory=list)
 
 class ForwardingConfig(BaseModel):
     mode: str = "forward" # 'forward' 或 'copy'
@@ -109,21 +120,22 @@ class ForwardingConfig(BaseModel):
 
 class AdFilterConfig(BaseModel):
     enable: bool = True
-    keywords: List[str] = []
-    patterns: List[str] = []
+    keywords: List[str] = Field(default_factory=list)
+    patterns: List[str] = Field(default_factory=list)
 
 class ContentFilterConfig(BaseModel):
     enable: bool = True
-    meaningless_words: List[str] = []
+    meaningless_words: List[str] = Field(default_factory=list)
     min_meaningful_length: int = 5
 
 class WhitelistConfig(BaseModel):
     enable: bool = False
-    keywords: List[str] = []
+    keywords: List[str] = Field(default_factory=list)
 
 class DeduplicationConfig(BaseModel):
     enable: bool = True
-    db_path: str = "forwarder_dedup.json"
+    # (新) 默认路径指向 /app/data
+    db_path: str = "/app/data/dedup_db.json" 
 
 class LinkExtractionConfig(BaseModel):
     check_hyperlinks: bool = True
@@ -141,18 +153,19 @@ class LinkCheckerConfig(BaseModel):
         return v
 
 class Config(BaseModel):
-    proxy: Optional[ProxyConfig] = None
+    docker_container_name: Optional[str] = "tg-forwarder"
+    proxy: Optional[ProxyConfig] = Field(default_factory=ProxyConfig)
     accounts: List[AccountConfig]
     sources: List[SourceConfig]
     targets: TargetConfig
     forwarding: ForwardingConfig = Field(default_factory=ForwardingConfig)
-    ad_filter: Optional[AdFilterConfig] = None
-    content_filter: Optional[ContentFilterConfig] = None
-    whitelist: Optional[WhitelistConfig] = None
+    ad_filter: AdFilterConfig = Field(default_factory=AdFilterConfig)
+    content_filter: ContentFilterConfig = Field(default_factory=ContentFilterConfig)
+    whitelist: WhitelistConfig = Field(default_factory=WhitelistConfig)
     deduplication: DeduplicationConfig = Field(default_factory=DeduplicationConfig)
     link_extraction: LinkExtractionConfig = Field(default_factory=LinkExtractionConfig)
-    replacements: Dict[str, str] = {}
-    link_checker: Optional[LinkCheckerConfig] = None
+    replacements: Dict[str, str] = Field(default_factory=dict)
+    link_checker: Optional[LinkCheckerConfig] = Field(default_factory=LinkCheckerConfig)
     
     def get_source_chat_ids(self) -> List[int]:
         """获取所有源ID的列表"""
@@ -161,11 +174,14 @@ class Config(BaseModel):
 # --- 核心转发器类 ---
 
 class UltimateForwarder:
+    # (新) 用于存储容器名称的类变量
+    docker_container_name: str = "tg-forwarder"
+
     def __init__(self, config: Config, clients: List[TelegramClient]):
         self.config = config
         self.clients = clients
         self.current_client_index = 0
-        self.client_flood_wait = {} # 存储客户端的FloodWait截止时间
+        self.client_flood_wait: Dict[str, float] = {} # 存储客户端的FloodWait截止时间
         
         # 加载去重数据库
         self.dedup_db: Set[str] = self._load_dedup_db()
@@ -184,8 +200,8 @@ class UltimateForwarder:
     # --- 数据库/状态管理 ---
     
     def _get_progress_db_path(self) -> str:
-        # 简单地使用一个固定的JSON文件
-        return "forwarder_progress.json"
+        # (新) 默认路径指向 /app/data
+        return "/app/data/forwarder_progress.json"
 
     def _load_progress_db(self) -> Dict[str, int]:
         """加载频道转发进度"""
@@ -201,6 +217,8 @@ class UltimateForwarder:
         """保存频道转发进度"""
         path = self._get_progress_db_path()
         try:
+            # (新) 确保 /app/data 目录存在
+            os.makedirs(os.path.dirname(path), exist_ok=True)
             with open(path, 'w', encoding='utf-8') as f:
                 json.dump(self.progress_db, f, indent=2)
         except Exception as e:
@@ -231,6 +249,8 @@ class UltimateForwarder:
         """保存去重数据库"""
         path = self.config.deduplication.db_path
         try:
+            # (新) 确保 /app/data 目录存在
+            os.makedirs(os.path.dirname(path), exist_ok=True)
             with open(path, 'w', encoding='utf-8') as f:
                 json.dump(list(self.dedup_db), f) # 转换为列表再保存
         except Exception as e:
@@ -261,6 +281,7 @@ class UltimateForwarder:
                 # 所有客户端都在 FloodWait
                 all_wait_times = [self.client_flood_wait.get(c.session.session_id, 0) for c in self.clients]
                 min_wait_time = min(all_wait_times)
+                # (新) 修正 sleep_duration 逻辑
                 sleep_duration = max(1.0, (min_wait_time - time.time()) + 1.0) # 等待最短时间的客户端 + 1秒
                 
                 logger.warning(f"所有 {len(self.clients)} 个客户端都在 FloodWait。等待 {sleep_duration:.1f} 秒...")
@@ -274,8 +295,10 @@ class UltimateForwarder:
         """统一处理发送错误"""
         client_id = client.session.session_id
         if isinstance(e, errors.FloodWaitError):
-            logger.warning(f"客户端 {client_id[:5]}... 触发 FloodWait: {e.seconds} 秒。")
-            self.client_flood_wait[client_id] = time.time() + e.seconds + 5 # 增加5秒缓冲
+            # 增加5秒缓冲
+            wait_time = e.seconds + 5 
+            logger.warning(f"客户端 {client_id[:5]}... 触发 FloodWait: {wait_time} 秒。")
+            self.client_flood_wait[client_id] = time.time() + wait_time
         elif isinstance(e, errors.ChatWriteForbiddenError):
             logger.error(f"客户端 {client_id[:5]}... 无法写入目标频道 (权限不足)。")
             # 这种情况通常是永久性的，不需要重试
@@ -294,6 +317,7 @@ class UltimateForwarder:
         # 0. 获取源配置
         source_config = next((s for s in self.config.sources if s.id == chat_id), None)
         if not source_config:
+            # 这不应该发生，因为 events.NewMessage 已经按 chats 过滤了
             logger.warning(f"收到来自未知源 {chat_id} 的消息，已忽略。")
             return
             
@@ -309,7 +333,7 @@ class UltimateForwarder:
                 # 3. 内容替换
                 msg_data['text'] = self._apply_replacements(msg_data['text'])
                 
-                # 4. 内容过滤
+                # 4. 内容过滤 (传入媒体)
                 if self._should_filter(msg_data['text'], msg_data['media']):
                     logger.info(f"消息 {chat_id}/{message.id} (Text: {msg_data['text'][:30]}...) [被过滤]")
                     continue
@@ -319,7 +343,7 @@ class UltimateForwarder:
                     logger.info(f"消息 {chat_id}/{message.id} (Text: {msg_data['text'][:30]}...) [重复]")
                     continue
                 
-                # 6. 查找目标
+                # 6. 查找目标 (传入媒体)
                 target_id, topic_id = self._find_target(msg_data['text'], msg_data['media'])
                 
                 # 7. 执行发送
@@ -352,7 +376,7 @@ class UltimateForwarder:
                 process_history = not source.forward_new_only
                 
             if not process_history:
-                logger.info(f"跳过源 {source.id} 的历史记录 (已在源配置中禁用)。")
+                logger.info(f"跳过源 {source.id} 的历史记录 (已在源或全局配置中禁用)。")
                 continue
 
             last_id = self._get_channel_progress(source.id)
@@ -362,7 +386,7 @@ class UltimateForwarder:
                 # 反向迭代消息 (从旧到新)
                 async for message in client.iter_messages(source.id, offset_id=last_id, reverse=True, limit=None):
                     # 伪造一个 event 对象
-                    fake_event = events.NewMessage.Event(message=message)
+                    fake_event = events.NewMessage.Event(message=message, peer_user=None, peer_chat=None, chat=None)
                     fake_event.chat_id = source.id
                     await self.process_message(fake_event)
                     
@@ -472,7 +496,7 @@ class UltimateForwarder:
                     logger.debug(f"Filter [Ad Pattern]: 命中广告正则 {p.pattern}。")
                     return True
 
-        # 3. 内容质量过滤
+        # 3. 内容质量过滤 (黑名单)
         if self.config.content_filter and self.config.content_filter.enable:
             if not text and not media:
                 logger.debug(f"Filter [Content]: 既无文本也无媒体。")
@@ -498,12 +522,12 @@ class UltimateForwarder:
         # 优先使用媒体文件ID
         media = message_data.get('media')
         if media:
-            # TODO: 更复杂的Hash，例如 tg_zf 中的文件大小+ID
             if hasattr(media, 'photo'):
                 return f"photo:{media.photo.id}"
             if hasattr(media, 'document'):
-                # 结合 ID 和 size 提高唯一性
-                return f"doc:{media.document.id}:{getattr(media.document, 'size', '0')}"
+                # (新) 结合 ID 和 size 提高唯一性
+                doc_size = getattr(media.document, 'size', '0')
+                return f"doc:{media.document.id}:{doc_size}"
         
         # 其次使用文本 (如果文本很短，可能误判)
         text = message_data.get('text', "")
@@ -511,7 +535,11 @@ class UltimateForwarder:
             return f"text:{hash(text)}"
             
         # 最后使用原始ID (这只在提取链接时有用)
-        return f"id:{message_data.get('hash_source')}"
+        hash_source = message_data.get('hash_source')
+        if hash_source:
+            return f"id:{hash_source}"
+        
+        return None
 
     def _is_duplicate(self, message_data: Dict[str, Any], log_id: str) -> bool:
         """步骤 4: 内容去重"""
