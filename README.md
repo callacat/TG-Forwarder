@@ -1,224 +1,223 @@
-TG Ultimate Forwarder - 终极 Telegram 转发器
+# TG Ultimate Forwarder - 终极 Telegram 转发器
 
-本项目融合了 tgforwarder 和 tg_zf 的核心优势，并加入了话题分发、多模式转发等新功能，旨在提供一个稳定、强大且高度可配置的 Telegram 内容聚合工具。
+本项目融合了 `tgforwarder` 和 `tg_zf` 的核心优势，并加入了话题分发、多模式转发等新功能，旨在提供一个稳定、强大且高度可配置的 Telegram 内容聚合工具。
 
-✨ 核心功能
+# ✨ 核心功能
 
-多账号支持: 使用多个账号轮换转发，有效规避 FloodWait 和账号限制。
+* *多账号支持*: 使用多个账号轮换转发，有效规避 FloodWait 和账号限制。
 
-多源监控 (已支持): 可在 config.yaml 中配置任意多个源频道。
+* *多源监控 (已支持)*: 可在 `config.yaml` 中配置任意多个源频道。
 
-(Removed) 混合登录
+* *多模式转发*:
 
-(Removed) 混合配置
+* *Forward 模式*: 标准转发，保留消息来源。
 
-多模式转发:
+* *Copy 模式*: 复制消息内容，作为新消息发送，可突破源频道的转发限制。
 
-Forward 模式: 标准转发，保留消息来源。
+* *高级内容过滤*:
 
-Copy 模式: 复制消息内容，作为新消息发送，可突破源频道的转发限制。
+  * *过滤逻辑 (新)*: 清晰的过滤优先级： 白名单 (高) > 黑名单 (中) > 默认通过 (低)。
 
-高级内容过滤:
+  * *白名单*: 仅转发包含特定关键词的消息。
 
-过滤逻辑 (新): 清晰的过滤优先级： 白名单 (高) > 黑名单 (中) > 默认通过 (低)。
+  * *黑名单*: 过滤广告、无意义内容（支持正则）。
 
-白名单: 仅转发包含特定关键词的消息。
+* *智能内容处理*:
 
-黑名单: 过滤广告、无意义内容（支持正则）。
+  * *内容替换*: 自动替换消息中的指定文本，如广告标签、频道链接等。
 
-智能内容处理:
+  * *高级链接提取*: (TODO) 解析超链接、机器人回复、评论区中的隐藏链接。
 
-内容替换: 自动替换消息中的指定文本，如广告标签、频道链接等。
+* *精准分发 (新)*:
 
-高级链接提取: (TODO) 解析超链接、机器人回复、评论区中的隐藏链接。
+  * *话题分发*: (新) 根据关键词将消息精准分发到目标群组的*不同话题 (Topics) *中。
 
-精准分发 (新):
+  * *多频道/群组分发*: (新) 根据关键词将消息分发到不同的目标频道或群组。
 
-话题分发: (新) 根据关键词将消息精准分发到目标群组的不同话题 (Topics) 中。
+  * *按文件类型分发 (新)*: (新) 根据文件名 (`*.mkv`) 或文件类型 (`video/mp4`) 分发。
 
-多频道/群组分发: (新) 根据关键词将消息分发到不同的目标频道或群组。
+* *健壮性设计*:
 
-按文件类型分发 (新): (新) 根据文件名 (*.mkv) 或文件类型 (video/mp4) 分发。
+  * *内容去重*: 基于消息哈希防止重复转发。
 
-健壮性设计:
+  * *断点续传*: 自动记录每个频道的转发进度，重启后不丢失。
 
-内容去重: 基于消息哈希防止重复转发。
+  * *新消息/历史消息*: (新) 可配置为只处理新消息 (`forward_new_only: true`)，或回溯所有历史消息 (`false`)。
 
-断点续传: 自动记录每个频道的转发进度，重启后不丢失。
+* *配套工具*:
 
-新消息/历史消息: (新) 可配置为只处理新消息 (forward_new_only: true)，或回溯所有历史消息 (false)。
+  * *失效链接检测*: (新) 附带 `link_checker.py`，可定时扫描、标记或删除失效的网盘链接。
 
-配套工具:
+  * *频道/话题导出*: (新) `export` 模式帮助你获取配置所需的频道和话题 ID。
 
-失效链接检测: (新) 附带 link_checker.py，可定时扫描、标记或删除失效的网盘链接。
-
-频道/话题导出: (新) export 模式帮助你获取配置所需的频道和话题 ID。
-
-🚀 部署指南 (Docker / 本地)
+# 🚀 部署指南 (Docker / 本地)
 
 这是最简单、最推荐的部署方式，支持 docker attach 交互式登录。
 
-准备配置文件:
+1. *准备配置文件*:
 
-在你的服务器上创建一个目录，例如 ~/tg_forwarder。
+* 在你的服务器上创建一个目录，例如` ~/tg_forwarder`。
 
-mkdir -p ~/tg_forwarder/data (此目录用于存放 .session 登录文件和数据库)
+* `mkdir -p ~/tg_forwarder/data` (此目录用于存放 `.session` 登录文件和数据库)
 
-将 config_template.yaml 复制到该目录，并重命名为 config.yaml。
+* 将 `config_template.yaml` 复制到该目录，并重命名为 `config.yaml`。`
 
-编辑 config.yaml:
+2. *编辑* `config.yaml`:
 
-docker_container_name: (新) 填入你下一步 docker run 时 --name 参数指定的名字 (例如 tgf)。
+  * `docker_container_name`: (新) 填入你下一步 `docker run` 时 `--name` 参数指定的名字 (例如 `tgf`)。
 
-accounts: (重要) 使用 "方式 A: 会话文件"。填入你的 api_id, api_hash 和 session_name (例如 account_1)。
+  * `accounts`: 填入你的 `api_id, api_hash` 和 `session_name` (例如 `account_1`)。
 
-sources: 填入你要监控的源频道/群组 ID。
+  * `sources`: 填入你要监控的源频道/群组 ID。
 
-targets: 填入默认的目标频道/群组 ID。
+  * `targets`: 填入默认的目标频道/群组 ID。
 
-运行 Docker 容器:
+3. *运行 Docker 容器*:
 
-运行以下命令启动容器。
+  * 运行以下命令启动容器。
 
-(重要) 首次运行时，程序会卡住并等待你登录。请看第 4 步。
+  * *(重要)*首次运行时，程序会卡住并等待你登录。请看第 4 步。
 
-<!-- end list -->
+  ```bash
+  docker run -d \
+    -it \
+    --name tgf \
+    -v ~/tg_forwarder/config.yaml:/app/config.yaml \
+    -v ~/tg_forwarder/data:/app/data \
+    --restart always \
+    dswang2233/tgf:latest
+  ```
 
-docker run -d \
-  -it \
-  --name tgf \
-  -v ~/tg_forwarder/config.yaml:/app/config.yaml \
-  -v ~/tg_forwarder/data:/app/data \
-  --restart always \
-  callacat/tgf:latest
+* *首次登录 (交互式)*:
 
+  * 容器启动后，它会在日志中打印 "请在控制台输入手机号..."
 
-(注意: 我使用了你 Actions 文件中的镜像名 callacat/tgf:latest 和 --name tgf)
+  * 运行 `docker attach tgf` (这里的 `tgf` 必须与你 `--name` 和 `config.yaml` 中设置的一致)。
 
-首次登录 (交互式):
+  * 你现在进入了容器的交互模式。
 
-容器启动后，它会在日志中打印 "请在控制台输入手机号..."
+  * 按照提示输入你的*手机号* (例如 `+861234567890`)，按回车。
 
-运行 docker attach tgf (这里的 tgf 必须与你 --name 和 config.yaml 中设置的一致)。
+  * 输入收到的*验证码*，按回车。
 
-你现在进入了容器的交互模式。
+  * 如果设置了*两步验证密码*，输入密码，按回车。
 
-按照提示输入你的手机号 (例如 +861234567890)，按回车。
+  * 登录成功后，你会看到程序开始正常运行。
 
-输入收到的验证码，按回车。
+  * *按 `Ctrl+P` 然后按 `Ctrl+Q` 来分离 (Detach)* 终端，千万不要按 `Ctrl+C` (这会停止容器)。
 
-如果设置了两步验证密码，输入密码，按回车。
+  * 你的登录文件 (`.session`) 现已保存在 `~/tg_forwarder/data` 目录中，下次重启容器将自动登录。
 
-登录成功后，你会看到程序开始正常运行。
+# 🛠️ 本地运行 (开发/调试)
 
-按 Ctrl+P 然后按 Ctrl+Q 来分离 (Detach) 终端，千万不要按 Ctrl+C (这会停止容器)。
+1. 克隆仓库: `git clone ...`
 
-你的登录文件 (.session) 现已保存在 ~/tg_forwarder/data 目录中，下次重启容器将自动登录。
+2. 安装依赖: `pip install -r requirements.txt`
 
-🌐 部署指南 (Heroku / PaaS 平台)
+3. 创建 `data` 目录: `mkdir data`
 
-(本部分已移除，简化为仅支持 Docker / 本地部署)
+4. 复制 `config_template.yaml` 为 `config.yaml`。
 
-🛠️ 本地运行 (开发/调试)
+5. 配置 `config.yaml` (使用 `session_name` 方式)。
 
-克隆仓库: git clone ...
+6. 运行 (首次运行会要求在终端登录):
 
-安装依赖: pip install -r requirements.txt
+  * 启动转发: `python ultimate_forwarder.py run`
 
-创建 data 目录: mkdir data
+  * 检测链接: `python ultimate_forwarder.py checklinks`
 
-复制 config_template.yaml 为 config.yaml。
+  * 导出ID: `python ultimate_forwarder.py export`
 
-配置 config.yaml (使用 session_name 方式)。
+# ⚙️ 配置文件详解 (config.yaml)
 
-运行 (首次运行会要求在终端登录):
+`accounts`* (登录账号)*
 
-启动转发: python ultimate_forwarder.py run
+你必须提供 `session_name`：
 
-检测链接: python ultimate_forwarder.py checklinks
+  * `session_name`: (用于 Docker / 本地) 指定一个会话文件名，程序启动时会要求你交互式登录。
 
-导出ID: python ultimate_forwarder.py export
+`sources` *(监控源)*
 
-⚙️ 配置文件详解 (config.yaml)
+`id` 必须是数字ID (运行 `export` 模式获取)`。sources` 是一个列表，你可以添加任意多个。
 
-accounts (登录账号)
+`targets` *(转发目标)*
 
-(已修改) 你必须提供 session_name：
+* 目标可以是频道或群组。
 
-session_name: (用于 Docker / 本地) 指定一个会话文件名，程序启动时会要求你交互式登录。
+* `default_target`: 必需，未命中任何分发规则时的默认目标。
 
-sources (监控源)
+* `distribution_rules`: (新) 核心功能。
 
-id 必须是数字ID (运行 export 模式获取)。sources 是一个列表，你可以添加任意多个。
+  *  规则按顺序匹配，第一个命中的规则生效。
 
-targets (转发目标)
+  *  规则内的条件 (keywords, file_types, file_name_patterns) 是 *"OR" (或)* 关系，满足任意一个即命中。
 
-目标可以是频道或群组。
+  * `keywords`: 匹配消息文本。
 
-default_target: 必需，未命中任何分发规则时的默认目标。
+  `file_types`: (新) 匹配文件的 MIME Type (例如: "video/mp4", "image/jpeg")。
 
-distribution_rules: (新) 核心功能。
+  * `file_name_patterns`: (新) 匹配文件名 (例如: ".mkv", "1080p", "S01E")。
 
-规则按顺序匹配，第一个命中的规则生效。
+  * `topic_id`: (新) 目标话题 ID。如果目标是普通频道或群组，省略或设为 null。
 
-规则内的条件 (keywords, file_types, file_name_patterns) 是 "OR" (或) 关系，满足任意一个即命中。
+`forwarding` *(转发行为)*
 
-keywords: 匹配消息文本。
+* `mode: "copy"`: 推荐。可以突破源频道"禁止转发"的限制。
 
-file_types: (新) 匹配文件的 MIME Type (例如: "video/mp4", "image/jpeg")。
+* `forward_new_only: true`: 推荐。`true` 表示只处理新消息；`false` 表示会从头扫描所有源频道的历史消息。
 
-file_name_patterns: (新) 匹配文件名 (例如: ".mkv", "1080p", "S01E")。
+## 过滤器逻辑 (重要)
 
-topic_id: (新) 目标话题 ID。如果目标是普通频道或群组，省略或设为 null。
+1. *白名单 (Whitelist) 模式*:
 
-forwarding (转发行为)
+  * 如果 `whitelist: enable: true`:
 
-mode: "copy": 推荐。可以突破源频道"禁止转发"的限制。
+  * 只有 命中 白名单的消息会 *[通过]*，并跳过所有黑名单。
 
-forward_new_only: true: 推荐。true 表示只处理新消息；false 表示会从头扫描所有源频道的历史消息。
+  * 未命中白名单的消息会被 *[过滤]*。
 
-过滤器逻辑 (重要)
+2. *黑名单 (Blacklist) 模式*:
 
-白名单 (Whitelist) 模式:
+  * 如果 `whitelist: enable: false`:
 
-如果 whitelist: enable: true:
+  * 消息默认 *[通过]*。
 
-只有 命中 白名单的消息会 [通过]，并跳过所有黑名单。
+  * 但如果 命中 `ad_filter` 或 `content_filter`，消息会被 *[过滤]*。
 
-未命中白名单的消息会被 [过滤]。
+3. *默认模式*:
 
-黑名单 (Blacklist) 模式:
+  * 如果所有过滤器都 `enable: false`，所有消息 *[通过]*。
 
-如果 whitelist: enable: false:
+# 📦 GitHub Actions (自动发布到 Docker Hub)
 
-消息默认 [通过]。
+我已为你提供了 `.github/workflows/docker-publish.yml` 文件。
 
-但如果 命中 ad_filter 或 content_filter，消息会被 [过滤]。
+*你需要做的准备*:
 
-默认模式:
+1. *在 GitHub 仓库中设置 Secrets*:
 
-如果所有过滤器都 enable: false，所有消息 [通过]。
+  * `DOCKERHUB_USERNAME`: 你的 Docker Hub 用户名。
 
-📦 GitHub Actions (自动发布到 Docker Hub)
+  * `DOCKERHUB_TOKEN`: 你的 Docker Hub 访问令牌 (Access Token)。
 
-我已为你提供了 .github/workflows/docker-publish.yml 文件。
+2. *检查* `docker-publish.yml`:
 
-你需要做的准备:
+  * `tags` 已设置为 `dswang2233/tgf:latest` (和你的用户名/仓库名一致)。
 
-在 GitHub 仓库中设置 Secrets:
+3. *推送代码*:
 
-DOCKERHUB_USERNAME: 你的 Docker Hub 用户名。
+  * 当你将代码 `push` 到 `main` 分支时，GitHub Actions 将自动启动。
 
-DOCKERHUB_TOKEN: 你的 Docker Hub 访问令牌 (Access Token)。
+  * 它会构建 Docker 镜像并将其推送到 `dswang2233/tgf`。
 
-检查 docker-publish.yml:
+  * 之后你就可以在服务器上 `docker pull dswang2233/tgf:latest` 你的最新镜像了。
 
-tags 已设置为 callacat/tgf:latest (和你的用户名/仓库名一致)。这看起来是正确的。
+# 鸣谢
 
-推送代码:
+本项目的设计和功能灵感来源于以下项目和贡献者：
 
-当你将代码 push 到 main 分支时，GitHub Actions 将自动启动。
+1. [fish2018/tgforwarder](https://github.com/fish2018/TGForwarder)(提供了链接提取、内容替换和失效链接检测的思路)
 
-它会构建 Docker 镜像并将其推送到 callacat/tgf。
+2. [ccrsrg/tg_zf](https://github.com/CCRSRG/TG_ZF) (提供了多账号管理、内容过滤和去重的健壮框架)
 
-之后你就可以在服务器上 docker pull callacat/tgf:latest 你的最新镜像了。
+3. [Google Gemini](https://gemini.google.com/) (AI 助手，协助进行代码重构、功能融合和文档编写)
