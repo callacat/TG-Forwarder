@@ -20,13 +20,12 @@ RUN ln -snf /usr/share/zoneinfo/$TZ /etc/localtime && echo $TZ > /etc/timezone
 # (新) 确保 /app/data 目录存在并设置权限
 # 会话文件 (.session) 和数据库 (.json) 将存储在这里
 RUN mkdir -p /app/data && \
-    chmod -R 755 /app/data && \
-    cp /app/config_template.yaml /app/config.yaml
+    chmod -R 755 /app/data
 
 # 设置数据卷 (用于持久化)
 VOLUME /app/data
 
 # 默认启动命令
-# 容器启动时将运行 `python ultimate_forwarder.py run -c config.yaml`
-# 确保你通过 -v 将 config.yaml 和 data 目录挂载进来
-CMD ["python", "ultimate_forwarder.py", "run", "-c", "config.yaml"]
+# 容器启动时将运行 `python ultimate_forwarder.py run -c /app/config.yaml`
+# 确保你通过 -v 将 config.yaml 挂载到 /app/config.yaml
+CMD ["python", "ultimate_forwarder.py", "run", "-c", "/app/config.yaml"]

@@ -2,20 +2,29 @@
 # TG Ultimate Forwarder - 终极转发器 配置文件
 
 # --- (新) 全局配置 ---
-docker_container_name: "tgf" # (新) 你 `docker run --name` 时使用的容器名，用于登录提示
+docker_container_name: "tgf" # 你 `docker run --name` 时使用的容器名，用于登录提示
+
+# --- (新) Bot 服务配置 ---
+bot_service:
+  enabled: true
+  # 从 @BotFather 获取你的 Token
+  bot_token: "123456:ABC-DEF1234567890"
+  # (重要!) 你的个人 Telegram 数字 ID (可以从 @userinfobot 获取)
+  # 只有列表中的用户才能使用 Bot 命令
+  admin_user_ids:
+    - 123456789 # 替换为你自己的 ID
 
 # --- 1. 代理配置 (可选) ---
-# proxy:
-#   enabled: true
-#   proxy_type: "socks5" # "socks5", "socks4", "http"
-#   addr: "127.0.0.1"
-#   port: 1080
-#   username: ""
-#   password: ""
+proxy:
+  enabled: false
+  proxy_type: "socks5" # "socks5", "socks4", "http"
+  addr: "127.0.0.1"
+  port: 1080
+  username: ""
+  password: ""
 
 # --- 2. 账号配置 (必需) ---
-# (已修改) 仅支持 方式 A (会话文件)
-
+# (新) 这是你的 *用户* 账号，用于监控和转发，不是 Bot 账号
 accounts:
   # --- 方式 A: 会话文件 (推荐 Docker / 本地) ---
   # (程序启动时会要求你交互式登录，文件会保存在 /app/data 中)
@@ -24,28 +33,30 @@ accounts:
     session_name: "account_1" # 会话文件名 (例如 "account_1")
     enabled: true
   
-  # --- 方式 B: Session String (推荐 Heroku / PaaS / CI/CD) ---
-  # (已移除)
+  # (新) 你可以添加多个用户账号，程序会自动轮换
   # - api_id: 123457
   #   api_hash: "0123456789abcdef0123456789abcde0"
-  #   session_string: "AQ...YOUR_SESSION_STRING...="
+  #   session_name: "account_2"
   #   enabled: true
 
 # --- 3. 监控源 (必需) ---
-# 运行 `python ultimate_forwarder.py export` 来获取频道/群组的数字ID
-# `sources` 是一个列表，你可以添加任意多个源
+# 运行 `python ultimate_forwarder.py export` 来获取频道/群组的标识符
+# (新) `identifier` 支持三种格式:
+#   1. 数字 ID: -1001234567890
+#   2. 用户名: "@MyChannelName"
+#   3. 链接: "https://t.me/MyChannelName"
+# (重要!) 你的 `accounts` 中的账号 *必须* 加入这些频道才能监控
 sources:
-  - id: -1001234567890 # (必需) 源频道/群组 ID
+  - identifier: -1001234567890 # (必需) 源频道/群组 标识符
     check_replies: true    # (可选) 是否检查此频道的评论区 (TODO)
     replies_limit: 5       # (可选) 检查评论区的最后5条
     forward_new_only: null # (可选) 覆盖全局设置, true/false
-  # - id: -1001234567891 # 源2
-  # - id: -1001234567892 # 源3
+  # - identifier: "@SomeOtherChannel"
+  # - identifier: "https://t.me/AnotherPublicChannel"
 
 # --- 4. 转发目标 (必需) ---
-# 目标可以是频道，也可以是群组
 targets:
-  # (必需) 默认转发到的频道/群组 ID
+  # (新) 默认目标，同样支持三种格式
   default_target: -1009876543210
   
   # (可选) 分发规则 (新功能)
@@ -57,31 +68,24 @@ targets:
     - name: "视频分发"
       file_types: ["video/mp4", "video/x-mkv"] # 匹配 MIME Type
       file_name_patterns: ["*.mkv", "*.rmvb", "*1080p*"] # 匹配文件名 (支持 * 通配符)
-      target_id: -1009876543210 # 目标群组ID
+      target_identifier: -1009876543210 # 目标群组ID
       topic_id: 123              # 视频话题ID
 
     # 示例2: 根据关键词分发
     - name: "动漫分发"
       keywords: ["#动漫", "#BDRip", "新番"] # 包含任一关键词
-      target_id: -1009876543210
+      target_identifier: "@MyArchiveGroup"
       topic_id: 456 # 动漫话题ID
     
     # 示例3: 转发到 *另一个* 专门的频道
     - name: "剧集分发 (到另一频道)"
       keywords: ["#剧集", "#S01E", "第一季"]
-      target_id: -10011112222333 # 另一个频道的ID
+      target_identifier: "https://t.me/MySeriesChannel" # 另一个频道的链接
       topic_id: null             # 设为 null 或省略，表示不发到话题
 
 # --- 5. 转发行为 ---
 forwarding:
-  # 转发模式:
-  # "forward" = 转发 (保留来源，但如果源频道禁止转发则失败)
-  # "copy"    = 复制 (作为新消息发送，可突破转发限制)
   mode: "copy"
-  
-  # 是否只转发新消息:
-  # true  = (默认) 只处理程序启动后收到的新消息。
-  # false = 程序启动时，会回溯所有源频道的历史消息 (从上次停止的地方开始)。
   forward_new_only: true
 
 # --- 6. 过滤器 (可选) ---
@@ -98,7 +102,6 @@ forwarding:
 # 3. 默认:
 #    - 如果所有过滤器都 `enable: false`，所有消息 [通过]。
 #
-# 广告过滤器 (黑名单)
 ad_filter:
   enable: true
   keywords:
@@ -108,13 +111,11 @@ ad_filter:
   patterns: # 正则表达式
     - "group[0-9]{3,}"
 
-# 内容质量过滤器 (黑名单)
 content_filter:
   enable: true
   meaningless_words: ["顶", "up", "1", "mark"]
   min_meaningful_length: 10 # 纯文本消息的最小长度 (无媒体时)
 
-# 白名单过滤器 (高优先级)
 whitelist:
   enable: false
   keywords:
@@ -122,32 +123,22 @@ whitelist:
     - "重要"
 
 # --- 7. 内容处理 ---
-
-# 内容去重
 deduplication:
   enable: true
   db_path: "/app/data/dedup_db.json" # 存储哈希的JSON文件路径
 
-# 高级链接提取
 link_extraction:
-  check_hyperlinks: true # 是否解析 telegra.ph 和机器人超链接 (TODO)
-  check_bots: true       # 是否模拟点击机器人按钮 (TODO)
+  check_hyperlinks: true # (TODO)
+  check_bots: true       # (TODO)
 
-# 消息内容替换
-# (在过滤和分发 *之前* 执行)
 replacements:
-  # "目标内容": "源内容"
-  "": "#ad" # 删除 #ad 标签
+  "": "#ad" 
   "TG 终极转发器": "TG Bot"
-  "t.me/some_other_channel": "" # 删除其他频道链接
+  "t.me/some_other_channel": "" 
 
 # --- 8. 失效链接检测器 (可选) ---
-# 通过 `python ultimate_forwarder.py checklinks` 运行
+# (新) 可以通过 Bot 的 /run_checklinks 命令触发
 link_checker:
   enabled: true
-  # "log"    = 只在日志中报告
-  # "edit"   = 编辑原消息，标注 [链接已失效]
-  # "delete" = 删除包含失效链接的消息
   mode: "edit"
-  # Cron 表达式 (默认: 每天凌晨3点)
-  schedule: "0 3 * * *"
+  schedule: "0 3 * * *" # (TODO) 定时任务尚未实现, 请使用 Bot 手动触发
