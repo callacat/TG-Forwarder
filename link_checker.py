@@ -96,8 +96,8 @@ class LinkChecker:
     async def run(self):
         """运行检测器的主逻辑"""
         logger.info("--- 启动失效链接检测器 ---")
-        if not self.checker_config:
-            logger.error("Link checker config is missing.")
+        if not self.checker_config or not self.checker_config.enabled:
+            logger.error("Link checker 未在配置中启用。")
             return
 
         # (新) 运行时解析目标 ID

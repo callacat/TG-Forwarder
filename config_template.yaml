@@ -58,29 +58,74 @@ targets:
   # (新) 默认目标，同样支持三种格式
   default_target: -1009876543210
   
-  # (可选) 分发规则 (新功能)
-  # 按顺序匹配，第一个命中的规则生效。
-  # 规则的条件 (keywords, file_types, file_name_patterns) 是 "OR" (或) 关系
-  # 只要满足 *任意一个* 条件，就会命中该规则。
+  # (已更新) 规则按 *优先级* (从上到下) 匹配，第一个命中的规则生效。
+  
+  # (新) 规则逻辑:
+  # 匹配 = (满足 *所有* all_keywords [AND]) 
+  #       AND 
+  #       (满足 *任一* any_keywords [OR] 满足 *任一* file_types [OR] 满足 *任一* file_name_patterns)
+  
+  # 建议: 从最具体到最笼统排序
   distribution_rules:
-    # 示例1: (新) 根据文件名和文件类型分发
-    - name: "视频分发"
-      file_types: ["video/mp4", "video/x-mkv"] # 匹配 MIME Type
-      file_name_patterns: ["*.mkv", "*.rmvb", "*1080p*"] # 匹配文件名 (支持 * 通配符)
-      target_identifier: -1009876543210 # 目标群组ID
-      topic_id: 123              # 视频话题ID
+    # --- 平台与类型组合 (最具体) ---
+    - name: "Windows 工具"
+      all_keywords: ["工具", "软件", "app"]   # [AND] 必须包含"工具"
+      any_keywords: ["Windows", "PC", "Win"] # [OR] 包含 "Windows"
+      target_identifier: -1009876543210 
+      topic_id: 10 # 假设是 "Windows 软件" 话题
 
-    # 示例2: 根据关键词分发
-    - name: "动漫分发"
-      keywords: ["#动漫", "#BDRip", "新番"] # 包含任一关键词
-      target_identifier: "@MyArchiveGroup"
-      topic_id: 456 # 动漫话题ID
-    
-    # 示例3: 转发到 *另一个* 专门的频道
-    - name: "剧集分发 (到另一频道)"
-      keywords: ["#剧集", "#S01E", "第一季"]
-      target_identifier: "https://t.me/MySeriesChannel" # 另一个频道的链接
-      topic_id: null             # 设为 null 或省略，表示不发到话题
+    - name: "Android 工具"
+      all_keywords: ["工具", "软件", "app"]     # [AND] 必须包含"工具"
+      any_keywords: ["Android", "安卓", "APK"] # [OR] 包含 "Android"
+      target_identifier: -1009876543210 
+      topic_id: 11 # 假设是 "Android 软件" 话题
+
+    - name: "iOS 工具"
+      all_keywords: ["工具", "软件", "app"] # [AND] 必须包含"工具"
+      any_keywords: ["iOS", "iPhone", "iPad", "ipa"] # [OR] 包含 "iOS"
+      target_identifier: -1009876543210 
+      topic_id: 12 # 假设是 "iOS 软件" 话题
+      
+    # --- 类型 (子类) ---
+    - name: "动漫 (影视子类)"
+      any_keywords: ["动漫", "新番", "BDRip"]
+      target_identifier: -1009876543210
+      topic_id: 20 # 假设是 "动漫" 话题
+
+    - name: "电影 (影视子类)"
+      any_keywords: ["电影", "BluRay", "4K", "REMUX"]
+      target_identifier: -1009876543210
+      topic_id: 21 # 假设是 "电影" 话题
+
+    - name: "剧集 (影视子类)"
+      any_keywords: ["剧集", "S01E", "第一季", "更新至"]
+      target_identifier: -1009876543210
+      topic_id: 22 # 假设是 "剧集" 话题
+
+    # --- 类型 (通用) ---
+    - name: "通用影视 (兜底)"
+      any_keywords: ["#影视", "预告", "片"] # 匹配上面没匹配到的
+      target_identifier: -1009876543210
+      topic_id: 23 # 假设是 "其他影视" 话题
+
+    - name: "通用工具 (兜底)"
+      any_keywords: ["#工具", "#软件", "App"] # 匹配上面没匹配到的
+      target_identifier: -1009876543210
+      topic_id: 13 # 假设是 "其他工具" 话题
+
+    # --- 文件类型分发 ---
+    - name: "视频文件"
+      file_types: ["video/mp4", "video/x-mkv"] # 匹配 MIME Type
+      file_name_patterns: ["*.mkv", "*.rmvb", "*.mp4"] # 匹配文件名
+      target_identifier: -1009876543210
+      topic_id: 20 # 也发到 "动漫" 话题 (示例)
+
+    # --- 其他类型 ---
+    - name: "新闻"
+      any_keywords: ["#新闻", "快讯", "报道"]
+      target_identifier: -10011112222333 # (示例) 转发到另一个频道
+
+    # (注意) "日常碎碎念"类 不需要规则，它们会自动进入 `default_target`
 
 # --- 5. 转发行为 ---
 forwarding:

@@ -1,18 +1,22 @@
 # bot_service.py
 import logging
+import time # (新) 导入 time
 from telethon import TelegramClient, events
 from telethon.tl.types import Message
 from typing import Callable, Awaitable
+from datetime import datetime, timezone # (新) 导入 datetime, timezone
+from forwarder_core import Config # (新)
+from link_checker import LinkChecker # (新)
 
 logger = logging.getLogger(__name__)
 
 class BotService:
-    def __init__(self, config, bot_client: TelegramClient, forwarder, link_checker, reload_config_func: Callable[[], Awaitable[str]]):
+    def __init__(self, config: Config, bot_client: TelegramClient, forwarder: 'UltimateForwarder', link_checker: LinkChecker, reload_config_func: Callable[[], Awaitable[str]]):
         self.config = config.bot_service
         self.bot = bot_client
         self.forwarder = forwarder
         self.link_checker = link_checker
-        self.admin_ids = self.config.admin_user_ids
+        self.admin_ids = self.config.admin_user_ids if self.config else []
         self.reload_config = reload_config_func
         self.start_time = datetime.now(timezone.utc)
 
@@ -56,8 +60,9 @@ class BotService:
                 client_count = len(self.forwarder.clients)
                 # 检查 FloodWait
                 flood_clients = [
-                    cid[:5] for cid, expiry in self.forwarder.client_flood_wait.items() 
-                    if expiry > time.time()
+                    # (新) 修复: client.session.session_id 
+                    client.session.session_id[:5] for client in self.forwarder.clients
+                    if self.forwarder.client_flood_wait.get(client.session.session_id, 0) > time.time()
                 ]
                 if flood_clients:
                     client_status = f"⚠️ {client_count} 个客户端运行中 ( {len(flood_clients)} 个正在 FloodWait: {', '.join(flood_clients)}... )"

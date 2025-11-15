@@ -7,6 +7,18 @@
 * **多账号支持**: 使用多个账号轮换转发，有效规避 FloodWait 和账号限制。
 
 * **多源监控 (已支持)**: 可在 `config.yaml` 中配置任意多个源频道。
+* 
+* (新) 灵活的标识符: 源和目标均支持数字ID (-100...)、用户名 (@username) 和链接 (https://t.me/...)。
+
+* (新) Bot 交互控制:
+
+  *  通过私聊 Bot 实时管理转发器。
+
+  *  /status: 查看服务运行状态和账号健康度。
+
+  *  /reload: 热重载 config.yaml，无需重启 Docker 容器即可应用新规则。
+
+  *  /run_checklinks: 手动触发一次失效链接检测。
 
 * **多模式转发**:
 
@@ -62,9 +74,20 @@
 
    * 将 `config_template.yaml` 复制到该目录，并重命名为 `config.yaml`。`
 
-2. **编辑** `config.yaml`:
+2. **(新) 创建你的 Bot**:
+
+  *  私聊 @BotFather。
+
+  *  发送 `/newbot`，按提示创建你的 Bot，获取 `bot_token`。
+
+  *  私聊 @userinfobot。
+
+  *  查看回复，获取你自己的 `Id` (一串数字)。
+
+3. **编辑** `config.yaml`:
 
      * `docker_container_name`: (新) 填入你下一步 `docker run` 时 `--name` 参数指定的名字 (例如 `tgf`)。
+     * (新) `bot_service`: 填入你刚获取的 `bot_token` 和 `admin_user_ids` (填你自己的数字 ID，支持多个)。
 
      * `accounts`: 填入你的 `api_id, api_hash` 和 `session_name` (例如 `account_1`)。
 
@@ -141,21 +164,19 @@
 `targets` **(转发目标)**
 * 目标可以是频道或群组。
 
-* `default_target`: 必需，未命中任何分发规则时的默认目标。
+* `default_target`: 必需，未命中任何分发规则时的默认目标，支持数字ID、@username 或 https://t.me/link。
 
-* `distribution_rules`: (新) 核心功能。
+  *  (新) 匹配逻辑: `(满足所有 all_keywords) AND (满足任一 any_keywords OR 满足任一 file_types OR 满足任一 file_name_patterns)`
 
-  *  规则按顺序匹配，第一个命中的规则生效。
+  *  `all_keywords`: [AND] 消息必须同时包含这里的所有词。
 
-  *  规则内的条件 (keywords, file_types, file_name_patterns) 是 **"OR" (或)** 关系，满足任意一个即命中。
+  *  `any_keywords`: [OR] 消息包含这里任意一个词即可。
 
-  * `keywords`: 匹配消息文本。
+  *  `file_types`: (新) [OR] 匹配文件的 MIME Type (例如: "video/mp4")。
 
-* `file_types`: (新) 匹配文件的 MIME Type (例如: "video/mp4", "image/jpeg")。
+  *  `file_name_patterns`: (新) [OR] 匹配文件名 (例如: "*.mkv", "1080p")。
 
-  * `file_name_patterns`: (新) 匹配文件名 (例如: ".mkv", "1080p", "S01E")。
-
-  * `topic_id`: (新) 目标话题 ID。如果目标是普通频道或群组，省略或设为 null。
+  *  `topic_id`: (新) 目标话题 ID。如果目标是普通频道或群组，省略或设为 null。
 
 `forwarding` **(转发行为)**
   * `mode: "copy"`: 推荐。可以突破源频道"禁止转发"的限制。
@@ -198,15 +219,15 @@
 
 2. **检查** `docker-publish.yml`:
 
-    * `tags` 已设置为 `dswang2233/tgf:latest` (和你的用户名/仓库名一致)。
+       * `tags` 已设置为 `${{ secrets.DOCKER_USERNAME }}/tgf:latest` 。
 
 3. **推送代码**:
 
      * 当你将代码 `push` 到 `main` 分支时，GitHub Actions 将自动启动。
 
-     * 它会构建 Docker 镜像并将其推送到 `dswang2233/tgf`。
+     * 它会构建 Docker 镜像并将其推送到 `${{ secrets.DOCKER_USERNAME }}/tgf`。
 
-     * 之后你就可以在服务器上 `docker pull dswang2233/tgf:latest` 你的最新镜像了。
+     * 之后你就可以在服务器上 `docker pull ${{ secrets.DOCKER_USERNAME }}/tgf:latest` 你的最新镜像了。
 
 # 鸣谢
 

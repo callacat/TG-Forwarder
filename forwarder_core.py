@@ -6,13 +6,13 @@ import asyncio
 import httpx
 import time
 import json
-import os # (新)
+import os 
 from datetime import datetime, timezone
 from telethon import TelegramClient, events, errors
-from telethon.tl.types import MessageEntityTextUrl, MessageMediaDocument
+from telethon.tl.types import MessageEntityTextUrl, MessageMediaDocument, PeerUser, PeerChat, PeerChannel
 
 # --- 类型提示 ---
-from typing import List, Optional, Tuple, Dict, Set, Any, Union # (新)
+from typing import List, Optional, Tuple, Dict, Set, Any, Union 
 from pydantic import BaseModel, Field, HttpUrl, field_validator, model_validator
 
 logger = logging.getLogger(__name__)
@@ -53,7 +53,6 @@ class AccountConfig(BaseModel):
         return data
 
 class SourceConfig(BaseModel):
-    # (新) 允许 ID, @username, 或 https://t.me/link
     identifier: Union[int, str]
     check_replies: bool = False
     replies_limit: int = 10
@@ -61,52 +60,71 @@ class SourceConfig(BaseModel):
 
 class TargetDistributionRule(BaseModel):
     name: str 
-    keywords: List[str] = Field(default_factory=list)
-    file_types: List[str] = Field(default_factory=list) 
-    file_name_patterns: List[str] = Field(default_factory=list) 
+    # (新) 增加 all_keywords 字段，用于 AND 逻辑
+    all_keywords: List[str] = Field(default_factory=list, description="[AND] 必须 *同时* 包含列表中的所有关键词")
+    any_keywords: List[str] = Field(default_factory=list, description="[OR] 包含列表中的 *任意一个* 关键词即可")
+    file_types: List[str] = Field(default_factory=list, description="[OR] 匹配任意一个MIME Type") 
+    file_name_patterns: List[str] = Field(default_factory=list, description="[OR] 匹配任意一个文件名通配符") 
 
-    # (新) 允许 ID, @username, 或 https://t.me/link
     target_identifier: Union[int, str]
     topic_id: Optional[int] = None 
     
-    # (新) 用于存储解析后的 ID
     resolved_target_id: Optional[int] = Field(None, exclude=True)
     
     def check(self, text: str, media: Any) -> bool:
-        """检查文本和媒体是否匹配此规则"""
+        """
+        (已修改) 检查消息是否匹配此规则。
+        逻辑: (all_keywords) AND (any_keywords OR file_types OR file_name_patterns)
+        """
+        text_lower = text.lower() if text else ""
         
-        if self.keywords:
-            text_lower = text.lower()
-            if any(keyword.lower() in text_lower for keyword in self.keywords):
-                return True
+        # 1. 检查 [AND] all_keywords
+        if self.all_keywords:
+            if not all(kw.lower() in text_lower for kw in self.all_keywords):
+                return False # [AND] 检查失败，此规则不匹配
         
+        # 2. 检查 [OR] 条件组
+        # (如果 all_keywords 匹配成功，或者 all_keywords 为空)
+        # 接下来，any_keywords, file_types, file_name_patterns 三者中 *至少有一个* 需要匹配
+        
+        # 检查点：如果所有 [OR] 列表都为空，则仅当 all_keywords 匹配时才算匹配
+        if not self.any_keywords and not self.file_types and not self.file_name_patterns:
+            return bool(self.all_keywords) # 仅当 all_keywords 非空且匹配时才为 True
+
+        # 检查 [OR] any_keywords
+        if self.any_keywords:
+            if any(keyword.lower() in text_lower for keyword in self.any_keywords):
+                return True # [OR] 检查成功
+        
+        # 检查 [OR] media (file_types / file_name_patterns)
         if media and isinstance(media, MessageMediaDocument):
             doc = media.document
             if not doc:
-                return False
+                return False # 无法检查
 
+            # 检查 [OR] file_types
             if self.file_types and doc.mime_type:
                 if any(ft.lower() in doc.mime_type.lower() for ft in self.file_types):
-                    return True
+                    return True # [OR] 检查成功
 
+            # 检查 [OR] file_name_patterns
             file_name = next((attr.file_name for attr in doc.attributes if hasattr(attr, 'file_name')), None)
             if self.file_name_patterns and file_name:
                 for pattern_str in self.file_name_patterns:
                     try:
                         pattern = re.compile(pattern_str.replace('.', r'\.').replace('*', r'.*') + '$', re.IGNORECASE)
                         if re.search(pattern, file_name):
-                            return True
+                            return True # [OR] 检查成功
                     except re.error:
                         logger.warning(f"规则 '{self.name}' 中的文件名模式 '{pattern_str}' 无效")
                         
+        # [AND] 检查通过了 (或为空)，但所有 [OR] 检查都失败了
         return False
 
 class TargetConfig(BaseModel):
-    # (新) 允许 ID, @username, 或 https://t.me/link
     default_target: Union[int, str]
     distribution_rules: List[TargetDistributionRule] = Field(default_factory=list)
     
-    # (新) 用于存储解析后的 ID
     resolved_default_target_id: Optional[int] = Field(None, exclude=True)
 
 
@@ -153,16 +171,23 @@ class LinkCheckerConfig(BaseModel):
             raise ValueError("link_checker.mode 必须是 'log', 'edit', 或 'delete'")
         return v
 
-# (新) Bot 配置
 class BotServiceConfig(BaseModel):
     enabled: bool = False
-    bot_token: str = "YOUR_BOT_TOKEN_HERE" # 必须
-    admin_user_ids: List[int] # 必须, 你的数字 User ID
+    bot_token: str = "YOUR_BOT_TOKEN_HERE" 
+    admin_user_ids: List[int] 
     
-    @field_validator('bot_token')
-    def check_bot_token(cls, v):
-        if not v or v == "YOUR_BOT_TOKEN_HERE":
+    @field_validator('bot_token', mode='before')
+    def check_bot_token(cls, v, info: Any):
+        values = info.data
+        if values.get('enabled') and (not v or v == "YOUR_BOT_TOKEN_HERE"):
             raise ValueError("Bot 服务已启用，但 bot_token 未设置。")
+        return v
+    
+    @field_validator('admin_user_ids', mode='before')
+    def check_admin_ids(cls, v, info: Any):
+        values = info.data
+        if values.get('enabled') and (not v):
+            raise ValueError("Bot 服务已启用，但 admin_user_ids 列表为空。")
         return v
 
 class Config(BaseModel):
@@ -179,13 +204,8 @@ class Config(BaseModel):
     link_extraction: LinkExtractionConfig = Field(default_factory=LinkExtractionConfig)
     replacements: Dict[str, str] = Field(default_factory=dict)
     link_checker: Optional[LinkCheckerConfig] = Field(default_factory=LinkCheckerConfig)
-    bot_service: Optional[BotServiceConfig] = Field(default_factory=BotServiceConfig) # (新)
+    bot_service: Optional[BotServiceConfig] = Field(default_factory=BotServiceConfig) 
     
-    # (新) 移除 get_source_chat_ids，因为 ID 是在运行时解析的
-    # def get_source_chat_ids(self) -> List[int]:
-    #     """获取所有源ID的列表"""
-    #     return [source.id for source in self.sources]
-
 # --- 核心转发器类 ---
 
 class UltimateForwarder:
@@ -211,24 +231,24 @@ class UltimateForwarder:
     async def reload(self, new_config: Config):
         """(新) 热重载配置"""
         self.config = new_config
-        # 重新编译黑名单
         self.ad_patterns = self._compile_patterns(new_config.ad_filter.patterns if new_config.ad_filter else [])
-        # 重新解析目标
         await self.resolve_targets()
         logger.info("转发器配置已热重载。")
 
     async def resolve_targets(self):
         """(新) 解析所有目标标识符"""
+        if not self.clients:
+            logger.error("无可用客户端，无法解析目标。")
+            return
+            
         client = self.clients[0]
         
-        # 解析默认目标
         try:
             entity = await client.get_entity(self.config.targets.default_target)
             self.config.targets.resolved_default_target_id = entity.id
         except Exception as e:
             logger.error(f"❌ 无法解析默认目标: {self.config.targets.default_target} - {e}")
 
-        # 解析分发规则中的目标
         for rule in self.config.targets.distribution_rules:
             try:
                 entity = await client.get_entity(rule.target_identifier)
@@ -265,7 +285,6 @@ class UltimateForwarder:
 
     def _set_channel_progress(self, channel_id: int, message_id: int):
         current_progress = self.progress_db.get(str(channel_id), 0)
-        # (新) 只有当新 ID 更大时才更新
         if message_id > current_progress:
             self.progress_db[str(channel_id)] = message_id
             self._save_progress_db()
@@ -308,7 +327,7 @@ class UltimateForwarder:
             
             if self.current_client_index == start_index:
                 all_wait_times = [self.client_flood_wait.get(c.session.session_id, 0) for c in self.clients]
-                min_wait_time = min(all_wait_times)
+                min_wait_time = min(all_wait_times) if all_wait_times else time.time()
                 sleep_duration = max(1.0, (min_wait_time - time.time()) + 1.0) 
                 
                 logger.warning(f"所有 {len(self.clients)} 个客户端都在 FloodWait。等待 {sleep_duration:.1f} 秒...")
@@ -334,33 +353,25 @@ class UltimateForwarder:
 
     async def process_message(self, event: events.NewMessage.Event):
         message = event.message
-        # (新) chat_id 在 Telethon 中是 Peer* 对象，我们需要它的 .id
-        chat_id = event.chat_id
         
-        # (新) 规范化 chat_id
-        if isinstance(chat_id, (int)):
-            numeric_chat_id = chat_id
-        elif hasattr(chat_id, 'channel_id'): # PeerChannel
-            numeric_chat_id = chat_id.channel_id
-        elif hasattr(chat_id, 'chat_id'): # PeerChat
-            numeric_chat_id = chat_id.chat_id
-        elif hasattr(chat_id, 'user_id'): # PeerUser
-            numeric_chat_id = chat_id.user_id
+        peer = event.chat_id
+        numeric_chat_id = 0
+        
+        if isinstance(peer, PeerUser):
+            numeric_chat_id = peer.user_id
+        elif isinstance(peer, PeerChat):
+            numeric_chat_id = peer.chat_id
+        elif isinstance(peer, PeerChannel):
+            numeric_chat_id = peer.channel_id
         else:
-             logger.warning(f"收到来自未知类型源 {chat_id} 的消息，已忽略。")
+             logger.warning(f"收到来自未知类型源 {peer} 的消息，已忽略。")
              return
 
-        # 0. 获取源配置 (新)
-        # 我们需要匹配原始标识符，因为 ID 可能尚未解析
-        source_config = next((s for s in self.config.sources if str(s.identifier) == str(numeric_chat_id) or str(s.identifier) == event.chat.username), None)
+        source_config = next((s for s in self.config.sources if str(s.identifier) == str(numeric_chat_id) or (event.chat and hasattr(event.chat, 'username') and str(s.identifier) == f"@{event.chat.username}")), None)
         
         if not source_config:
-             # (新) 修复：event.chat_id 可能是数字 ID，但 config 里是 @username
-             # 这是一个后备检查，理论上主脚本的 ID 解析应该已经处理了
-             source_config = next((s for s in self.config.sources if str(s.identifier) == str(event.chat.username)), None)
-             if not source_config:
-                 logger.warning(f"收到来自未配置源 {numeric_chat_id} (@{event.chat.username if event.chat else 'N/A'}) 的消息，已忽略。")
-                 return
+             logger.warning(f"收到来自未配置源 {numeric_chat_id} (@{event.chat.username if event.chat and hasattr(event.chat, 'username') else 'N/A'}) 的消息，已忽略。")
+             return
             
         logger.debug(f"--- [START] 正在处理消息 {numeric_chat_id}/{message.id} ---")
 
@@ -380,7 +391,6 @@ class UltimateForwarder:
                 
                 target_id, topic_id = self._find_target(msg_data['text'], msg_data['media'])
                 
-                # (新) 检查目标是否已解析
                 if not target_id:
                     logger.error(f"消息 {numeric_chat_id}/{message.id} 无法找到有效的目标 ID。请检查配置。")
                     continue
@@ -399,26 +409,25 @@ class UltimateForwarder:
             logger.error(f"处理消息 {numeric_chat_id}/{message.id} 时发生严重错误: {e}", exc_info=True)
         finally:
             logger.debug(f"--- [END] 消息 {numeric_chat_id}/{message.id} 处理完毕 ---")
-            # (新) 确保使用数字 ID 保存进度
             self._set_channel_progress(numeric_chat_id, message.id)
 
     async def process_history(self, resolved_source_ids: List[int]):
         """处理历史消息 (仅在 `forward_new_only: false` 时调用)"""
         client = self._get_next_client() 
         
-        # (新) 遍历已解析的 ID
         for source_id in resolved_source_ids:
-            # (新) 从 config 中查找原始 source 对象
-            source_config = next((s for s in self.config.sources if str(s.identifier) == str(source_id)), None)
-            if not source_config:
-                 # (新) 尝试匹配 @username (如果解析的 ID 找不到)
-                 # 这一步理论上不应该，但作为保险
-                 try:
-                     entity = await client.get_entity(source_id)
-                     if entity.username:
-                         source_config = next((s for s in self.config.sources if str(s.identifier) == f"@{entity.username}"), None)
-                 except:
-                     pass # 无法反向解析
+            source_config = None
+            entity = None
+            try:
+                entity = await client.get_entity(source_id)
+                username = getattr(entity, 'username', None)
+                if username:
+                     source_config = next((s for s in self.config.sources if str(s.identifier) == f"@{username}"), None)
+                if not source_config:
+                     source_config = next((s for s in self.config.sources if str(s.identifier) == str(source_id)), None)
+            except Exception as e:
+                logger.error(f"历史记录：无法获取实体 {source_id}: {e}")
+                continue
 
             if not source_config:
                 logger.error(f"历史记录：无法找到 {source_id} 的配置，跳过。")
@@ -437,14 +446,12 @@ class UltimateForwarder:
             
             try:
                 async for message in client.iter_messages(source_id, offset_id=last_id, reverse=True, limit=None):
-                    # (新) 修复：伪造 event 对象需要 peer
                     peer = await client.get_peer_id(source_id)
                     fake_event = events.NewMessage.Event(message=message, peer_user=None, peer_chat=peer, chat=None)
-                    fake_event.chat_id = source_id # 确保是数字 ID
+                    fake_event.chat_id = peer 
                     
-                    # (新) 手动设置 event.chat
                     if not fake_event.chat:
-                        fake_event.chat = await event.get_chat()
+                        fake_event.chat = entity
                         
                     await self.process_message(fake_event)
                     
@@ -581,14 +588,12 @@ class UltimateForwarder:
             for rule in rules:
                 if rule.check(text, media): 
                     logger.debug(f"命中分发规则: '{rule.name}'")
-                    # (新) 返回预先解析的 ID
                     if not rule.resolved_target_id:
                         logger.warning(f"规则 '{rule.name}' 命中，但其目标 {rule.target_identifier} 无法解析或无效，跳过。")
                         continue
                     return rule.resolved_target_id, rule.topic_id
                     
         logger.debug("未命中分发规则，使用默认目标。")
-        # (新) 返回预先解析的默认 ID
         return self.config.targets.resolved_default_target_id, None
 
     async def _send_message(self, original_message: Any, message_data: Dict[str, Any], target_id: int, topic_id: Optional[int]):
