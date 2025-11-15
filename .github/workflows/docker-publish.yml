@@ -36,8 +36,8 @@ jobs:
           file: ./Dockerfile
           push: true
           tags: |
-            callacat/tgf:latest
-            callacat/tgf:${{ github.sha }}
+            ${{ secrets.DOCKER_USERNAME }}/tgf:latest
+            ${{ secrets.DOCKER_USERNAME }}/tgf:${{ github.sha }}
           platforms: linux/amd64,linux/arm64 # 构建多种架构
 
       - name: Delete workflow runs
