@@ -15,13 +15,13 @@ bot_service:
     - 123456789 # 替换为你自己的 ID
 
 # --- 1. 代理配置 (可选) ---
-proxy:
-  enabled: false
-  proxy_type: "socks5" # "socks5", "socks4", "http"
-  addr: "127.0.0.1"
-  port: 1080
-  username: ""
-  password: ""
+# proxy:
+#   enabled: false
+#   proxy_type: "socks5" # "socks5", "socks4", "http"
+#   addr: "127.0.0.1"
+#   port: 1080
+#   username: ""
+#   password: ""
 
 # --- 2. 账号配置 (必需) ---
 # (新) 这是你的 *用户* 账号，用于监控和转发，不是 Bot 账号
@@ -40,7 +40,6 @@ accounts:
   #   enabled: true
 
 # --- 3. 监控源 (必需) ---
-# 运行 `python ultimate_forwarder.py export` 来获取频道/群组的标识符
 # (新) `identifier` 支持三种格式:
 #   1. 数字 ID: -1001234567890
 #   2. 用户名: "@MyChannelName"
@@ -85,7 +84,13 @@ targets:
 
 # --- 5. 转发行为 ---
 forwarding:
-  mode: "copy"
+  # 转发模式:
+  # "forward" = 转发 (保留来源，但如果源频道禁止转发则失败)
+  # "copy"    = 复制 (作为新消息发送，可突破转发限制)
+  mode: "forward"
+  # 是否只转发新消息:
+  # true  = (默认) 只处理程序启动后收到的新消息。
+  # false = 程序启动时，会回溯所有源频道的历史消息 (从上次停止的地方开始)。
   forward_new_only: true
 
 # --- 6. 过滤器 (可选) ---
@@ -128,11 +133,12 @@ deduplication:
   db_path: "/app/data/dedup_db.json" # 存储哈希的JSON文件路径
 
 link_extraction:
-  check_hyperlinks: true # (TODO)
-  check_bots: true       # (TODO)
+  check_hyperlinks: false # 是否解析 telegra.ph 和机器人超链接 (TODO)
+  check_bots: false       # 是否模拟点击机器人按钮 (TODO)
 
 replacements:
-  "": "#ad" 
+  # "目标内容": "源内容"
+  "": "#ad" # 删除 #ad 标签 
   "TG 终极转发器": "TG Bot"
   "t.me/some_other_channel": "" 
 
@@ -140,5 +146,8 @@ replacements:
 # (新) 可以通过 Bot 的 /run_checklinks 命令触发
 link_checker:
   enabled: true
+  # "log"    = 只在日志中报告
+  # "edit"   = 编辑原消息，标注 [链接已失效]
+  # "delete" = 删除包含失效链接的消息
   mode: "edit"
   schedule: "0 3 * * *" # (TODO) 定时任务尚未实现, 请使用 Bot 手动触发
