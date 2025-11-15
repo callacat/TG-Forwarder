@@ -56,27 +56,27 @@
 
 1. **准备配置文件**:
 
-* 在你的服务器上创建一个目录，例如` ~/tg_forwarder`。
+   * 在你的服务器上创建一个目录，例如` ~/tg_forwarder`。
 
-* `mkdir -p ~/tg_forwarder/data` (此目录用于存放 `.session` 登录文件和数据库)
+   * `mkdir -p ~/tg_forwarder/data` (此目录用于存放 `.session` 登录文件和数据库)
 
-* 将 `config_template.yaml` 复制到该目录，并重命名为 `config.yaml`。`
+   * 将 `config_template.yaml` 复制到该目录，并重命名为 `config.yaml`。`
 
 2. **编辑** `config.yaml`:
 
-  * `docker_container_name`: (新) 填入你下一步 `docker run` 时 `--name` 参数指定的名字 (例如 `tgf`)。
+     * `docker_container_name`: (新) 填入你下一步 `docker run` 时 `--name` 参数指定的名字 (例如 `tgf`)。
 
-  * `accounts`: 填入你的 `api_id, api_hash` 和 `session_name` (例如 `account_1`)。
+     * `accounts`: 填入你的 `api_id, api_hash` 和 `session_name` (例如 `account_1`)。
 
-  * `sources`: 填入你要监控的源频道/群组 ID。
+     * `sources`: 填入你要监控的源频道/群组 ID。
 
-  * `targets`: 填入默认的目标频道/群组 ID。
+     * `targets`: 填入默认的目标频道/群组 ID。
 
 3. **运行 Docker 容器**:
 
-  * 运行以下命令启动容器。
+    * 运行以下命令启动容器。
 
-  * **(重要)**首次运行时，程序会卡住并等待你登录。请看第 4 步。
+    * **(重要)**首次运行时，程序会卡住并等待你登录。请看第 4 步。
 
   ```bash
   docker run -d \
@@ -151,38 +151,38 @@
 
   * `keywords`: 匹配消息文本。
 
-  `file_types`: (新) 匹配文件的 MIME Type (例如: "video/mp4", "image/jpeg")。
+* `file_types`: (新) 匹配文件的 MIME Type (例如: "video/mp4", "image/jpeg")。
 
   * `file_name_patterns`: (新) 匹配文件名 (例如: ".mkv", "1080p", "S01E")。
 
   * `topic_id`: (新) 目标话题 ID。如果目标是普通频道或群组，省略或设为 null。
 
 `forwarding` **(转发行为)**
-* `mode: "copy"`: 推荐。可以突破源频道"禁止转发"的限制。
+  * `mode: "copy"`: 推荐。可以突破源频道"禁止转发"的限制。
 
-* `forward_new_only: true`: 推荐。`true` 表示只处理新消息；`false` 表示会从头扫描所有源频道的历史消息。
+  * `forward_new_only: true`: 推荐。`true` 表示只处理新消息；`false` 表示会从头扫描所有源频道的历史消息。
 
 ## 过滤器逻辑 (重要)
 
 1. **白名单 (Whitelist) 模式**:
 
-  * 如果 `whitelist: enable: true`:
+    * 如果 `whitelist: enable: true`:
 
-  * 只有 命中 白名单的消息会 ***[通过]**，并跳过所有黑名单。
+    * 只有 命中 白名单的消息会 ***[通过]**，并跳过所有黑名单。
 
-  * 未命中白名单的消息会被 **[过滤]**。
+    * 未命中白名单的消息会被 **[过滤]**。
 
 2. **黑名单 (Blacklist) 模式**:
 
-  * 如果 `whitelist: enable: false`:
+    * 如果 `whitelist: enable: false`:
 
-  * 消息默认 **[通过]**。
+    * 消息默认 **[通过]**。
 
-  * 但如果 命中 `ad_filter` 或 `content_filter`，消息会被 **[过滤]**。
+    * 但如果 命中 `ad_filter` 或 `content_filter`，消息会被 **[过滤]**。
 
 3. **默认模式**:
 
-  * 如果所有过滤器都 `enable: false`，所有消息 **[通过]**。
+     * 如果所有过滤器都 `enable: false`，所有消息 **[通过]**。
 
 # 📦 GitHub Actions (自动发布到 Docker Hub)
 
@@ -192,21 +192,21 @@
 
 1. **在 GitHub 仓库中设置 Secrets**:
 
-  * `DOCKER_USERNAME`: 你的 Docker Hub 用户名。
+     * `DOCKER_USERNAME`: 你的 Docker Hub 用户名。
 
-  * `DOCKERHUB_TOKEN`: 你的 Docker Hub 访问令牌 (Access Token)。
+     * `DOCKERHUB_TOKEN`: 你的 Docker Hub 访问令牌 (Access Token)。
 
 2. **检查** `docker-publish.yml`:
 
-  * `tags` 已设置为 `dswang2233/tgf:latest` (和你的用户名/仓库名一致)。
+    * `tags` 已设置为 `dswang2233/tgf:latest` (和你的用户名/仓库名一致)。
 
 3. **推送代码**:
 
-  * 当你将代码 `push` 到 `main` 分支时，GitHub Actions 将自动启动。
+     * 当你将代码 `push` 到 `main` 分支时，GitHub Actions 将自动启动。
 
-  * 它会构建 Docker 镜像并将其推送到 `dswang2233/tgf`。
+     * 它会构建 Docker 镜像并将其推送到 `dswang2233/tgf`。
 
-  * 之后你就可以在服务器上 `docker pull dswang2233/tgf:latest` 你的最新镜像了。
+     * 之后你就可以在服务器上 `docker pull dswang2233/tgf:latest` 你的最新镜像了。
 
 # 鸣谢
 
