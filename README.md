@@ -8,9 +8,9 @@
 
 * **多源监控 (已支持)**: 可在 `config.yaml` 中配置任意多个源频道。
 * 
-* (新) 灵活的标识符: 源和目标均支持数字ID (-100...)、用户名 (@username) 和链接 (https://t.me/...)。
+* 灵活的标识符: 源和目标均支持数字ID (-100...)、用户名 (@username) 和链接 (https://t.me/...)。
 
-* (新) Bot 交互控制:
+* Bot 交互控制:
 
   *  通过私聊 Bot 实时管理转发器。
 
@@ -42,11 +42,11 @@
 
 * **精准分发 (新)**:
 
-  * **话题分发**: (新) 根据关键词将消息精准分发到目标群组的 **不同话题 (Topics)** 中。
+  * **话题分发**: 根据关键词将消息精准分发到目标群组的 **不同话题 (Topics)** 中。
 
-  * **多频道/群组分发**: (新) 根据关键词将消息分发到不同的目标频道或群组。
+  * **多频道/群组分发**: 根据关键词将消息分发到不同的目标频道或群组。
 
-  * **按文件类型分发 (新)**: (新) 根据文件名 (`*.mkv`) 或文件类型 (`video/mp4`) 分发。
+  * **按文件类型分发 (新)**: 根据文件名 (`*.mkv`) 或文件类型 (`video/mp4`) 分发。
 
 * **健壮性设计**:
 
@@ -54,13 +54,13 @@
 
   * **断点续传**: 自动记录每个频道的转发进度，重启后不丢失。
 
-  * **新消息/历史消息**: (新) 可配置为只处理新消息 (`forward_new_only: true`)，或回溯所有历史消息 (`false`)。
+  * **新消息/历史消息**: 可配置为只处理新消息 (`forward_new_only: true`)，或回溯所有历史消息 (`false`)。
 
 * **配套工具**:
 
-  * **失效链接检测**: (新) 附带 `link_checker.py`，可定时扫描、标记或删除失效的网盘链接。
+  * **失效链接检测**: 附带 `link_checker.py`，可定时扫描、标记或删除失效的网盘链接。
 
-  * **频道/话题导出**: (新) `export` 模式帮助你获取配置所需的频道和话题 ID。
+  * **频道/话题导出**: `export` 模式帮助你获取配置所需的频道和话题 ID。
 
 # 🚀 部署指南 (Docker / 本地)
 
@@ -74,7 +74,7 @@
 
    * 将 `config_template.yaml` 复制到该目录，并重命名为 `config.yaml`。`
 
-2. **(新) 创建你的 Bot**:
+2. **创建你的 Bot**:
 
   *  私聊 @BotFather。
 
@@ -86,8 +86,8 @@
 
 3. **编辑** `config.yaml`:
 
-     * `docker_container_name`: (新) 填入你下一步 `docker run` 时 `--name` 参数指定的名字 (例如 `tgf`)。
-     * (新) `bot_service`: 填入你刚获取的 `bot_token` 和 `admin_user_ids` (填你自己的数字 ID，支持多个)。
+     * `docker_container_name`: 填入你下一步 `docker run` 时 `--name` 参数指定的名字 (例如 `tgf`)。
+     * `bot_service`: 填入你刚获取的 `bot_token` 和 `admin_user_ids` (填你自己的数字 ID，支持多个)。
 
      * `accounts`: 填入你的 `api_id, api_hash` 和 `session_name` (例如 `account_1`)。
 
@@ -166,17 +166,17 @@
 
 * `default_target`: 必需，未命中任何分发规则时的默认目标，支持数字ID、@username 或 https://t.me/link。
 
-  *  (新) 匹配逻辑: `(满足所有 all_keywords) AND (满足任一 any_keywords OR 满足任一 file_types OR 满足任一 file_name_patterns)`
+  *  匹配逻辑: `(满足所有 all_keywords) AND (满足任一 any_keywords OR 满足任一 file_types OR 满足任一 file_name_patterns)`
 
   *  `all_keywords`: [AND] 消息必须同时包含这里的所有词。
 
   *  `any_keywords`: [OR] 消息包含这里任意一个词即可。
 
-  *  `file_types`: (新) [OR] 匹配文件的 MIME Type (例如: "video/mp4")。
+  *  `file_types`: [OR] 匹配文件的 MIME Type (例如: "video/mp4")。
 
-  *  `file_name_patterns`: (新) [OR] 匹配文件名 (例如: "*.mkv", "1080p")。
+  *  `file_name_patterns`: [OR] 匹配文件名 (例如: "*.mkv", "1080p")。
 
-  *  `topic_id`: (新) 目标话题 ID。如果目标是普通频道或群组，省略或设为 null。
+  *  `topic_id`: 目标话题 ID。如果目标是普通频道或群组，省略或设为 null。
 
 `forwarding` **(转发行为)**
   * `mode: "copy"`: 推荐。可以突破源频道"禁止转发"的限制。

@@ -75,6 +75,10 @@ class TargetDistributionRule(BaseModel):
         """
         (已修改) 检查消息是否匹配此规则。
         逻辑: (all_keywords) AND (any_keywords OR file_types OR file_name_patterns)
+        
+        如果 all_keywords, any_keywords, file_types, file_name_patterns 都为空，则规则不匹配。
+        如果 all_keywords 不为空，但 [OR] 组 (any_keywords, file_types, file_name_patterns) 为空，
+        则仅当 all_keywords 匹配时，规则才匹配。
         """
         text_lower = text.lower() if text else ""
         
@@ -84,42 +88,52 @@ class TargetDistributionRule(BaseModel):
                 return False # [AND] 检查失败，此规则不匹配
         
         # 2. 检查 [OR] 条件组
-        # (如果 all_keywords 匹配成功，或者 all_keywords 为空)
-        # 接下来，any_keywords, file_types, file_name_patterns 三者中 *至少有一个* 需要匹配
+        or_group_matched = False
         
-        # 检查点：如果所有 [OR] 列表都为空，则仅当 all_keywords 匹配时才算匹配
-        if not self.any_keywords and not self.file_types and not self.file_name_patterns:
-            return bool(self.all_keywords) # 仅当 all_keywords 非空且匹配时才为 True
-
         # 检查 [OR] any_keywords
         if self.any_keywords:
             if any(keyword.lower() in text_lower for keyword in self.any_keywords):
-                return True # [OR] 检查成功
+                or_group_matched = True
         
         # 检查 [OR] media (file_types / file_name_patterns)
-        if media and isinstance(media, MessageMediaDocument):
+        if not or_group_matched and media and isinstance(media, MessageMediaDocument):
             doc = media.document
-            if not doc:
-                return False # 无法检查
+            if doc:
+                # 检查 [OR] file_types
+                if self.file_types and doc.mime_type:
+                    if any(ft.lower() in doc.mime_type.lower() for ft in self.file_types):
+                        or_group_matched = True
 
-            # 检查 [OR] file_types
-            if self.file_types and doc.mime_type:
-                if any(ft.lower() in doc.mime_type.lower() for ft in self.file_types):
-                    return True # [OR] 检查成功
+                # 检查 [OR] file_name_patterns
+                if not or_group_matched and self.file_name_patterns:
+                    file_name = next((attr.file_name for attr in doc.attributes if hasattr(attr, 'file_name')), None)
+                    if file_name:
+                        for pattern_str in self.file_name_patterns:
+                            try:
+                                pattern = re.compile(pattern_str.replace('.', r'\.').replace('*', r'.*') + '$', re.IGNORECASE)
+                                if re.search(pattern, file_name):
+                                    or_group_matched = True
+                                    break # 找到一个匹配就够了
+                            except re.error:
+                                logger.warning(f"规则 '{self.name}' 中的文件名模式 '{pattern_str}' 无效")
+        
+        # 3. 最终逻辑判断
+        has_all_keywords = bool(self.all_keywords)
+        has_or_group = bool(self.any_keywords or self.file_types or self.file_name_patterns)
 
-            # 检查 [OR] file_name_patterns
-            file_name = next((attr.file_name for attr in doc.attributes if hasattr(attr, 'file_name')), None)
-            if self.file_name_patterns and file_name:
-                for pattern_str in self.file_name_patterns:
-                    try:
-                        pattern = re.compile(pattern_str.replace('.', r'\.').replace('*', r'.*') + '$', re.IGNORECASE)
-                        if re.search(pattern, file_name):
-                            return True # [OR] 检查成功
-                    except re.error:
-                        logger.warning(f"规则 '{self.name}' 中的文件名模式 '{pattern_str}' 无效")
-                        
-        # [AND] 检查通过了 (或为空)，但所有 [OR] 检查都失败了
-        return False
+        if has_all_keywords and not has_or_group:
+            # 只有 [AND] 规则：all_keywords 必须匹配 (在步骤1中已检查)
+            return True
+        elif not has_all_keywords and has_or_group:
+            # 只有 [OR] 规则：or_group 必须匹配
+            return or_group_matched
+        elif has_all_keywords and has_or_group:
+            # [AND] + [OR] 规则：两者都必须匹配
+            # all_keywords 已在步骤1中检查通过
+            return or_group_matched
+        else:
+            # 所有列表都为空，规则无效
+            return False
 
 class TargetConfig(BaseModel):
     default_target: Union[int, str]
