@@ -183,9 +183,6 @@ link_extraction:
 
 replacements:
   # "目标内容": "源内容"
-  "": "#ad" # 删除 #ad 标签 
-  "TG 终极转发器": "TG Bot"
-  "t.me/some_other_channel": "" 
 
 # --- 8. 失效链接检测器 (可选) ---
 # 可以通过 Bot 的 /run_checklinks 命令触发

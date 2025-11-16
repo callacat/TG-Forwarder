@@ -425,21 +425,28 @@ class UltimateForwarder:
             messages_to_process = await self._extract_links(message, source_config)
 
             for msg_data in messages_to_process:
-                msg_data['text'] = self._apply_replacements(msg_data['text'])
+                # (新) 修复：更改操作顺序
+                # msg_data['text'] = self._apply_replacements(msg_data['text']) # <-- (旧位置)
                 
+                # 1. (新) 先用 *原始* 文本进行过滤
                 if self._should_filter(msg_data['text'], msg_data['media']):
                     logger.info(f"消息 {numeric_chat_id}/{message.id} (Text: {msg_data['text'][:30]}...) [被过滤]")
                     continue
 
+                # 2. (新) 再用 *原始* 消息进行去重
                 if self._is_duplicate(msg_data, f"{numeric_chat_id}/{message.id}"):
                     logger.info(f"消息 {numeric_chat_id}/{message.id} (Text: {msg_data['text'][:30]}...) [重复]")
                     continue
                 
+                # 3. (新) 再用 *原始* 文本查找目标
                 target_id, topic_id = self._find_target(msg_data['text'], msg_data['media'])
                 
                 if not target_id:
                     logger.error(f"消息 {numeric_chat_id}/{message.id} 无法找到有效的目标 ID。请检查配置。")
                     continue
+
+                # 4. (新) 仅在消息确定要发送时，才应用替换
+                msg_data['text'] = self._apply_replacements(msg_data['text']) # <-- (新位置)
 
                 logger.info(f"消息 {numeric_chat_id}/{message.id} [将被发送] -> 目标 {target_id}/(Topic:{topic_id})")
                 await self._send_message(
