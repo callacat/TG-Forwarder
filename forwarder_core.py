@@ -459,16 +459,16 @@ class UltimateForwarder:
             # (旧)
             
             # (新) 我们只处理主消息 (event.message)
+            # (新) 修复：移除 entities (Markdown 格式)
             msg_data = {
                 "text": message.text or "",
                 "media": message.media,
+                # "entities": message.entities, # <-- (旧) 导致 'entities' 错误的根源
                 "hash_source": message.id
             }
 
             # for msg_data in messages_to_process: # (旧)
             if True: # (新) 替换 for 循环
-                # (新) 修复：更改操作顺序
-                # msg_data['text'] = self._apply_replacements(msg_data['text']) # <-- (旧位置)
                 
                 # 1. (新) 先用 *原始* 文本进行过滤
                 # (新) 修复问题3：获取详细的过滤原因
@@ -554,7 +554,7 @@ class UltimateForwarder:
                     # (新) 修复：peer_chat 和 chat_id 需要正确设置
                     event_chat_id = message.chat_id
                     
-                    fake_event = events.NewMessage.Event(message=message, peer_user=None, peer_chat=None, chat=None)
+                    fake_event = events.NewMessage.Event(message=message) # (新) 修复：使用最小构造函数
                     
                     # (新) 模拟 event 对象的属性
                     fake_event.chat_id = event_chat_id
@@ -706,7 +706,7 @@ class UltimateForwarder:
         msg_hash = self._get_message_hash(message_data)
         if msg_hash:
             self.dedup_db.add(msg_hash)
-            self._save_dedup_db()
+            self._save_db_db()
 
     def _find_target(self, text: str, media: Any) -> Tuple[Optional[int], Optional[int]]:
         """
@@ -732,8 +732,8 @@ class UltimateForwarder:
         (新) 修复问题2：original_message 现在可以是单个 Message 或一个列表
         """
         text = message_data['text']
-        # (新) 修复问题2：media 现在可能是单个媒体，也可能没有
-        media = message_data.get('media') 
+        # (新) 修复：移除 entities (Markdown)
+        # entities = message_data.get('entities') # <-- (旧)
         mode = self.config.forwarding.mode
         
         send_kwargs = {}
@@ -746,24 +746,35 @@ class UltimateForwarder:
             client = self._get_next_client()
             try:
                 if mode == 'copy':
-                    # (新) 修复问题2：使用 server-side copy，而不是 re-upload
+                    # (新) 修复：'copy' 模式的正确实现 (Markdown)
                     
-                    # (旧逻辑)
-                    # files_to_send = media
-                    # if isinstance(original_message, list):
-                    #     files_to_send = [msg.media for msg in original_message if msg.media]
+                    files_to_send = None
+                    if isinstance(original_message, list):
+                        # 这是一个相册，发送媒体列表
+                        files_to_send = [msg.media for msg in original_message if msg.media]
+                    elif isinstance(original_message, Message):
+                        # 这是一个单条消息
+                        files_to_send = original_message.media # 使用它自己的媒体
                     
-                    # (新逻辑)
-                    # original_message 是单个 Message 或 list[Message]
-                    # Telethon 的 send_message 可以直接处理
-                    files_to_send = original_message 
-                    
-                    await client.send_message(
-                        target_id,
-                        message=text, # 新的文本/标题
-                        file=files_to_send, # (新) 传入 Message 对象
-                        **send_kwargs
-                    )
+                    # (新) 修复 v5.1：智能 Markdown 渲染
+                    if files_to_send:
+                        # 1. 有媒体文件：发送时不使用 parse_mode，避免崩溃
+                        await client.send_message(
+                            target_id,
+                            message=text,            # 替换后的文本
+                            file=files_to_send,      # 媒体
+                            # 不带 parse_mode 或 entities
+                            **send_kwargs
+                        )
+                    else:
+                        # 2. 纯文本：安全地使用 parse_mode='md' 来渲染链接
+                        await client.send_message(
+                            target_id,
+                            message=text,            # 替换后的文本
+                            file=None,               # 确保 file 为 None
+                            parse_mode='md',         # (新) 渲染 Markdown
+                            **send_kwargs
+                        )
                 else:
                     # (新) 修复问题2：转发模式天然支持列表
                     await client.forward_messages(
@@ -778,7 +789,7 @@ class UltimateForwarder:
 
             except Exception as e:
                 # (新) 修复问题4：现在 target_id 应该是正确的 (-100...)，
-                # (新) 修复问题1： 'reply_to' 是正确的参数，这个错误不应该再发生。
+                # (新) 修复问题1： 'reply_to' 是正确的参数
                 if isinstance(e, TypeError) and "unexpected keyword argument" in str(e):
                     logger.error(f"客户端 {client.session_name_for_forwarder} 转发时遇到内部代码错误: {e}")
                     logger.error(f"这通常意味着目标 {target_id} (话题: {topic_id}) 与转发模式 {mode} 不兼容。")
@@ -786,13 +797,29 @@ class UltimateForwarder:
                     try:
                         # 尝试不带 topic_id 再次发送
                         if mode == 'copy':
-                            # (新) 修复问题2：使用新逻辑
-                            await client.send_message(target_id, message=text, file=original_message)
+                            # (新) 修复 v5.1：在重试时也应用智能 Markdown
+                            if files_to_send:
+                                # 1. 有媒体：不带 parse_mode
+                                await client.send_message(
+                                    target_id, 
+                                    message=text, 
+                                    file=files_to_send
+                                )
+                            else:
+                                # 2. 纯文本：带 parse_mode
+                                await client.send_message(
+                                    target_id, 
+                                    message=text, 
+                                    file=None,
+                                    parse_mode='md'
+                                )
                         else:
                             await client.forward_messages(target_id, messages=original_message)
                         return # 重试成功
                     except Exception as e2:
                         logger.error(f"不带 topic_id 重试失败: {e2}")
                         await self._handle_send_error(e2, client) # 处理重试的错误
+                        return # (新) 修复问题3：停止无限循环
                 else:
                     await self._handle_send_error(e, client)
+                    return # (新) 修复问题3：停止无限循环 (针对非 TypeError)
