@@ -41,6 +41,15 @@ class LinkChecker:
         self.link_db: Dict[str, Dict[str, Any]] = self._load_db()
         logger.info("链接检测器配置已重载。")
 
+    # (新) 修复问题1：立即创建文件
+    def _save_db_data(self, data: Dict[str, Dict[str, Any]]):
+        """(新) 封装保存逻辑"""
+        try:
+            os.makedirs(os.path.dirname(self.db_path), exist_ok=True)
+            with open(self.db_path, 'w', encoding='utf-8') as f:
+                json.dump(data, f, indent=2)
+        except Exception as e:
+            logger.error(f"保存链接检测数据库 {self.db_path} 失败: {e}")
 
     def _load_db(self) -> Dict[str, Dict[str, Any]]:
         """加载链接状态数据库"""
@@ -49,22 +58,19 @@ class LinkChecker:
                 return json.load(f)
         except (FileNotFoundError, json.JSONDecodeError):
             logger.info(f"未找到链接检测数据库 {self.db_path}，将创建新的。")
-            return {}
+            db = {}
+            self._save_db_data(db) # (新) 立即创建
+            return db
 
     def _save_db(self):
         """保存链接状态数据库"""
-        try:
-            os.makedirs(os.path.dirname(self.db_path), exist_ok=True)
-            with open(self.db_path, 'w', encoding='utf-8') as f:
-                json.dump(self.link_db, f, indent=2)
-        except Exception as e:
-            logger.error(f"保存链接检测数据库 {self.db_path} 失败: {e}")
+        self._save_db_data(self.link_db) # (新) 调用封装的保存逻辑
 
     def _extract_links(self, message_text: str) -> List[str]:
         """从消息文本中提取网盘链接"""
         if not message_text:
             return []
-        url_pattern = r'https?://[^\s]+'
+        url_pattern = r'https://?[^\s]+'
         urls = re.findall(url_pattern, message_text)
         links = [url for url in urls if any(domain in url for domain in self.net_disk_domains)]
         return list(set(links)) # 去重

@@ -166,40 +166,35 @@ async def initialize_bot(config: Config):
         bot_client = None
 
 
-async def resolve_identifiers(client: TelegramClient, identifiers: List[str | int]) -> List[int]:
-    """(新) 将频道用户名/链接列表解析为数字 ID 列表"""
+# (新) 修复问题3：重构 resolve_identifiers
+async def resolve_identifiers(client: TelegramClient, config: Config) -> List[int]:
+    """(新) 将 config.sources 中的标识符解析为数字 ID，并存回 config 对象"""
     resolved_ids = []
-    for identifier in identifiers:
+    logger.info(f"正在解析 {len(config.sources)} 个源标识符...")
+    for s_config in config.sources:
         try:
-            # Telethon 可以自动处理 int, @username, 和 https://t.me/link
-            entity = await client.get_entity(identifier)
+            entity = await client.get_entity(s_config.identifier)
             
-            # (新) 确保我们只获取频道的数字 ID
-            if isinstance(entity, (PeerUser, PeerChat)):
-                resolved_ids.append(entity.id)
-            elif isinstance(entity, PeerChannel):
-                resolved_ids.append(entity.channel_id)
-            else:
-                 # (新) 适配 User, Chat, Channel 对象
-                resolved_ids.append(entity.id)
+            resolved_id = entity.id 
+            
+            # 规范化: Channel 对象 ID 是正数，需要转为 -100...
+            # Chat 对象 ID 已经是负数
+            # User 对象 ID 是正数
+            if hasattr(entity, 'is_channel') and entity.is_channel and not str(resolved_id).startswith("-100"):
+                 resolved_id = int(f"-100{resolved_id}")
+            
+            s_config.resolved_id = resolved_id # (新) 将解析的ID存回配置对象
+            resolved_ids.append(resolved_id)
+            logger.info(f"源 '{s_config.identifier}' -> 解析为 ID: {resolved_id}")
                 
         except ValueError:
-            logger.error(f"❌ 无法解析源: '{identifier}'。它似乎不是一个有效的频道/群组/用户。")
+            logger.error(f"❌ 无法解析源: '{s_config.identifier}'。它似乎不是一个有效的频道/群组/用户。")
         except errors.ChannelPrivateError:
-            logger.error(f"❌ 无法访问源: '{identifier}'。你的账号未加入该私有频道。")
+            logger.error(f"❌ 无法访问源: '{s_config.identifier}'。你的账号未加入该私有频道。")
         except Exception as e:
-            logger.error(f"❌ 解析源 '{identifier}' 时出错: {e}")
-            
-    # (新) Telethon 需要的格式是 -100...，它会自动处理
-    # 我们只需要确保 get_entity 成功即可
+            logger.error(f"❌ 解析源 '{s_config.identifier}' 时出错: {e}")
     
-    # (新) 修复：Telethon 的 NewMessage(chats=...) 需要的是 Peer* 对象
-    # 我们将在 Forwarder 核心中处理 ID 到 Peer 的转换
-    
-    # (新) 直接返回 get_entity 可以接受的原始标识符
-    # return [i for i in identifiers if i]
-    
-    # (新) 返回解析后的数字 ID
+    # (新) 返回唯一的 ID 列表
     return list(set(resolved_ids))
 
 
@@ -211,10 +206,9 @@ async def run_forwarder(config: Config):
     
     main_client = clients[0] # 第一个客户端用于监听和解析
     
-    # (新) 解析所有源标识符
+    # (新) 修复问题3：解析所有源标识符 (此函数现在会修改 config.sources)
     logger.info("正在解析所有源频道/群组...")
-    source_identifiers = [s.identifier for s in config.sources]
-    resolved_source_ids = await resolve_identifiers(main_client, source_identifiers)
+    resolved_source_ids = await resolve_identifiers(main_client, config)
     
     if not resolved_source_ids:
         logger.critical("❌ 无法解析任何源频道，请检查配置或确保账号已加入。")
@@ -348,7 +342,7 @@ async def export_dialogs(config: Config):
 
 async def reload_config_func():
     """(新) Bot 调用的热重载函数"""
-    global forwarder, link_checker, bot_client, CONFIG_PATH
+    global forwarder, link_checker, bot_client, CONFIG_PATH, clients
     
     logger.warning("🔄 收到 /reload 命令，正在热重载配置...")
     
@@ -356,6 +350,15 @@ async def reload_config_func():
         # 1. 重新加载配置文件
         new_config = load_config(CONFIG_PATH)
         
+        # (新) 修复问题3：热重载时需要重新解析标识符
+        if clients:
+            logger.info("正在重新解析源和目标标识符...")
+            await resolve_identifiers(clients[0], new_config)
+            if forwarder:
+                await forwarder.resolve_targets() # 目标也需要重载
+        else:
+            logger.error("客户端未初始化，无法解析标识符。")
+
         # 2. 重新初始化需要重载的部分
         # (注意: 客户端和监听器不能完全重启，否则会断开连接)
         

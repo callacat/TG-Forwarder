@@ -57,6 +57,7 @@ class SourceConfig(BaseModel):
     check_replies: bool = False
     replies_limit: int = 10
     forward_new_only: Optional[bool] = None
+    resolved_id: Optional[int] = Field(None, exclude=True) # (新) 修复问题3：存储解析后的ID
 
 class TargetDistributionRule(BaseModel):
     name: str 
@@ -271,10 +272,20 @@ class UltimateForwarder:
                 logger.error(f"❌ 无法解析规则 '{rule.name}' 的目标: {rule.target_identifier} - {e}")
 
 
-    # --- 数据库/状态管理 ---
+    # --- 数据库/状态管理 (修复问题1) ---
     
     def _get_progress_db_path(self) -> str:
         return "/app/data/forwarder_progress.json"
+
+    def _save_progress_db_data(self, data: Dict[str, int]):
+        """(新) 封装保存逻辑"""
+        path = self._get_progress_db_path()
+        try:
+            os.makedirs(os.path.dirname(path), exist_ok=True)
+            with open(path, 'w', encoding='utf-8') as f:
+                json.dump(data, f, indent=2)
+        except Exception as e:
+            logger.error(f"保存进度文件 {path} 失败: {e}")
 
     def _load_progress_db(self) -> Dict[str, int]:
         path = self._get_progress_db_path()
@@ -283,16 +294,13 @@ class UltimateForwarder:
                 return json.load(f)
         except (FileNotFoundError, json.JSONDecodeError):
             logger.warning(f"未找到进度文件 {path}，将创建新的。")
-            return {}
+            db = {}
+            self._save_progress_db_data(db) # (新) 立即创建文件
+            return db
 
     def _save_progress_db(self):
-        path = self._get_progress_db_path()
-        try:
-            os.makedirs(os.path.dirname(path), exist_ok=True)
-            with open(path, 'w', encoding='utf-8') as f:
-                json.dump(self.progress_db, f, indent=2)
-        except Exception as e:
-            logger.error(f"保存进度文件 {path} 失败: {e}")
+        """(新) 调用封装的保存逻辑"""
+        self._save_progress_db_data(self.progress_db)
 
     def _get_channel_progress(self, channel_id: int) -> int:
         return self.progress_db.get(str(channel_id), 0)
@@ -303,6 +311,16 @@ class UltimateForwarder:
             self.progress_db[str(channel_id)] = message_id
             self._save_progress_db()
 
+    def _save_dedup_db_data(self, data: Set[str]):
+        """(新) 封装保存逻辑"""
+        path = self.config.deduplication.db_path
+        try:
+            os.makedirs(os.path.dirname(path), exist_ok=True)
+            with open(path, 'w', encoding='utf-8') as f:
+                json.dump(list(data), f) 
+        except Exception as e:
+            logger.error(f"保存去重文件 {path} 失败: {e}")
+
     def _load_dedup_db(self) -> Set[str]:
         path = self.config.deduplication.db_path
         try:
@@ -311,16 +329,14 @@ class UltimateForwarder:
                 return set(hashes)
         except (FileNotFoundError, json.JSONDecodeError):
             logger.warning(f"未找到去重文件 {path}，将创建新的。")
-            return set()
+            db = set()
+            self._save_dedup_db_data(db) # (新) 立即创建文件
+            return db
 
     def _save_dedup_db(self):
-        path = self.config.deduplication.db_path
-        try:
-            os.makedirs(os.path.dirname(path), exist_ok=True)
-            with open(path, 'w', encoding='utf-8') as f:
-                json.dump(list(self.dedup_db), f) 
-        except Exception as e:
-            logger.error(f"保存去重文件 {path} 失败: {e}")
+        """(新) 调用封装的保存逻辑"""
+        self._save_dedup_db_data(self.dedup_db)
+    # --- 数据库/状态管理 (修复问题1 结束) ---
 
     # --- 客户端管理 ---
     
@@ -375,51 +391,45 @@ class UltimateForwarder:
     async def process_message(self, event: events.NewMessage.Event):
         message = event.message
         
+        # (新) 修复问题3：规范化 chat_id
         peer = event.chat_id
         numeric_chat_id = 0
         
         if isinstance(peer, PeerUser):
             numeric_chat_id = peer.user_id
         elif isinstance(peer, PeerChat):
-            numeric_chat_id = peer.chat_id
+            numeric_chat_id = peer.chat_id # 已经是负数
         elif isinstance(peer, PeerChannel):
             numeric_chat_id = peer.channel_id
+            # 规范化: Telethon 内部 ID 可能是 1689123047
+            # 我们需要 -1001689123047
+            if not str(numeric_chat_id).startswith("-100"):
+                 numeric_chat_id = int(f"-100{numeric_chat_id}")
         else:
-             # (新) 修复：Telethon 有时会直接返回数字 ID
              try:
                  numeric_chat_id = int(peer)
+                 # 假设裸ID > 1000000000 也是一个频道
+                 if numeric_chat_id > 1000000000 and not str(numeric_chat_id).startswith("-100"):
+                     numeric_chat_id = int(f"-100{numeric_chat_id}")
              except (ValueError, TypeError):
+                 # 这里的日志就是用户看到的 "未知类型源"
                  logger.warning(f"收到来自未知类型源 {peer} 的消息，已忽略。")
                  return
+        # --- (修复问题3 结束) ---
 
-        # --- (新) 修复源匹配逻辑 ---
-        username = event.chat.username if event.chat and hasattr(event.chat, 'username') else None
+        # --- (新) 修复问题3：源匹配逻辑 ---
         source_config = None
         
         for s in self.config.sources:
-            s_id_str = str(s.identifier)
-            
-            # 1. 按数字 ID 匹配
-            if s_id_str == str(numeric_chat_id):
+            # 直接比较解析后的 ID
+            if s.resolved_id == numeric_chat_id:
                 source_config = s
                 break
-                
-            if username:
-                # 2. 按 "@username" 匹配
-                if s_id_str == f"@{username}":
-                    source_config = s
-                    break
-                # 3. 按 "username" 匹配 (不带@)
-                if s_id_str == username:
-                    source_config = s
-                    break
-                # 4. 按 "https://t.me/username" 匹配
-                if s_id_str == f"https://t.me/{username}":
-                    source_config = s
-                    break
-        # --- 修复结束 ---
+        # --- (修复问题3 结束) ---
         
         if not source_config:
+             username = event.chat.username if event.chat and hasattr(event.chat, 'username') else None
+             # 这里的日志是用户看到的 "未配置源"
              logger.warning(f"收到来自未配置源 {numeric_chat_id} (@{username if username else 'N/A'}) 的消息，已忽略。")
              return
             
@@ -459,33 +469,25 @@ class UltimateForwarder:
             logger.error(f"处理消息 {numeric_chat_id}/{message.id} 时发生严重错误: {e}", exc_info=True)
         finally:
             logger.debug(f"--- [END] 消息 {numeric_chat_id}/{message.id} 处理完毕 ---")
+            # (新) 修复问题3：使用规范化的 ID
             self._set_channel_progress(numeric_chat_id, message.id)
 
     async def process_history(self, resolved_source_ids: List[int]):
         """处理历史消息 (仅在 `forward_new_only: false` 时调用)"""
         client = self._get_next_client() 
         
-        for source_id in resolved_source_ids:
+        for source_id in resolved_source_ids: # source_id 已经是规范化的 -100...
             source_config = None
             entity = None
             try:
-                # (新) 修复：确保 source_id 是 Telethon 接受的 Peer
+                # (新) 修复问题3：匹配逻辑
+                for s in self.config.sources:
+                    if s.resolved_id == source_id:
+                        source_config = s
+                        break
+                
                 peer = await client.get_input_entity(source_id)
                 entity = await client.get_entity(peer)
-                
-                username = getattr(entity, 'username', None)
-                if username:
-                     # (新) 同样使用扩展的匹配逻辑
-                     for s in self.config.sources:
-                         s_id_str = str(s.identifier)
-                         if s_id_str == str(source_id) or \
-                            s_id_str == f"@{username}" or \
-                            s_id_str == username or \
-                            s_id_str == f"https://t.me/{username}":
-                             source_config = s
-                             break
-                if not source_config:
-                     source_config = next((s for s in self.config.sources if str(s.identifier) == str(source_id)), None)
                      
             except Exception as e:
                 logger.error(f"历史记录：无法获取实体 {source_id}: {e}")
@@ -510,13 +512,16 @@ class UltimateForwarder:
                 # (新) 使用 peer
                 async for message in client.iter_messages(peer, offset_id=last_id, reverse=True, limit=None):
                     
-                    # (新) 修复：peer_chat 和 chat_id 需要正确设置
+                    # (新) 修复问题3：规范化 event_chat_id
                     event_chat_id = message.chat_id
+                    if hasattr(message.peer_id, 'channel_id') and not str(event_chat_id).startswith("-100"):
+                        event_chat_id = int(f"-100{event_chat_id}")
                     
                     fake_event = events.NewMessage.Event(message=message, peer_user=None, peer_chat=None, chat=None)
                     
                     # (新) 模拟 event 对象的属性
                     fake_event.chat_id = event_chat_id
+                    fake_event.peer_id = message.peer_id # (新) 传递 peer_id
                     if not fake_event.chat:
                         fake_event.chat = entity
                         

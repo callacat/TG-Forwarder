@@ -116,7 +116,7 @@ class BotService:
                 logger.error(f"运行链接检测时出错: {e}")
                 await event.reply(f"❌ 运行链接检测时出错: {e}")
 
-        # --- (新) 自动设置 Bot 命令列表 ---
+        # --- (新) 自动设置 Bot 命令列表 (修复问题2) ---
         try:
             logger.info("正在为 Bot 设置命令列表...")
             
@@ -138,20 +138,27 @@ class BotService:
             
             scope = BotCommandScopeDefault()
 
-            # 为英语用户设置
+            # (新) 1. 设置默认 (所有语言)，使用英语
+            await self.bot(SetBotCommandsRequest(
+                scope=scope,
+                lang_code="", # 空 lang_code 表示默认
+                commands=en_commands
+            ))
+
+            # (新) 2. 专门为英语用户设置 (覆盖默认)
             await self.bot(SetBotCommandsRequest(
                 scope=scope,
                 lang_code="en",
                 commands=en_commands
             ))
             
-            # 为中文用户设置
+            # (新) 3. 专门为中文用户设置 (覆盖默认)
             await self.bot(SetBotCommandsRequest(
                 scope=scope,
                 lang_code="zh",
                 commands=zh_commands
             ))
             
-            logger.info("✅ Bot 命令列表设置成功。")
+            logger.info("✅ Bot 命令列表设置成功 (默认, en, zh)。")
         except Exception as e:
             logger.warning(f"⚠️ 无法设置 Bot 命令列表: {e} (这不影响 Bot 运行)")
