@@ -6,7 +6,7 @@ import asyncio
 import httpx
 import time
 import json
-import os # (新) 导入 os，用于处理路径
+import os 
 from datetime import datetime, timezone
 from telethon import TelegramClient, events, errors
 from telethon.tl.types import MessageEntityTextUrl, MessageMediaDocument, PeerUser, PeerChat, PeerChannel
@@ -61,7 +61,6 @@ class SourceConfig(BaseModel):
 
 class TargetDistributionRule(BaseModel):
     name: str 
-    # (新) 增加 all_keywords 字段，用于 AND 逻辑
     all_keywords: List[str] = Field(default_factory=list, description="[AND] 必须 *同时* 包含列表中的所有关键词")
     any_keywords: List[str] = Field(default_factory=list, description="[OR] 包含列表中的 *任意一个* 关键词即可")
     file_types: List[str] = Field(default_factory=list, description="[OR] 匹配任意一个MIME Type") 
@@ -76,36 +75,28 @@ class TargetDistributionRule(BaseModel):
         """
         (已修改) 检查消息是否匹配此规则。
         逻辑: (all_keywords) AND (any_keywords OR file_types OR file_name_patterns)
-        
-        如果 all_keywords, any_keywords, file_types, file_name_patterns 都为空，则规则不匹配。
-        如果 all_keywords 不为空，但 [OR] 组 (any_keywords, file_types, file_name_patterns) 为空，
-        则仅当 all_keywords 匹配时，规则才匹配。
         """
         text_lower = text.lower() if text else ""
         
         # 1. 检查 [AND] all_keywords
         if self.all_keywords:
             if not all(kw.lower() in text_lower for kw in self.all_keywords):
-                return False # [AND] 检查失败，此规则不匹配
+                return False 
         
         # 2. 检查 [OR] 条件组
         or_group_matched = False
         
-        # 检查 [OR] any_keywords
         if self.any_keywords:
             if any(keyword.lower() in text_lower for keyword in self.any_keywords):
                 or_group_matched = True
         
-        # 检查 [OR] media (file_types / file_name_patterns)
         if not or_group_matched and media and isinstance(media, MessageMediaDocument):
             doc = media.document
             if doc:
-                # 检查 [OR] file_types
                 if self.file_types and doc.mime_type:
                     if any(ft.lower() in doc.mime_type.lower() for ft in self.file_types):
                         or_group_matched = True
 
-                # 检查 [OR] file_name_patterns
                 if not or_group_matched and self.file_name_patterns:
                     file_name = next((attr.file_name for attr in doc.attributes if hasattr(attr, 'file_name')), None)
                     if file_name:
@@ -114,7 +105,7 @@ class TargetDistributionRule(BaseModel):
                                 pattern = re.compile(pattern_str.replace('.', r'\.').replace('*', r'.*') + '$', re.IGNORECASE)
                                 if re.search(pattern, file_name):
                                     or_group_matched = True
-                                    break # 找到一个匹配就够了
+                                    break 
                             except re.error:
                                 logger.warning(f"规则 '{self.name}' 中的文件名模式 '{pattern_str}' 无效")
         
@@ -123,23 +114,18 @@ class TargetDistributionRule(BaseModel):
         has_or_group = bool(self.any_keywords or self.file_types or self.file_name_patterns)
 
         if has_all_keywords and not has_or_group:
-            # 只有 [AND] 规则：all_keywords 必须匹配 (在步骤1中已检查)
             return True
         elif not has_all_keywords and has_or_group:
-            # 只有 [OR] 规则：or_group 必须匹配
             return or_group_matched
         elif has_all_keywords and has_or_group:
-            # [AND] + [OR] 规则：两者都必须匹配
-            # all_keywords 已在步骤1中检查通过
             return or_group_matched
         else:
-            # 所有列表都为空，规则无效
             return False
 
 class TargetConfig(BaseModel):
     default_target: Union[int, str]
+    default_topic_id: Optional[int] = None # (新) 修复：添加此字段以匹配 config
     distribution_rules: List[TargetDistributionRule] = Field(default_factory=list)
-    
     resolved_default_target_id: Optional[int] = Field(None, exclude=True)
 
 
@@ -247,7 +233,7 @@ class UltimateForwarder:
         """(新) 热重载配置"""
         self.config = new_config
         self.ad_patterns = self._compile_patterns(new_config.ad_filter.patterns if new_config.ad_filter else [])
-        await self.resolve_targets()
+        await self.resolve_targets() # 确保目标被重新解析
         logger.info("转发器配置已热重载。")
 
     async def resolve_targets(self):
@@ -272,7 +258,7 @@ class UltimateForwarder:
                 logger.error(f"❌ 无法解析规则 '{rule.name}' 的目标: {rule.target_identifier} - {e}")
 
 
-    # --- 数据库/状态管理 (修复问题1) ---
+    # --- 数据库/状态管理 ---
     
     def _get_progress_db_path(self) -> str:
         return "/app/data/forwarder_progress.json"
@@ -336,7 +322,7 @@ class UltimateForwarder:
     def _save_dedup_db(self):
         """(新) 调用封装的保存逻辑"""
         self._save_dedup_db_data(self.dedup_db)
-    # --- 数据库/状态管理 (修复问题1 结束) ---
+    # --- 数据库/状态管理 结束 ---
 
     # --- 客户端管理 ---
     
@@ -345,8 +331,6 @@ class UltimateForwarder:
         
         while True:
             client = self.clients[self.current_client_index]
-            # --- (新) 核心修复 ---
-            # 使用我们附加的 session_name 作为唯一键
             client_key = client.session_name_for_forwarder
             
             wait_until = self.client_flood_wait.get(client_key, 0)
@@ -358,7 +342,6 @@ class UltimateForwarder:
             self.current_client_index = (self.current_client_index + 1) % len(self.clients)
             
             if self.current_client_index == start_index:
-                # (新) 修复: 使用 session_name_for_forwarder
                 all_wait_times = [self.client_flood_wait.get(c.session_name_for_forwarder, 0) for c in self.clients]
                 min_wait_time = min(all_wait_times) if all_wait_times else time.time()
                 sleep_duration = max(1.0, (min_wait_time - time.time()) + 1.0) 
@@ -370,19 +353,23 @@ class UltimateForwarder:
                 continue
 
     async def _handle_send_error(self, e: Exception, client: TelegramClient):
-        # --- (新) 核心修复 ---
         client_key = client.session_name_for_forwarder
-        client_name = client_key # 它本身就是 session_name，很适合日志
+        client_name = client_key 
 
         if isinstance(e, errors.FloodWaitError):
             wait_time = e.seconds + 5 
             logger.warning(f"客户端 {client_name} 触发 FloodWait: {wait_time} 秒。")
-            # (新) 修复: 使用 client_key 作为字典键
             self.client_flood_wait[client_key] = time.time() + wait_time
         elif isinstance(e, errors.ChatWriteForbiddenError):
             logger.error(f"客户端 {client_name} 无法写入目标频道 (权限不足)。")
         elif isinstance(e, errors.UserBannedInChannelError):
             logger.error(f"客户端 {client_name} 已被目标频道封禁。")
+        
+        # (新) 修复：捕获 'reply_to' 错误，但这个错误现在不应该发生了
+        elif isinstance(e, TypeError) and "unexpected keyword argument 'reply_to'" in str(e):
+             logger.error(f"客户端 {client_name} 转发时遇到内部代码错误: {e}")
+             logger.error("这似乎是一个 Bug，forward_messages 被错误调用。")
+        
         else:
             logger.error(f"客户端 {client_name} 转发时遇到未知错误: {e}")
 
@@ -392,29 +379,12 @@ class UltimateForwarder:
         message = event.message
         
         # (新) 修复问题3：规范化 chat_id
-        peer = event.chat_id
-        numeric_chat_id = 0
-        
-        if isinstance(peer, PeerUser):
-            numeric_chat_id = peer.user_id
-        elif isinstance(peer, PeerChat):
-            numeric_chat_id = peer.chat_id # 已经是负数
-        elif isinstance(peer, PeerChannel):
-            numeric_chat_id = peer.channel_id
-            # 规范化: Telethon 内部 ID 可能是 1689123047
-            # 我们需要 -1001689123047
-            if not str(numeric_chat_id).startswith("-100"):
-                 numeric_chat_id = int(f"-100{numeric_chat_id}")
-        else:
-             try:
-                 numeric_chat_id = int(peer)
-                 # 假设裸ID > 1000000000 也是一个频道
-                 if numeric_chat_id > 1000000000 and not str(numeric_chat_id).startswith("-100"):
-                     numeric_chat_id = int(f"-100{numeric_chat_id}")
-             except (ValueError, TypeError):
-                 # 这里的日志就是用户看到的 "未知类型源"
-                 logger.warning(f"收到来自未知类型源 {peer} 的消息，已忽略。")
-                 return
+        try:
+             # (新) 使用 Telethon 1.25+ 的 get_peer_id 方法
+             numeric_chat_id = events.utils.get_peer_id(event.chat_id)
+        except Exception:
+             logger.warning(f"收到来自未知类型源 {event.chat_id} 的消息，已忽略。")
+             return
         # --- (修复问题3 结束) ---
 
         # --- (新) 修复问题3：源匹配逻辑 ---
@@ -429,7 +399,6 @@ class UltimateForwarder:
         
         if not source_config:
              username = event.chat.username if event.chat and hasattr(event.chat, 'username') else None
-             # 这里的日志是用户看到的 "未配置源"
              logger.warning(f"收到来自未配置源 {numeric_chat_id} (@{username if username else 'N/A'}) 的消息，已忽略。")
              return
             
@@ -512,16 +481,15 @@ class UltimateForwarder:
                 # (新) 使用 peer
                 async for message in client.iter_messages(peer, offset_id=last_id, reverse=True, limit=None):
                     
-                    # (新) 修复问题3：规范化 event_chat_id
-                    event_chat_id = message.chat_id
-                    if hasattr(message.peer_id, 'channel_id') and not str(event_chat_id).startswith("-100"):
-                        event_chat_id = int(f"-100{event_chat_id}")
+                    try:
+                        event_chat_id = events.utils.get_peer_id(message.peer_id)
+                    except Exception:
+                        continue # 跳过无法解析的消息
                     
                     fake_event = events.NewMessage.Event(message=message, peer_user=None, peer_chat=None, chat=None)
                     
-                    # (新) 模拟 event 对象的属性
                     fake_event.chat_id = event_chat_id
-                    fake_event.peer_id = message.peer_id # (新) 传递 peer_id
+                    fake_event.peer_id = message.peer_id 
                     if not fake_event.chat:
                         fake_event.chat = entity
                         
@@ -544,8 +512,6 @@ class UltimateForwarder:
             "media": message.media,
             "hash_source": message.id 
         })
-
-        # TODO: 实现 tgforwarder 的高级链接提取 (check_hyperlinks, check_bots, check_replies)
         
         return results
 
@@ -666,7 +632,8 @@ class UltimateForwarder:
                     return rule.resolved_target_id, rule.topic_id
                     
         logger.debug("未命中分发规则，使用默认目标。")
-        return self.config.targets.resolved_default_target_id, None
+        # (新) 修复：返回默认 topic_id
+        return self.config.targets.resolved_default_target_id, self.config.targets.default_topic_id
 
     async def _send_message(self, original_message: Any, message_data: Dict[str, Any], target_id: int, topic_id: Optional[int]):
         
@@ -674,10 +641,9 @@ class UltimateForwarder:
         media = message_data['media']
         mode = self.config.forwarding.mode
         
-        send_kwargs = {
-            "reply_to": topic_id
-        }
-
+        # (新) 修复：'reply_to' 是 'send_message' (copy) 用的
+        # 'forward_messages' (forward) 应该用 'top_msg_id'
+        
         while True:
             client = self._get_next_client()
             try:
@@ -686,13 +652,13 @@ class UltimateForwarder:
                         target_id,
                         message=text,
                         file=media,
-                        **send_kwargs
+                        reply_to=topic_id # (新) 直接传递
                     )
-                else:
+                else: # 'forward' 模式
                     await client.forward_messages(
                         target_id,
                         messages=original_message,
-                        **send_kwargs
+                        top_msg_id=topic_id # (新) 修复：使用 top_msg_id
                     )
                 
                 logger.debug(f"客户端 {client.session.session_id[:5]}... 发送成功。")
