@@ -7,6 +7,10 @@ WORKDIR /app
 # 复制依赖文件
 COPY requirements.txt ./
 
+# (新) 修复：在安装依赖之前，先升级 pip 本身
+# 这是一个关键步骤，用于解决旧版 pip 无法正确解析新包版本的问题
+RUN pip install --no-cache-dir --upgrade pip
+
 # 安装依赖
 RUN pip install --no-cache-dir -r requirements.txt
 
