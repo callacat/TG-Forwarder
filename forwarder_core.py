@@ -329,8 +329,9 @@ class UltimateForwarder:
         
         while True:
             client = self.clients[self.current_client_index]
-            # (新) 修复: .session_id -> .path
-            client_key = client.session.path
+            # --- (新) 核心修复 ---
+            # 使用我们附加的 session_name 作为唯一键
+            client_key = client.session_name_for_forwarder
             
             wait_until = self.client_flood_wait.get(client_key, 0)
             
@@ -341,8 +342,8 @@ class UltimateForwarder:
             self.current_client_index = (self.current_client_index + 1) % len(self.clients)
             
             if self.current_client_index == start_index:
-                # (新) 修复: .session_id -> .path
-                all_wait_times = [self.client_flood_wait.get(c.session.path, 0) for c in self.clients]
+                # (新) 修复: 使用 session_name_for_forwarder
+                all_wait_times = [self.client_flood_wait.get(c.session_name_for_forwarder, 0) for c in self.clients]
                 min_wait_time = min(all_wait_times) if all_wait_times else time.time()
                 sleep_duration = max(1.0, (min_wait_time - time.time()) + 1.0) 
                 
@@ -353,9 +354,9 @@ class UltimateForwarder:
                 continue
 
     async def _handle_send_error(self, e: Exception, client: TelegramClient):
-        # (新) 修复: .session_id -> .path
-        client_key = client.session.path
-        client_name = os.path.basename(client_key) # (新) 用于日志
+        # --- (新) 核心修复 ---
+        client_key = client.session_name_for_forwarder
+        client_name = client_key # 它本身就是 session_name，很适合日志
 
         if isinstance(e, errors.FloodWaitError):
             wait_time = e.seconds + 5 

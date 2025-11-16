@@ -9,6 +9,10 @@ from telethon import TelegramClient, events, errors
 from telethon.tl.types import PeerUser, PeerChat, PeerChannel
 from typing import List # <--- 添加了这一行来修复错误
 
+# (新) 导入定时任务
+from apscheduler.schedulers.asyncio import AsyncIOScheduler
+from apscheduler.triggers.cron import CronTrigger
+
 # 假设 forwarder_core 和 link_checker 在同一目录下
 from forwarder_core import UltimateForwarder, Config, AccountConfig
 from link_checker import LinkChecker
@@ -86,6 +90,11 @@ async def initialize_clients(config: Config):
                 acc.api_hash,
                 proxy=config.proxy.get_telethon_proxy() if config.proxy else None
             )
+            
+            # --- (新) 核心修复 ---
+            # 将 session_name 附加到 client 对象上，以便全局访问
+            client.session_name_for_forwarder = acc.session_name
+            # --- 修复结束 ---
             
             logger.info(f"正在连接账号: {acc.session_name}...")
 
@@ -229,7 +238,22 @@ async def run_forwarder(config: Config):
     logger.info("正在启动 Bot 服务...")
     await initialize_bot(config)
 
-    # (新) 步骤 3: (可选) 处理历史消息
+    # (新) 步骤 3: 启动定时任务 (Link Checker)
+    if config.link_checker and config.link_checker.enabled:
+        if not link_checker: # 如果 Bot 没启动，单独初始化
+             link_checker = LinkChecker(config, main_client)
+        
+        try:
+            # (新) 使用 apscheduler 实现 cron 定时任务
+            trigger = CronTrigger.from_crontab(config.link_checker.schedule)
+            scheduler = AsyncIOScheduler(timezone="UTC")
+            scheduler.add_job(link_checker.run, trigger, name="run_link_checker_job")
+            scheduler.start()
+            logger.info(f"✅ 链接检测器定时任务已启动 (Cron: {config.link_checker.schedule} UTC)。")
+        except ValueError as e:
+            logger.warning(f"⚠️ 链接检测器 cron 表达式 '{config.link_checker.schedule}' 无效，定时任务未启动: {e}")
+
+    # (新) 步骤 4: (可选) 处理历史消息
     if not config.forwarding.forward_new_only:
         logger.info("配置了 `forward_new_only: false`，开始扫描历史消息 (这可能需要一些时间)...")
         # (新) 传入已解析的 ID
@@ -238,7 +262,7 @@ async def run_forwarder(config: Config):
     else:
         logger.info("`forward_new_only: true`，跳过历史消息扫描。")
 
-    # (新) 步骤 4: 运行并等待
+    # (新) 步骤 5: 运行并等待
     logger.info(f"🚀 终极转发器已启动。正在监听 {len(resolved_source_ids)} 个源。")
     
     # (新) 如果 Bot 也在运行，使用 asyncio.gather

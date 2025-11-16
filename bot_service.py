@@ -58,18 +58,18 @@ class BotService:
             uptime = datetime.now(timezone.utc) - self.start_time
             uptime_str = str(uptime).split('.')[0] # 移除微秒
 
-            # (新) 修复: client.session.session_id -> client.session.path
+            # --- (新) 核心修复 ---
             client_status = "未知"
             if self.forwarder and self.forwarder.clients:
                 client_count = len(self.forwarder.clients)
                 
                 flood_clients = []
                 for client in self.forwarder.clients:
-                    # (新) 使用 .path 作为唯一的 session key
-                    session_key = client.session.path 
+                    # (新) 使用我们附加的 session_name 作为唯一键
+                    session_key = client.session_name_for_forwarder 
                     if self.forwarder.client_flood_wait.get(session_key, 0) > time.time():
-                        # (新) 显示文件名，而不是整个路径
-                        flood_clients.append(os.path.basename(session_key))
+                        # (新) 直接附加 session_key (即 session_name)
+                        flood_clients.append(session_key)
 
                 if flood_clients:
                     client_status = f"⚠️ {client_count} 个客户端运行中 ( {len(flood_clients)} 个正在 FloodWait: {', '.join(flood_clients)} )"

@@ -3,3 +3,4 @@ pydantic
 pyyaml
 httpx
 beautifulsoup4
+apscheduler
