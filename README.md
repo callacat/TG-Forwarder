@@ -7,10 +7,10 @@
 * **多账号支持**: 使用多个账号轮换转发，有效规避 FloodWait 和账号限制。
 
 * **多源监控 (已支持)**: 可在 `config.yaml` 中配置任意多个源频道。
-* 
-* 灵活的标识符: 源和目标均支持数字ID (-100...)、用户名 (@username) 和链接 (https://t.me/...)。
+  
+* **灵活的标识符**: 源和目标均支持数字ID (-100...)、用户名 (@username) 和链接 (https://t.me/...)。
 
-* Bot 交互控制:
+* **Bot 交互控制**:
 
   *  通过私聊 Bot 实时管理转发器。
 
@@ -68,21 +68,21 @@
 
 1. **准备配置文件**:
 
-   * 在你的服务器上创建一个目录，例如` ~/tg_forwarder`。
+    * 在你的服务器上创建一个目录，例如` ~/tg_forwarder`。
 
-   * `mkdir -p ~/tg_forwarder/data` (此目录用于存放 `.session` 登录文件和数据库)
+    * `mkdir -p ~/tg_forwarder/data` (此目录用于存放 `.session` 登录文件和数据库)
 
-   * 将 `config_template.yaml` 复制到该目录，并重命名为 `config.yaml`。`
+    * 将 `config_template.yaml` 复制到该目录，并重命名为 `config.yaml`。`
 
 2. **创建你的 Bot**:
 
-  *  私聊 @BotFather。
+     *  私聊 @BotFather。
 
-  *  发送 `/newbot`，按提示创建你的 Bot，获取 `bot_token`。
+     *  发送 `/newbot`，按提示创建你的 Bot，获取 `bot_token`。
 
-  *  私聊 @userinfobot。
+     *  私聊 @userinfobot。
 
-  *  查看回复，获取你自己的 `Id` (一串数字)。
+     *  查看回复，获取你自己的 `Id` (一串数字)。
 
 3. **编辑** `config.yaml`:
 
@@ -95,7 +95,7 @@
 
      * `targets`: 填入默认的目标频道/群组 ID。
 
-3. **运行 Docker 容器**:
+4. **运行 Docker 容器**:
 
     * 运行以下命令启动容器。
 
@@ -145,43 +145,43 @@
 
 6. 运行 (首次运行会要求在终端登录):
 
-  * 启动转发: `python ultimate_forwarder.py run`
+     * 启动转发: `python ultimate_forwarder.py run`
 
-  * 检测链接: `python ultimate_forwarder.py checklinks`
+     * 检测链接: `python ultimate_forwarder.py checklinks`
 
-  * 导出ID: `python ultimate_forwarder.py export`
+     * 导出ID: `python ultimate_forwarder.py export`
 
 # ⚙️ 配置文件详解 (config.yaml)
 
 `accounts`**(登录账号)**
 你必须提供 `session_name`：
 
-  * `session_name`: (用于 Docker / 本地) 指定一个会话文件名，程序启动时会要求你交互式登录。
+     * `session_name`: (用于 Docker / 本地) 指定一个会话文件名，程序启动时会要求你交互式登录。
 
 `sources` **(监控源)**
 `id` 必须是数字ID (运行 `export` 模式获取)`。sources` 是一个列表，你可以添加任意多个。
 
 `targets` **(转发目标)**
-* 目标可以是频道或群组。
+   * 目标可以是频道或群组。
 
-* `default_target`: 必需，未命中任何分发规则时的默认目标，支持数字ID、@username 或 https://t.me/link。
+   * `default_target`: 必需，未命中任何分发规则时的默认目标，支持数字ID、@username 或 https://t.me/link。
 
-  *  匹配逻辑: `(满足所有 all_keywords) AND (满足任一 any_keywords OR 满足任一 file_types OR 满足任一 file_name_patterns)`
+     *  匹配逻辑: `(满足所有 all_keywords) AND (满足任一 any_keywords OR 满足任一 file_types OR 满足任一 file_name_patterns)`
 
-  *  `all_keywords`: [AND] 消息必须同时包含这里的所有词。
+     *  `all_keywords`: [AND] 消息必须同时包含这里的所有词。
 
-  *  `any_keywords`: [OR] 消息包含这里任意一个词即可。
+     *  `any_keywords`: [OR] 消息包含这里任意一个词即可。
 
-  *  `file_types`: [OR] 匹配文件的 MIME Type (例如: "video/mp4")。
+     *  `file_types`: [OR] 匹配文件的 MIME Type (例如: "video/mp4")。
 
-  *  `file_name_patterns`: [OR] 匹配文件名 (例如: "*.mkv", "1080p")。
+     *  `file_name_patterns`: [OR] 匹配文件名 (例如: "*.mkv", "1080p")。
 
-  *  `topic_id`: 目标话题 ID。如果目标是普通频道或群组，省略或设为 null。
+     *  `topic_id`: 目标话题 ID。如果目标是普通频道或群组，省略或设为 null。
 
 `forwarding` **(转发行为)**
-  * `mode: "copy"`: 推荐。可以突破源频道"禁止转发"的限制。
+     * `mode: "copy"`: 推荐。可以突破源频道"禁止转发"的限制。
 
-  * `forward_new_only: true`: 推荐。`true` 表示只处理新消息；`false` 表示会从头扫描所有源频道的历史消息。
+     * `forward_new_only: true`: 推荐。`true` 表示只处理新消息；`false` 表示会从头扫描所有源频道的历史消息。
 
 ## 过滤器逻辑 (重要)
 
@@ -219,7 +219,7 @@
 
 2. **检查** `docker-publish.yml`:
 
-       * `tags` 已设置为 `${{ secrets.DOCKER_USERNAME }}/tgf:latest` 。
+    *  `tags` 已设置为 `${{ secrets.DOCKER_USERNAME }}/tgf:latest` 。
 
 3. **推送代码**:
 
