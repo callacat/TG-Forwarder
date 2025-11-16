@@ -98,13 +98,28 @@ async def initialize_clients(config: Config):
             
             logger.info(f"正在连接账号: {acc.session_name}...")
 
-            if not await client.connect() or not await client.is_user_authorized():
-                logger.warning(f"账号 {acc.session_name} 未登录。")
+            # (新) 修复问题2：只在会话文件不存在时显示登录提示
+            session_file_path = f"{session_path}.session"
+            if not os.path.exists(session_file_path):
+                logger.warning(f"未找到会话文件 {session_file_path}。")
                 logger.warning("---")
                 logger.warning("程序将等待你输入手机号、验证码和两步验证密码。")
                 logger.warning("!!! (重要) 如果你使用 DOCKER, 你必须现在打开 *另一个* 终端并运行: !!!")
                 logger.warning(f"    docker attach {DOCKER_CONTAINER_NAME}")
                 logger.warning("---")
+            else:
+                logger.info(f"检测到会话文件 {session_file_path}，尝试自动登录...")
+
+            # (新) 移除旧的、有问题的检查:
+            # if not await client.connect() or not await client.is_user_authorized():
+            
+            # (新) 先 connect()
+            if not await client.connect():
+                 logger.warning(f"账号 {acc.session_name} 连接失败。")
+                 # 打印登录提示，以防万一
+                 if not os.path.exists(session_file_path): # (避免重复)
+                    logger.warning(f"账号 {acc.session_name} 未登录。")
+                    logger.warning(f"请在 (docker attach {DOCKER_CONTAINER_NAME}) 中登录。")
             
             await client.start()
             

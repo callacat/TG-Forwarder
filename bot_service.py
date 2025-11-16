@@ -159,6 +159,20 @@ class BotService:
                 commands=zh_commands
             ))
             
-            logger.info("✅ Bot 命令列表设置成功 (默认, en, zh)。")
+            # (新) 4. 修复问题1：添加简体中文 (zh-hans)
+            await self.bot(SetBotCommandsRequest(
+                scope=scope,
+                lang_code="zh-hans",
+                commands=zh_commands
+            ))
+            
+            # (新) 5. 修复问题1：添加繁体中文 (zh-hant)
+            await self.bot(SetBotCommandsRequest(
+                scope=scope,
+                lang_code="zh-hant",
+                commands=zh_commands
+            ))
+            
+            logger.info("✅ Bot 命令列表设置成功 (默认, en, zh, zh-hans, zh-hant)。")
         except Exception as e:
             logger.warning(f"⚠️ 无法设置 Bot 命令列表: {e} (这不影响 Bot 运行)")
