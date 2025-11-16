@@ -5,14 +5,13 @@ import sys
 import os
 import asyncio # <--- 添加这一行
 from telethon import TelegramClient, events, errors
-# from telethon.sessions import Session # <--- 移除这个导入
 from telethon.tl.types import PeerUser, PeerChat, PeerChannel
-from typing import List # <--- 添加了这一行来修复错误
-# (新) 修复问题1：导入 Channel 和 Chat 类型
-from telethon.tl.types import Channel, Chat 
+from telethon.tl.types import Channel, Chat # (新) 修复问题1：导入 Channel 和 Chat 类型
+from typing import List 
 
 # (新) 导入定时任务
-from apscheduler.schedulers.asyncio import AsyncIOScheduler
+# (新) 修复：apscheduler v4.x 更改了导入路径
+from apscheduler.schedulers.async_ import AsyncIOScheduler 
 from apscheduler.triggers.cron import CronTrigger
 
 # 假设 forwarder_core 和 link_checker 在同一目录下
@@ -87,7 +86,7 @@ async def initialize_clients(config: Config):
             session_identifier = f"SessionFile ({acc.session_name})"
             
             client = TelegramClient(
-                session_path, # <--- 修复: 直接传递路径字符串，而不是 Session(session_path)
+                session_path, 
                 acc.api_id,
                 acc.api_hash,
                 proxy=config.proxy.get_telethon_proxy() if config.proxy else None
@@ -111,11 +110,7 @@ async def initialize_clients(config: Config):
                 logger.warning("---")
             else:
                 logger.info(f"检测到会话文件 {session_file_path}，尝试自动登录...")
-
-            # (新) 移除旧的、有问题的检查:
-            # if not await client.connect() or not await client.is_user_authorized():
             
-            # (新) 先 connect()
             if not await client.connect():
                  logger.warning(f"账号 {acc.session_name} 连接失败。")
                  # 打印登录提示，以防万一
@@ -159,7 +154,7 @@ async def initialize_bot(config: Config):
     try:
         # Bot 使用内存会话
         bot_client = TelegramClient(
-            None, # <--- 修复: 传递 None 来使用内存会话，而不是 Session(None)
+            None, 
             config.accounts[0].api_id, # (新) Bot 也需要 API ID/Hash
             config.accounts[0].api_hash,
             proxy=config.proxy.get_telethon_proxy() if config.proxy else None
@@ -244,6 +239,9 @@ async def run_forwarder(config: Config):
     
     # 实例化核心转发器
     forwarder = UltimateForwarder(config, clients)
+    
+    # (新) 修复：在注册处理器之前，先解析目标
+    await forwarder.resolve_targets()
     
     # 1. 注册新消息处理器
     logger.info("注册新消息事件处理器...")
@@ -381,17 +379,12 @@ async def reload_config_func():
             logger.info("正在重新解析源和目标标识符...")
             await resolve_identifiers(clients[0], new_config)
             if forwarder:
-                await forwarder.resolve_targets() # 目标也需要重载
+                # (新) 确保 forwarder 也重载目标
+                await forwarder.reload(new_config) 
+            else:
+                logger.error("转发器未初始化，无法热重载。")
         else:
             logger.error("客户端未初始化，无法解析标识符。")
-
-        # 2. 重新初始化需要重载的部分
-        # (注意: 客户端和监听器不能完全重启，否则会断开连接)
-        
-        # 2a. 重载转发器 (它持有所有过滤/分发规则)
-        if forwarder:
-            await forwarder.reload(new_config)
-            logger.info("✅ 转发器规则已热重载。")
 
         # 2b. 重载链接检测器
         if link_checker:
@@ -399,11 +392,8 @@ async def reload_config_func():
             logger.info("✅ 链接检测器配置已热重载。")
 
         # 2c. 重载 Bot (主要是 admin_user_ids)
-        if bot_client and bot_client.is_connected():
-             # 简单起见，BotService 内部会重新加载
-             # 我们只需要确保 BotService 实例能拿到新 config
-             pass
-        
+        # BotService 在每次调用 is_admin 时都会重新读取 config，所以不需要显式重载
+
         logger.warning("✅ 配置热重载完毕。")
         return "✅ 配置热重载完毕。"
     except Exception as e:

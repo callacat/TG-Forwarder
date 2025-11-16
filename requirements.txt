@@ -1,6 +1,6 @@
-telethon>=1.42
-pydantic>=2.12.4
-pyyaml>=6.0.3
-httpx>=0.28.1
-beautifulsoup4>=4.12.2
-apscheduler>=4.0.0a6
+telethon>=1.34.0
+pydantic>=2.0.0
+pyyaml>=6.0
+httpx>=0.27.0
+beautifulsoup4>=4.12.0a
+pscheduler>=4.0.0
