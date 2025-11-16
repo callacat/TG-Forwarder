@@ -378,14 +378,27 @@ class UltimateForwarder:
     async def process_message(self, event: events.NewMessage.Event):
         message = event.message
         
-        # (新) 修复问题3：规范化 chat_id
-        try:
-             # (新) 使用 Telethon 1.25+ 的 get_peer_id 方法
-             numeric_chat_id = events.utils.get_peer_id(event.chat_id)
-        except Exception:
-             logger.warning(f"收到来自未知类型源 {event.chat_id} 的消息，已忽略。")
-             return
-        # --- (修复问题3 结束) ---
+        # (新) 修复：重写 chat_id 解析逻辑以防止崩溃
+        if isinstance(event.chat_id, (int)):
+            # 如果 event.chat_id 已经是一个整数 (如 -1002400173595)，
+            # 直接使用它，跳过 get_peer_id()，因为它可能在这种情况下崩溃
+            numeric_chat_id = event.chat_id
+        else:
+            try:
+                 # 否则 (如果它是一个 PeerChannel/PeerChat 对象), 
+                 # 我们才使用 get_peer_id() 来解析
+                 numeric_chat_id = events.utils.get_peer_id(event.chat_id)
+            except Exception:
+                 # 这个日志现在只会在 Peer 对象*真的*无法解析时触发
+                 logger.warning(f"收到来自未知类型源 {event.chat_id} 的消息，已忽略。")
+                 return
+        
+        # (新) 规范化保险：确保频道 ID 总是 -100...
+        # 无论它是来自 get_peer_id 还是原始 int
+        if numeric_chat_id > 1000000000 and not str(numeric_chat_id).startswith("-100"):
+            numeric_chat_id = int(f"-100{numeric_chat_id}")
+        
+        # --- (修复结束) ---
 
         # --- (新) 修复问题3：源匹配逻辑 ---
         source_config = None
