@@ -1,16 +1,9 @@
-import argparse
-import yaml
-import sys
-import os
-from telethon import TelegramClient, events, errors
-from telethon.sessions import Session # <--- (这一行将在下面被移除)
-from telethon.tl.types import PeerUser, PeerChat, PeerChannel
-from typing import List # <--- 添加了这一行来修复错误
 import logging
 import argparse
 import yaml
 import sys
 import os
+import asyncio # <--- 添加这一行
 from telethon import TelegramClient, events, errors
 # from telethon.sessions import Session # <--- 移除这个导入
 from telethon.tl.types import PeerUser, PeerChat, PeerChannel
