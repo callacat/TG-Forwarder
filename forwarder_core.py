@@ -11,7 +11,6 @@ from datetime import datetime, timezone
 from telethon import TelegramClient, events, errors
 from telethon.tl.types import Message, MessageEntityTextUrl, MessageMediaDocument, PeerUser, PeerChat, PeerChannel
 from telethon.tl.types import Channel, Chat
-# (新) 修复 v5.2：导入 MessageMediaWebPage
 from telethon.tl.types import MessageMediaWebPage
 
 # --- 类型提示 ---
@@ -141,6 +140,7 @@ class ForwardingConfig(BaseModel):
     mode: str = "forward" 
     forward_new_only: bool = True 
     mark_as_read: bool = False
+    mark_target_as_read: bool = False # (新) v5.3：添加目标已读选项
     
     @field_validator('mode')
     def check_mode(cls, v):
@@ -634,9 +634,7 @@ class UltimateForwarder:
         msg_hash = self._get_message_hash(message_data)
         if msg_hash:
             self.dedup_db.add(msg_hash)
-            # (新) 修复 v5.2：修复致命的拼写错误
-            # self._save_db_db() # <--- (旧的错误代码 v4.9)
-            self._save_dedup_db() # <--- (新的正确代码 v5.2)
+            self._save_dedup_db() 
 
     def _find_target(self, text: str, media: Any) -> Tuple[Optional[int], Optional[int]]:
         """
@@ -665,7 +663,6 @@ class UltimateForwarder:
         
         send_kwargs = {}
         if topic_id:
-            # 两种模式都使用 reply_to
             send_kwargs["reply_to"] = topic_id
 
         while True:
@@ -673,53 +670,48 @@ class UltimateForwarder:
             try:
                 if mode == 'copy':
                     
-                    # (新) 修复 v5.2：智能文件/格式检测
                     media_to_send = None
                     is_real_file = False
                     
                     if isinstance(original_message, list):
-                        # 相册
                         media_to_send = [msg.media for msg in original_message if msg.media]
                         is_real_file = True 
                     elif isinstance(original_message, Message):
-                        # 单条消息
                         media = original_message.media
                         if media and not isinstance(media, MessageMediaWebPage):
-                            # 这是 Photo, Document, Video 等
                             is_real_file = True
                             media_to_send = media
-                        # else:
-                            # 1. media is None (纯文本)
-                            # 2. media is MessageMediaWebPage (带链接预览的纯文本)
-                            # 在这两种情况下, is_real_file 都是 False
                     
                     
                     if is_real_file:
-                        # 1. 有媒体文件：发送时不使用 parse_mode，避免崩溃
                         await client.send_message(
                             target_id,
-                            message=text,            # 替换后的文本
-                            file=media_to_send,      # 媒体
-                            # 不带 parse_mode
+                            message=text,            
+                            file=media_to_send,      
                             **send_kwargs
                         )
                     else:
-                        # 2. 纯文本 (或带链接预览)：安全地使用 parse_mode='md' 来渲染链接
                         await client.send_message(
                             target_id,
-                            message=text,            # 替换后的文本
-                            file=None,               # 确保 file 为 None
+                            message=text,            
+                            file=None,               
                             parse_mode='md',         
                             **send_kwargs
                         )
                 else:
-                    # 转发模式天然支持列表
                     await client.forward_messages(
                         target_id,
                         messages=original_message, 
                         **send_kwargs
                     )
                 
+                # (新) v5.3：标记目标为已读
+                if self.config.forwarding.mark_target_as_read:
+                    try:
+                        await client.mark_read(target_id)
+                    except Exception as e:
+                        logger.debug(f"将目标 {target_id} 标记为已读失败: {e}")
+
                 logger.debug(f"客户端 {client.session_name_for_forwarder} 发送成功。")
                 return 
 
@@ -731,16 +723,13 @@ class UltimateForwarder:
                     try:
                         # 尝试不带 topic_id 再次发送
                         if mode == 'copy':
-                            # (新) 修复 v5.2：在重试时也应用智能 Markdown
                             if is_real_file:
-                                # 1. 有媒体：不带 parse_mode
                                 await client.send_message(
                                     target_id, 
                                     message=text, 
                                     file=media_to_send
                                 )
                             else:
-                                # 2. 纯文本：带 parse_mode
                                 await client.send_message(
                                     target_id, 
                                     message=text, 
@@ -749,6 +738,14 @@ class UltimateForwarder:
                                 )
                         else:
                             await client.forward_messages(target_id, messages=original_message)
+                        
+                        # (新) v5.3：标记目标为已读 (重试成功时)
+                        if self.config.forwarding.mark_target_as_read:
+                            try:
+                                await client.mark_read(target_id)
+                            except Exception as e:
+                                logger.debug(f"将目标 {target_id} 标记为已读失败: {e}")
+
                         return # 重试成功
                     except Exception as e2:
                         logger.error(f"不带 topic_id 重试失败: {e2}")
