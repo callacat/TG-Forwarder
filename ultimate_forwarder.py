@@ -7,6 +7,7 @@ import os
 from telethon import TelegramClient, events, errors
 from telethon.sessions import Session
 from telethon.tl.types import PeerUser, PeerChat, PeerChannel
+from typing import List # <--- 添加了这一行来修复错误
 
 # 假设 forwarder_core 和 link_checker 在同一目录下
 from forwarder_core import UltimateForwarder, Config, AccountConfig
