@@ -10,8 +10,8 @@ from telethon.tl.types import Channel, Chat # (新) 修复问题1：导入 Chann
 from typing import List 
 
 # (新) 导入定时任务
-# (新) 修复：apscheduler v4.x 更改了导入路径
-from apscheduler.schedulers.async_ import AsyncIOScheduler 
+# (新) 修复：回退到 apscheduler v3 (稳定版) 的导入路径
+from apscheduler.schedulers.asyncio import AsyncIOScheduler 
 from apscheduler.triggers.cron import CronTrigger
 
 # 假设 forwarder_core 和 link_checker 在同一目录下
