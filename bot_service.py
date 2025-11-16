@@ -10,7 +10,14 @@ from forwarder_core import Config # (新)
 from link_checker import LinkChecker # (新)
 # (新) 导入 BotCommand 相关
 from telethon.tl.functions.bots import SetBotCommandsRequest
-from telethon.tl.types import BotCommand, BotCommandScopeDefault
+# (新) 修复：导入所有需要的 Scope 类型
+from telethon.tl.types import (
+    BotCommand, 
+    BotCommandScopeDefault, 
+    BotCommandScopeAllPrivateChats,
+    BotCommandScopeAllGroupChats,
+    BotCommandScopeAllChatAdministrators
+)
 
 logger = logging.getLogger(__name__)
 
@@ -32,75 +39,6 @@ class BotService:
         return True
 
     async def register_commands(self):
-        """注册所有 Bot 命令处理程序"""
-# ... (handler code) ...
-        # --- (新) 自动设置 Bot 命令列表 (修复问题2) ---
-        try:
-            logger.info("正在为 Bot 设置命令列表...")
-            
-            # 英文命令
-            en_commands = [
-                BotCommand(command="start", description="Show welcome message and help"),
-                BotCommand(command="status", description="Check service running status"),
-                BotCommand(command="reload", description="Reload the config.yaml file"),
-                BotCommand(command="run_checklinks", description="Manually trigger a link check")
-            ]
-            
-            # 中文命令
-            zh_commands = [
-                BotCommand(command="start", description="显示欢迎和帮助信息"),
-                BotCommand(command="status", description="查看服务运行状态"),
-                BotCommand(command="reload", description="热重载 config.yaml 配置文件"),
-                BotCommand(command="run_checklinks", description="手动触发一次失效链接检测")
-            ]
-            
-            # (新) 修复：定义要设置的两个作用域
-            scopes_to_set = [
-                (BotCommandScopeDefault(), "Default (默认)"),
-                (BotCommandScopeAllPrivateChats(), "All Private Chats (所有私聊)")
-            ]
-            
-            for scope, scope_name in scopes_to_set:
-                logger.info(f"--- 正在设置 {scope_name} 作用域的命令 ---")
-                
-                # (新) 1. 设置默认 (所有语言)，使用英语
-                await self.bot(SetBotCommandsRequest(
-                    scope=scope,
-                    lang_code="", # 空 lang_code 表示默认
-                    commands=en_commands
-                ))
-
-                # (新) 2. 专门为英语用户设置 (覆盖默认)
-                await self.bot(SetBotCommandsRequest(
-                    scope=scope,
-                    lang_code="en",
-                    commands=en_commands
-                ))
-                
-                # (新) 3. 专门为中文用户设置 (覆盖默认)
-                await self.bot(SetBotCommandsRequest(
-                    scope=scope,
-                    lang_code="zh",
-                    commands=zh_commands
-                ))
-                
-                # (新) 4. 修复问题1：添加简体中文 (zh-hans)
-                await self.bot(SetBotCommandsRequest(
-                    scope=scope,
-                    lang_code="zh-hans",
-                    commands=zh_commands
-                ))
-                
-                # (新) 5. 修复问题1：添加繁体中文 (zh-hant)
-                await self.bot(SetBotCommandsRequest(
-                    scope=scope,
-                    lang_code="zh-hant",
-                    commands=zh_commands
-                ))
-
-            logger.info("✅ Bot 命令列表设置成功 (Default + AllPrivateChats)。")
-        except Exception as e:
-            logger.warning(f"⚠️ 无法设置 Bot 命令列表: {e} (这不影响 Bot 运行)")
         """注册所有 Bot 命令处理程序"""
 
         # --- /start ---
@@ -185,7 +123,7 @@ class BotService:
                 logger.error(f"运行链接检测时出错: {e}")
                 await event.reply(f"❌ 运行链接检测时出错: {e}")
 
-        # --- (新) 自动设置 Bot 命令列表 (修复问题2) ---
+        # --- (新) 自动设置 Bot 命令列表 (修复问题1, 2, 3) ---
         try:
             logger.info("正在为 Bot 设置命令列表...")
             
@@ -205,43 +143,43 @@ class BotService:
                 BotCommand(command="run_checklinks", description="手动触发一次失效链接检测")
             ]
             
-            scope = BotCommandScopeDefault()
+            # (新) 修复问题1：定义所有三个开关 + 默认
+            scopes_to_set = [
+                (BotCommandScopeDefault(), "Default (默认)"),
+                (BotCommandScopeAllPrivateChats(), "All Private Chats (所有私聊)"),
+                (BotCommandScopeAllGroupChats(), "All Group Chats (所有群组)"),
+                (BotCommandScopeAllChatAdministrators(), "All Group Admins (所有群组管理员)")
+            ]
+            
+            for scope, scope_name in scopes_to_set:
+                logger.info(f"--- 正在设置 {scope_name} 作用域的命令 ---")
+                
+                # 1. 设置默认 (所有语言)，使用英语
+                # lang_code="" 是必须的，作为回退
+                await self.bot(SetBotCommandsRequest(
+                    scope=scope,
+                    lang_code="", # 空 lang_code 表示默认
+                    commands=en_commands
+                ))
 
-            # (新) 1. 设置默认 (所有语言)，使用英语
-            await self.bot(SetBotCommandsRequest(
-                scope=scope,
-                lang_code="", # 空 lang_code 表示默认
-                commands=en_commands
-            ))
+                # 2. 专门为英语用户设置 (覆盖默认)
+                await self.bot(SetBotCommandsRequest(
+                    scope=scope,
+                    lang_code="en",
+                    commands=en_commands
+                ))
+                
+                # 3. 专门为中文用户设置 (覆盖默认)
+                # (新) 修复问题2：只使用 "zh"，因为 "zh-hans" 是无效的
+                await self.bot(SetBotCommandsRequest(
+                    scope=scope,
+                    lang_code="zh",
+                    commands=zh_commands
+                ))
+                
+                # (新) 修复问题2：移除无效的 "zh-hans" 和 "zh-hant"
 
-            # (新) 2. 专门为英语用户设置 (覆盖默认)
-            await self.bot(SetBotCommandsRequest(
-                scope=scope,
-                lang_code="en",
-                commands=en_commands
-            ))
-            
-            # (新) 3. 专门为中文用户设置 (覆盖默认)
-            await self.bot(SetBotCommandsRequest(
-                scope=scope,
-                lang_code="zh",
-                commands=zh_commands
-            ))
-            
-            # (新) 4. 修复问题1：添加简体中文 (zh-hans)
-            await self.bot(SetBotCommandsRequest(
-                scope=scope,
-                lang_code="zh-hans",
-                commands=zh_commands
-            ))
-            
-            # (新) 5. 修复问题1：添加繁体中文 (zh-hant)
-            await self.bot(SetBotCommandsRequest(
-                scope=scope,
-                lang_code="zh-hant",
-                commands=zh_commands
-            ))
-            
-            logger.info("✅ Bot 命令列表设置成功 (默认, en, zh, zh-hans, zh-hant)。")
+            logger.info("✅ Bot 命令列表设置成功 (Default + Private + Groups + Admins)。")
         except Exception as e:
+            # (新) 修复问题2：修正 import 错误后，这里的日志不应该再出现
             logger.warning(f"⚠️ 无法设置 Bot 命令列表: {e} (这不影响 Bot 运行)")
