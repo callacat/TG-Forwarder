@@ -134,10 +134,10 @@ class BotService:
             
             # 英文命令
             en_commands = [
-                BotCommand(command="start", description="Show welcome message and help"),
-                BotCommand(command="status", description="Check service running status"),
-                BotCommand(command="reload", description="Reload the config.yaml file"),
-                BotCommand(command="run_checklinks", description="Manually trigger a link check")
+                BotCommand(command="start", description="显示欢迎和帮助信息"),
+                BotCommand(command="status", description="查看服务运行状态"),
+                BotCommand(command="reload", description="热重载 config.yaml 配置文件"),
+                BotCommand(command="run_checklinks", description="手动触发一次失效链接检测")
             ]
             
             # 中文命令
