@@ -9,7 +9,8 @@ import json
 import os 
 from datetime import datetime, timezone
 from telethon import TelegramClient, events, errors
-from telethon.tl.types import MessageEntityTextUrl, MessageMediaDocument, PeerUser, PeerChat, PeerChannel
+# (新) 修复：导入 Message 对象
+from telethon.tl.types import Message, MessageEntityTextUrl, MessageMediaDocument, PeerUser, PeerChat, PeerChannel
 # (新) 修复问题4：导入 Channel 和 Chat
 from telethon.tl.types import Channel, Chat 
 
@@ -408,7 +409,10 @@ class UltimateForwarder:
 
     # --- 消息处理流水线 (Process Pipeline) ---
 
-    async def process_message(self, event: events.NewMessage.Event):
+    async def process_message(self, event: events.NewMessage.Event, all_messages_in_group: Optional[List[Message]] = None):
+        """
+        (新) 修复问题2：添加 all_messages_in_group
+        """
         message = event.message
         
         # (新) 修复：重写 chat_id 解析逻辑以防止崩溃
@@ -450,9 +454,19 @@ class UltimateForwarder:
         logger.debug(f"--- [START] 正在处理消息 {numeric_chat_id}/{message.id} ---")
 
         try:
-            messages_to_process = await self._extract_links(message, source_config)
+            # (新) 修复问题2：提取逻辑现在只处理主消息
+            # messages_to_process = await self._extract_links(message, source_config)
+            # (旧)
+            
+            # (新) 我们只处理主消息 (event.message)
+            msg_data = {
+                "text": message.text or "",
+                "media": message.media,
+                "hash_source": message.id
+            }
 
-            for msg_data in messages_to_process:
+            # for msg_data in messages_to_process: # (旧)
+            if True: # (新) 替换 for 循环
                 # (新) 修复：更改操作顺序
                 # msg_data['text'] = self._apply_replacements(msg_data['text']) # <-- (旧位置)
                 
@@ -461,27 +475,31 @@ class UltimateForwarder:
                 filter_reason = self._should_filter(msg_data['text'], msg_data['media'])
                 if filter_reason:
                     logger.info(f"消息 {numeric_chat_id}/{message.id} (Text: {msg_data['text'][:30]}...) [被过滤: {filter_reason}]")
-                    continue
+                    return # (新) 修复问题2：如果是相册，我们只检查一次，直接返回
 
                 # 2. (新) 再用 *原始* 消息进行去重
                 if self._is_duplicate(msg_data, f"{numeric_chat_id}/{message.id}"):
                     logger.info(f"消息 {numeric_chat_id}/{message.id} (Text: {msg_data['text'][:30]}...) [重复]")
-                    continue
-                
+                    return # (新) 修复问题2：直接返回
+
                 # 3. (新) 再用 *原始* 文本查找目标
                 target_id, topic_id = self._find_target(msg_data['text'], msg_data['media'])
                 
                 if not target_id:
                     # (新) 修复问题4：添加日志以显示解析失败
                     logger.error(f"消息 {numeric_chat_id}/{message.id} 无法找到有效的目标 ID。请检查配置或启动日志中的解析错误。")
-                    continue
+                    return # (新) 修复问题2：直接返回
 
                 # 4. (新) 仅在消息确定要发送时，才应用替换
                 msg_data['text'] = self._apply_replacements(msg_data['text']) # <-- (新位置)
 
                 logger.info(f"消息 {numeric_chat_id}/{message.id} [将被发送] -> 目标 {target_id}/(Topic:{topic_id})")
+                
+                # (新) 修复问题2：决定是发送单个消息还是整个相册
+                messages_to_send = all_messages_in_group if all_messages_in_group else message
+
                 await self._send_message(
-                    original_message=message,
+                    original_message=messages_to_send, # (新)
                     message_data=msg_data,
                     target_id=target_id,
                     topic_id=topic_id
@@ -543,6 +561,7 @@ class UltimateForwarder:
                     if not fake_event.chat:
                         fake_event.chat = entity
                         
+                    # (新) 修复：历史记录不支持相册，直接处理
                     await self.process_message(fake_event)
                     
             except Exception as e:
@@ -683,7 +702,7 @@ class UltimateForwarder:
         if not self.config.deduplication.enable:
             return
             
-        msg_hash = self._get_message_hash(message_data)
+        msg_hash = self._get_message_hash(message_G_data)
         if msg_hash:
             self.dedup_db.add(msg_hash)
             self._save_dedup_db()
@@ -707,34 +726,44 @@ class UltimateForwarder:
         # (新) 修复问题4：返回 default_topic_id
         return self.config.targets.resolved_default_target_id, self.config.targets.default_topic_id
 
-    async def _send_message(self, original_message: Any, message_data: Dict[str, Any], target_id: int, topic_id: Optional[int]):
-        
+    async def _send_message(self, original_message: Union[Message, List[Message]], message_data: Dict[str, Any], target_id: int, topic_id: Optional[int]):
+        """
+        (新) 修复问题2：original_message 现在可以是单个 Message 或一个列表
+        """
         text = message_data['text']
-        media = message_data['media']
+        # (新) 修复问题2：media 现在可能是单个媒体，也可能没有
+        media = message_data.get('media') 
         mode = self.config.forwarding.mode
         
         send_kwargs = {}
-        # (新) 修复问题3：只有在 topic_id 存在时才添加参数
+        # (新) 修复问题1：使用 'comment_to' 而不是 'top_msg_id'
         if topic_id:
             if mode == 'copy':
                 send_kwargs["reply_to"] = topic_id
             else:
-                send_kwargs["top_msg_id"] = topic_id
+                send_kwargs["comment_to"] = topic_id # (新) 修复
 
         while True:
             client = self._get_next_client()
             try:
                 if mode == 'copy':
+                    # (新) 修复问题2：处理相册复制
+                    files_to_send = media
+                    if isinstance(original_message, list):
+                        # 如果是相册，提取所有媒体
+                        files_to_send = [msg.media for msg in original_message if msg.media]
+                    
                     await client.send_message(
                         target_id,
                         message=text,
-                        file=media,
+                        file=files_to_send, # (新)
                         **send_kwargs
                     )
                 else:
+                    # (新) 修复问题2：转发模式天然支持列表
                     await client.forward_messages(
                         target_id,
-                        messages=original_message,
+                        messages=original_message, # (新)
                         **send_kwargs
                     )
                 

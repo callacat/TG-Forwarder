@@ -3,14 +3,15 @@ import argparse
 import yaml
 import sys
 import os
-import asyncio # <--- 添加这一行
+import asyncio 
+# (新) 修复：导入 Message
 from telethon import TelegramClient, events, errors
-from telethon.tl.types import PeerUser, PeerChat, PeerChannel
-from telethon.tl.types import Channel, Chat # (新) 修复问题1：导入 Channel 和 Chat 类型
-from typing import List 
+from telethon.tl.types import PeerUser, PeerChat, PeerChannel, Message
+from telethon.tl.types import Channel, Chat 
+# (新) 修复：导入 Dict
+from typing import List, Dict 
 
 # (新) 导入定时任务
-# (新) 修复：回退到 apscheduler v3 (稳定版) 的导入路径
 from apscheduler.schedulers.asyncio import AsyncIOScheduler 
 from apscheduler.triggers.cron import CronTrigger
 
@@ -38,6 +39,10 @@ forwarder = None # (新) 转发器实例
 link_checker = None # (新) 链接检测器实例
 DOCKER_CONTAINER_NAME = "tgf" # 默认值
 CONFIG_PATH = "/app/config.yaml" # (新) 配置文件路径
+
+# (新) 修复：移除所有手动相册处理的全局变量
+# pending_groups: Dict[int, List[events.NewMessage.Event]] = {}
+# group_tasks: Dict[int, asyncio.Task] = {}
 
 def load_config(path):
     """加载 YAML 配置文件"""
@@ -83,8 +88,10 @@ async def initialize_clients(config: Config):
         try:
             logger.info(f"账号 {i+1} 正在使用会话文件: {acc.session_name}...")
             session_path = f"/app/data/{acc.session_name}"
-            session_identifier = f"SessionFile ({acc.session_name})"
             
+            # (新) 修复：检查会话文件是否存在
+            session_file_exists = os.path.exists(f"{session_path}.session")
+
             client = TelegramClient(
                 session_path, 
                 acc.api_id,
@@ -97,26 +104,17 @@ async def initialize_clients(config: Config):
             client.session_name_for_forwarder = acc.session_name
             # --- 修复结束 ---
             
-            logger.info(f"正在连接账号: {acc.session_name}...")
-
-            # (新) 修复问题2：只在会话文件不存在时显示登录提示
-            session_file_path = f"{session_path}.session"
-            if not os.path.exists(session_file_path):
-                logger.warning(f"未找到会话文件 {session_file_path}。")
+            # (新) 修复：改进登录日志
+            if not session_file_exists:
+                logger.warning(f"账号 {acc.session_name} 未登录 (未找到 .session 文件)。")
                 logger.warning("---")
                 logger.warning("程序将等待你输入手机号、验证码和两步验证密码。")
                 logger.warning("!!! (重要) 如果你使用 DOCKER, 你必须现在打开 *另一个* 终端并运行: !!!")
                 logger.warning(f"    docker attach {DOCKER_CONTAINER_NAME}")
                 logger.warning("---")
             else:
-                logger.info(f"检测到会话文件 {session_file_path}，尝试自动登录...")
-            
-            if not await client.connect():
-                 logger.warning(f"账号 {acc.session_name} 连接失败。")
-                 # 打印登录提示，以防万一
-                 if not os.path.exists(session_file_path): # (避免重复)
-                    logger.warning(f"账号 {acc.session_name} 未登录。")
-                    logger.warning(f"请在 (docker attach {DOCKER_CONTAINER_NAME}) 中登录。")
+                logger.info(f"检测到账号 {acc.session_name} 的会话文件，尝试自动登录...")
+
             
             await client.start()
             
@@ -125,12 +123,12 @@ async def initialize_clients(config: Config):
             clients.append(client)
             
         except errors.SessionPasswordNeededError:
-            logger.error(f"❌ 账号 {session_identifier} 需要两步验证密码 (Two-Step Verification)。")
+            logger.error(f"❌ 账号 {acc.session_name} 需要两步验证密码 (Two-Step Verification)。")
             logger.warning(f"请在控制台 (docker attach {DOCKER_CONTAINER_NAME}) 中输入你的密码。")
         except errors.AuthKeyUnregisteredError:
-             logger.error(f"❌ 账号 {session_identifier} 的 Session 已失效，请删除 data 目录下的 {acc.session_name}.session 文件后重试。")
+             logger.error(f"❌ 账号 {acc.session_name} 的 Session 已失效，请删除 data 目录下的 {acc.session_name}.session 文件后重试。")
         except Exception as e:
-            logger.error(f"❌ 账号 {session_identifier} 启动失败: {e}")
+            logger.error(f"❌ 账号 {acc.session_name} 启动失败: {e}")
     
     if not clients:
         logger.critical("❌ 致命错误: 没有可用的账号。请检查配置或 Session 文件。")
@@ -180,40 +178,38 @@ async def initialize_bot(config: Config):
 
 # (新) 修复问题3：重构 resolve_identifiers
 async def resolve_identifiers(client: TelegramClient, config: Config) -> List[int]:
-    """(新) 将 config.sources 中的标识符解析为数字 ID，并存回 config 对象"""
+    """(新) 将频道用户名/链接列表解析为数字 ID 列表"""
     resolved_ids = []
-    logger.info(f"正在解析 {len(config.sources)} 个源标识符...")
+    
+    logger.info("正在解析所有源频道/群组...")
     for s_config in config.sources:
+        identifier = s_config.identifier
         try:
-            entity = await client.get_entity(s_config.identifier)
+            # Telethon 可以自动处理 int, @username, 和 https://t.me/link
+            entity = await client.get_entity(identifier)
             
-            resolved_id = entity.id 
+            resolved_id = entity.id
             
-            # 规范化: Channel 对象 ID 是正数，需要转为 -100...
-            # Chat 对象 ID 已经是负数
-            # User 对象 ID 是正数
-
-            # (新) 修复问题1：使用严格的类型检查
+            # (新) 修复问题1：规范化频道/群组 ID
+            # 确保 Channel ID 总是 -100...
             if isinstance(entity, Channel):
-                # 无论是 Channel 还是 Supergroup，都添加 -100
                 if not str(resolved_id).startswith("-100"):
                     resolved_id = int(f"-100{resolved_id}")
+            # 确保 Chat ID 总是 -...
             elif isinstance(entity, Chat):
-                # 普通群组，添加 -
-                if not str(resolved_id).startswith("-"):
+                 if not str(resolved_id).startswith("-"):
                     resolved_id = int(f"-{resolved_id}")
-            # (新) 如果是 User, resolved_id (正数) 本身就是正确的
             
-            s_config.resolved_id = resolved_id # (新) 将解析的ID存回配置对象
+            logger.info(f"源 '{identifier}' -> 解析为 ID: {resolved_id}")
+            s_config.resolved_id = resolved_id # (新) 将解析后的 ID 存回配置
             resolved_ids.append(resolved_id)
-            logger.info(f"源 '{s_config.identifier}' -> 解析为 ID: {resolved_id}")
                 
         except ValueError:
-            logger.error(f"❌ 无法解析源: '{s_config.identifier}'。它似乎不是一个有效的频道/群组/用户。")
+            logger.error(f"❌ 无法解析源: '{identifier}'。它似乎不是一个有效的频道/群组/用户。")
         except errors.ChannelPrivateError:
-            logger.error(f"❌ 无法访问源: '{s_config.identifier}'。你的账号未加入该私有频道。")
+            logger.error(f"❌ 无法访问源: '{identifier}'。你的账号未加入该私有频道。")
         except Exception as e:
-            logger.error(f"❌ 解析源 '{s_config.identifier}' 时出错: {e}")
+            logger.error(f"❌ 解析源 '{identifier}' 时出错: {e}")
     
     # (新) 返回唯一的 ID 列表
     return list(set(resolved_ids))
@@ -227,9 +223,8 @@ async def run_forwarder(config: Config):
     
     main_client = clients[0] # 第一个客户端用于监听和解析
     
-    # (新) 修复问题3：解析所有源标识符 (此函数现在会修改 config.sources)
-    logger.info("正在解析所有源频道/群组...")
-    resolved_source_ids = await resolve_identifiers(main_client, config)
+    # (新) 解析所有源标识符
+    resolved_source_ids = await resolve_identifiers(main_client, config) # (新) 传入 config
     
     if not resolved_source_ids:
         logger.critical("❌ 无法解析任何源频道，请检查配置或确保账号已加入。")
@@ -240,38 +235,79 @@ async def run_forwarder(config: Config):
     # 实例化核心转发器
     forwarder = UltimateForwarder(config, clients)
     
-    # (新) 修复：在注册处理器之前，先解析目标
+    # (新) 修复问题4：解析所有目标标识符
     await forwarder.resolve_targets()
     
-    # 1. 注册新消息处理器
-    logger.info("注册新消息事件处理器...")
-    # (新) 监听已解析的 ID
+    # 1. 注册新消息处理器 (用于非相册消息)
+    logger.info("注册新消息 (NewMessage) 事件处理器...")
     @main_client.on(events.NewMessage(chats=resolved_source_ids))
     async def handle_new_message(event):
+        
+        # (新) 修复：使用 Telethon 的 Album 处理器
+        # 如果消息是相册的一部分，则忽略它，Album 处理器会处理
+        if event.message.grouped_id:
+            return
+            
+        # 这是一个普通消息，立即处理
         await forwarder.process_message(event)
         
-        # (新) 自动已读功能
+        # (新) 自动已读功能 (仅限非相册消息)
         if forwarder.config.forwarding.mark_as_read:
             try:
-                # event.mark_read() 是最简单的方法
                 await event.mark_read() 
             except Exception as e:
-                # 忽略错误 (例如, 在群组中没有管理员权限无法标记已读)
                 logger.debug(f"将 {event.chat_id} 标记为已读失败: {e}")
         
-    logger.info("✅ 事件处理器已注册。")
+    logger.info("✅ NewMessage 事件处理器已注册。")
 
-    # (新) 步骤 2: 启动 Bot 服务 (!!! 必须在 process_history 之前!!!)
+    # 2. (新) 注册相册 (Album) 处理器
+    logger.info("注册相册 (Album) 事件处理器...")
+    @main_client.on(events.Album(chats=resolved_source_ids))
+    async def handle_album(event):
+        
+        logger.info(f"处理相册 {event.grouped_id} (共 {len(event.messages)} 条消息)...")
+        
+        # 1. 找到带文字的主消息 (通常是第一条)
+        main_message = next((m for m in event.messages if m.text), event.messages[0])
+        
+        # 2. 构建一个临时的 "main_event" 对象
+        # (forwarder_core 需要一个 event 对象，而不仅仅是 message 列表)
+        main_event = events.NewMessage.Event(
+            message=main_message,
+            peer_user=None,
+            peer_chat=main_message.peer_id, # 使用主消息的 peer_id
+            chat=await event.get_chat() # 确保 chat 属性存在
+        )
+        # 模拟 chat_id
+        main_event.chat_id = main_message.chat_id
+
+        # 3. 获取所有消息的完整列表
+        all_messages = event.messages
+        
+        # 4. 调用 process_message，传入主消息和整个相册列表
+        await forwarder.process_message(main_event, all_messages_in_group=all_messages)
+        
+        # 5. (新) 自动已读：处理完相册后再标记
+        if forwarder.config.forwarding.mark_as_read:
+            try:
+                # 标记主消息即可（Telethon 会处理整个对话）
+                await main_event.mark_read()
+            except Exception as e:
+                logger.debug(f"将相册 {event.grouped_id} 标记为已读失败: {e}")
+
+    logger.info("✅ Album 事件处理器已注册。")
+
+    # (新) 步骤 3: 启动 Bot 服务 (!!! 必须在 process_history 之前!!!)
     logger.info("正在启动 Bot 服务...")
     await initialize_bot(config)
 
-    # (新) 步骤 3: 启动定时任务 (Link Checker)
+    # (新) 步骤 4: 启动定时任务 (Link Checker)
     if config.link_checker and config.link_checker.enabled:
         if not link_checker: # 如果 Bot 没启动，单独初始化
              link_checker = LinkChecker(config, main_client)
         
         try:
-            # (新) 使用 apscheduler 实现 cron 定时任务
+            # (新) 修复：使用 apscheduler v3 (稳定版)
             trigger = CronTrigger.from_crontab(config.link_checker.schedule)
             scheduler = AsyncIOScheduler(timezone="UTC")
             scheduler.add_job(link_checker.run, trigger, name="run_link_checker_job")
@@ -279,8 +315,21 @@ async def run_forwarder(config: Config):
             logger.info(f"✅ 链接检测器定时任务已启动 (Cron: {config.link_checker.schedule} UTC)。")
         except ValueError as e:
             logger.warning(f"⚠️ 链接检测器 cron 表达式 '{config.link_checker.schedule}' 无效，定时任务未启动: {e}")
+        # (新) 修复：apscheduler v4 (兼容)
+        except AttributeError: 
+             # (新) 修复：apscheduler v4 (async_)
+            try:
+                from apscheduler.schedulers.async_ import AsyncIOScheduler as AsyncIOSchedulerV4
+                trigger_v4 = CronTrigger.from_crontab(config.link_checker.schedule)
+                scheduler_v4 = AsyncIOSchedulerV4(timezone="UTC")
+                scheduler_v4.add_job(link_checker.run, trigger_v4, name="run_link_checker_job")
+                scheduler_v4.start()
+                logger.info(f"✅ 链接检测器定时任务已启动 (Cron: {config.link_checker.schedule} UTC)。")
+            except Exception as e_v4:
+                logger.error(f"❌ 链接检测器启动失败 (尝试 V3 和 V4 后): {e_v4}")
 
-    # (新) 步骤 4: (可选) 处理历史消息
+
+    # (新) 步骤 5: (可选) 处理历史消息
     if not config.forwarding.forward_new_only:
         logger.info("配置了 `forward_new_only: false`，开始扫描历史消息 (这可能需要一些时间)...")
         # (新) 传入已解析的 ID
@@ -289,7 +338,7 @@ async def run_forwarder(config: Config):
     else:
         logger.info("`forward_new_only: true`，跳过历史消息扫描。")
 
-    # (新) 步骤 5: 运行并等待
+    # (新) 步骤 6: 运行并等待
     logger.info(f"🚀 终极转发器已启动。正在监听 {len(resolved_source_ids)} 个源。")
     
     # (新) 如果 Bot 也在运行，使用 asyncio.gather
@@ -336,17 +385,22 @@ async def export_dialogs(config: Config):
                 if dialog.entity.username:
                     identifier = f"@{dialog.entity.username}"
                 else:
-                    identifier = str(dialog.id)
+                    # (新) 修复：确保 ID 被正确规范化
+                    if dialog.is_channel:
+                         identifier = str(dialog.id) if str(dialog.id).startswith("-100") else str(f"-100{dialog.id}")
+                    else: # is_group
+                         identifier = str(dialog.id) if str(dialog.id).startswith("-") else str(f"-{dialog.id}")
+
                 output += f"{identifier}\t{dialog.title}\n"
                 
                 # 检查是否是开启了话题的群组
                 if dialog.is_group and getattr(dialog.entity, 'forum', False):
-                    logger.info(f"正在获取群组 '{dialog.title}' ({dialog.id}) 的话题...")
+                    logger.info(f"正在获取群组 '{dialog.title}' ({identifier}) 的话题...")
                     try:
                         # (新) 修复了获取话题的逻辑
                         topics = await main_client.get_topics(dialog.id)
                         for topic in topics:
-                            topics_output += f"{dialog.id}\t{topic.id}\t{topic.title}\n"
+                            topics_output += f"{identifier}\t{topic.id}\t{topic.title}\n"
                     except Exception as e:
                         logger.warning(f"获取话题失败 for {dialog.title}: {e} (可能是权限不足)")
 
@@ -383,26 +437,25 @@ async def reload_config_func():
         # 1. 重新加载配置文件
         new_config = load_config(CONFIG_PATH)
         
-        # (新) 修复问题3：热重载时需要重新解析标识符
-        if clients:
-            logger.info("正在重新解析源和目标标识符...")
-            await resolve_identifiers(clients[0], new_config)
-            if forwarder:
-                # (新) 确保 forwarder 也重载目标
-                await forwarder.reload(new_config) 
-            else:
-                logger.error("转发器未初始化，无法热重载。")
-        else:
-            logger.error("客户端未初始化，无法解析标识符。")
+        # 2. 重新初始化需要重载的部分
+        
+        # 2a. (新) 重载源频道
+        # 注意：我们不能重启监听器，但我们可以更新配置
+        await resolve_identifiers(clients[0], new_config)
 
-        # 2b. 重载链接检测器
+        # 2b. 重载转发器 (它持有所有过滤/分发规则)
+        if forwarder:
+            await forwarder.reload(new_config)
+            logger.info("✅ 转发器规则已热重载。")
+
+        # 2c. 重载链接检测器
         if link_checker:
             link_checker.reload(new_config)
             logger.info("✅ 链接检测器配置已热重载。")
 
-        # 2c. 重载 Bot (主要是 admin_user_ids)
-        # BotService 在每次调用 is_admin 时都会重新读取 config，所以不需要显式重载
-
+        # 2d. 重载 Bot (主要是 admin_user_ids)
+        # BotService 内部会通过 forwarder 引用自动获取新配置
+        
         logger.warning("✅ 配置热重载完毕。")
         return "✅ 配置热重载完毕。"
     except Exception as e:
