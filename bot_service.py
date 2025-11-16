@@ -1,12 +1,16 @@
 # bot_service.py
 import logging
 import time # (新) 导入 time
+import os # (新) 导入 os，用于处理路径
 from telethon import TelegramClient, events
 from telethon.tl.types import Message
 from typing import Callable, Awaitable
 from datetime import datetime, timezone # (新) 导入 datetime, timezone
 from forwarder_core import Config # (新)
 from link_checker import LinkChecker # (新)
+# (新) 导入 BotCommand 相关
+from telethon.tl.functions.bots import SetBotCommandsRequest
+from telethon.tl.types import BotCommand, BotCommandScopeDefault
 
 logger = logging.getLogger(__name__)
 
@@ -54,18 +58,21 @@ class BotService:
             uptime = datetime.now(timezone.utc) - self.start_time
             uptime_str = str(uptime).split('.')[0] # 移除微秒
 
-            # (新) 尝试从 forwarder 获取客户端状态
+            # (新) 修复: client.session.session_id -> client.session.path
             client_status = "未知"
             if self.forwarder and self.forwarder.clients:
                 client_count = len(self.forwarder.clients)
-                # 检查 FloodWait
-                flood_clients = [
-                    # (新) 修复: client.session.session_id 
-                    client.session.session_id[:5] for client in self.forwarder.clients
-                    if self.forwarder.client_flood_wait.get(client.session.session_id, 0) > time.time()
-                ]
+                
+                flood_clients = []
+                for client in self.forwarder.clients:
+                    # (新) 使用 .path 作为唯一的 session key
+                    session_key = client.session.path 
+                    if self.forwarder.client_flood_wait.get(session_key, 0) > time.time():
+                        # (新) 显示文件名，而不是整个路径
+                        flood_clients.append(os.path.basename(session_key))
+
                 if flood_clients:
-                    client_status = f"⚠️ {client_count} 个客户端运行中 ( {len(flood_clients)} 个正在 FloodWait: {', '.join(flood_clients)}... )"
+                    client_status = f"⚠️ {client_count} 个客户端运行中 ( {len(flood_clients)} 个正在 FloodWait: {', '.join(flood_clients)} )"
                 else:
                     client_status = f"✅ {client_count} 个客户端运行中 (全部正常)"
 
@@ -108,3 +115,43 @@ class BotService:
             except Exception as e:
                 logger.error(f"运行链接检测时出错: {e}")
                 await event.reply(f"❌ 运行链接检测时出错: {e}")
+
+        # --- (新) 自动设置 Bot 命令列表 ---
+        try:
+            logger.info("正在为 Bot 设置命令列表...")
+            
+            # 英文命令
+            en_commands = [
+                BotCommand(command="start", description="Show welcome message and help"),
+                BotCommand(command="status", description="Check service running status"),
+                BotCommand(command="reload", description="Reload the config.yaml file"),
+                BotCommand(command="run_checklinks", description="Manually trigger a link check")
+            ]
+            
+            # 中文命令
+            zh_commands = [
+                BotCommand(command="start", description="显示欢迎和帮助信息"),
+                BotCommand(command="status", description="查看服务运行状态"),
+                BotCommand(command="reload", description="热重载 config.yaml 配置文件"),
+                BotCommand(command="run_checklinks", description="手动触发一次失效链接检测")
+            ]
+            
+            scope = BotCommandScopeDefault()
+
+            # 为英语用户设置
+            await self.bot(SetBotCommandsRequest(
+                scope=scope,
+                lang_code="en",
+                commands=en_commands
+            ))
+            
+            # 为中文用户设置
+            await self.bot(SetBotCommandsRequest(
+                scope=scope,
+                lang_code="zh",
+                commands=zh_commands
+            ))
+            
+            logger.info("✅ Bot 命令列表设置成功。")
+        except Exception as e:
+            logger.warning(f"⚠️ 无法设置 Bot 命令列表: {e} (这不影响 Bot 运行)")

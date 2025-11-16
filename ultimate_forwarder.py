@@ -1,690 +1,418 @@
-# forwarder_core.py
 import logging
-import random
-import re
-import asyncio
-import httpx
-import time
-import json
-import os 
-from datetime import datetime, timezone
+import argparse
+import yaml
+import sys
+import os
+import asyncio # <--- 添加这一行
 from telethon import TelegramClient, events, errors
-from telethon.tl.types import MessageEntityTextUrl, MessageMediaDocument, PeerUser, PeerChat, PeerChannel
+# from telethon.sessions import Session # <--- 移除这个导入
+from telethon.tl.types import PeerUser, PeerChat, PeerChannel
+from typing import List # <--- 添加了这一行来修复错误
 
-# --- 类型提示 ---
-from typing import List, Optional, Tuple, Dict, Set, Any, Union 
-from pydantic import BaseModel, Field, HttpUrl, field_validator, model_validator
+# 假设 forwarder_core 和 link_checker 在同一目录下
+from forwarder_core import UltimateForwarder, Config, AccountConfig
+from link_checker import LinkChecker
+from bot_service import BotService # (新) 导入 Bot 服务
 
+# --- 日志配置 ---
+LOG_LEVEL = os.environ.get('LOG_LEVEL', 'INFO').upper()
+logging.basicConfig(
+    format='%(asctime)s - [%(levelname)s] - %(message)s',
+    level=LOG_LEVEL,
+    handlers=[
+        logging.StreamHandler(sys.stdout)
+    ]
+)
+logging.getLogger('telethon').setLevel(logging.WARNING)
 logger = logging.getLogger(__name__)
 
-# --- 配置模型 (使用 Pydantic 进行验证) ---
+# --- 全局变量 ---
+clients = [] # (新) 用户客户端
+bot_client = None # (新) Bot 客户端
+forwarder = None # (新) 转发器实例
+link_checker = None # (新) 链接检测器实例
+DOCKER_CONTAINER_NAME = "tgf" # 默认值
+CONFIG_PATH = "/app/config.yaml" # (新) 配置文件路径
 
-class ProxyConfig(BaseModel):
-    enabled: bool = False
-    proxy_type: str = "socks5"
-    addr: str = "127.0.0.1"
-    port: int = 1080
-    username: Optional[str] = None
-    password: Optional[str] = None
+def load_config(path):
+    """加载 YAML 配置文件"""
+    global DOCKER_CONTAINER_NAME
     
-    def get_telethon_proxy(self):
-        """返回 Telethon 接受的代理元组"""
-        if not self.enabled:
-            return None
-        return (self.proxy_type, self.addr, self.port, True, self.username, self.password)
-
-class AccountConfig(BaseModel):
-    api_id: int
-    api_hash: str
-    session_name: str
-    enabled: bool = True
-
-    @model_validator(mode='before')
-    @classmethod
-    def check_session_auth(cls, data: Any) -> Any:
-        if isinstance(data, dict):
-            if not data.get('session_name'): 
-                raise ValueError("必须提供 session_name (会话文件)。")
+    logger.info(f"正在从 {path} 加载配置...")
+    try:
+        with open(path, 'r', encoding='utf-8') as f:
+            config_data = yaml.safe_load(f)
             
-            if data.get('session_name'):
-                name = data['session_name']
-                if '/' in name or '\\' in name:
-                    raise ValueError("session_name 不能包含路径分隔符。")
-        return data
-
-class SourceConfig(BaseModel):
-    identifier: Union[int, str]
-    check_replies: bool = False
-    replies_limit: int = 10
-    forward_new_only: Optional[bool] = None
-
-class TargetDistributionRule(BaseModel):
-    name: str 
-    # (新) 增加 all_keywords 字段，用于 AND 逻辑
-    all_keywords: List[str] = Field(default_factory=list, description="[AND] 必须 *同时* 包含列表中的所有关键词")
-    any_keywords: List[str] = Field(default_factory=list, description="[OR] 包含列表中的 *任意一个* 关键词即可")
-    file_types: List[str] = Field(default_factory=list, description="[OR] 匹配任意一个MIME Type") 
-    file_name_patterns: List[str] = Field(default_factory=list, description="[OR] 匹配任意一个文件名通配符") 
-
-    target_identifier: Union[int, str]
-    topic_id: Optional[int] = None 
-    
-    resolved_target_id: Optional[int] = Field(None, exclude=True)
-    
-    def check(self, text: str, media: Any) -> bool:
-        """
-        (已修改) 检查消息是否匹配此规则。
-        逻辑: (all_keywords) AND (any_keywords OR file_types OR file_name_patterns)
-        
-        如果 all_keywords, any_keywords, file_types, file_name_patterns 都为空，则规则不匹配。
-        如果 all_keywords 不为空，但 [OR] 组 (any_keywords, file_types, file_name_patterns) 为空，
-        则仅当 all_keywords 匹配时，规则才匹配。
-        """
-        text_lower = text.lower() if text else ""
-        
-        # 1. 检查 [AND] all_keywords
-        if self.all_keywords:
-            if not all(kw.lower() in text_lower for kw in self.all_keywords):
-                return False # [AND] 检查失败，此规则不匹配
-        
-        # 2. 检查 [OR] 条件组
-        or_group_matched = False
-        
-        # 检查 [OR] any_keywords
-        if self.any_keywords:
-            if any(keyword.lower() in text_lower for keyword in self.any_keywords):
-                or_group_matched = True
-        
-        # 检查 [OR] media (file_types / file_name_patterns)
-        if not or_group_matched and media and isinstance(media, MessageMediaDocument):
-            doc = media.document
-            if doc:
-                # 检查 [OR] file_types
-                if self.file_types and doc.mime_type:
-                    if any(ft.lower() in doc.mime_type.lower() for ft in self.file_types):
-                        or_group_matched = True
-
-                # 检查 [OR] file_name_patterns
-                if not or_group_matched and self.file_name_patterns:
-                    file_name = next((attr.file_name for attr in doc.attributes if hasattr(attr, 'file_name')), None)
-                    if file_name:
-                        for pattern_str in self.file_name_patterns:
-                            try:
-                                pattern = re.compile(pattern_str.replace('.', r'\.').replace('*', r'.*') + '$', re.IGNORECASE)
-                                if re.search(pattern, file_name):
-                                    or_group_matched = True
-                                    break # 找到一个匹配就够了
-                            except re.error:
-                                logger.warning(f"规则 '{self.name}' 中的文件名模式 '{pattern_str}' 无效")
-        
-        # 3. 最终逻辑判断
-        has_all_keywords = bool(self.all_keywords)
-        has_or_group = bool(self.any_keywords or self.file_types or self.file_name_patterns)
-
-        if has_all_keywords and not has_or_group:
-            # 只有 [AND] 规则：all_keywords 必须匹配 (在步骤1中已检查)
-            return True
-        elif not has_all_keywords and has_or_group:
-            # 只有 [OR] 规则：or_group 必须匹配
-            return or_group_matched
-        elif has_all_keywords and has_or_group:
-            # [AND] + [OR] 规则：两者都必须匹配
-            # all_keywords 已在步骤1中检查通过
-            return or_group_matched
-        else:
-            # 所有列表都为空，规则无效
-            return False
-
-class TargetConfig(BaseModel):
-    default_target: Union[int, str]
-    distribution_rules: List[TargetDistributionRule] = Field(default_factory=list)
-    
-    resolved_default_target_id: Optional[int] = Field(None, exclude=True)
-
-
-class ForwardingConfig(BaseModel):
-    mode: str = "forward" 
-    forward_new_only: bool = True 
-    
-    @field_validator('mode')
-    def check_mode(cls, v):
-        if v not in ['forward', 'copy']:
-            raise ValueError("forwarding.mode 必须是 'forward' 或 'copy'")
-        return v
-
-class AdFilterConfig(BaseModel):
-    enable: bool = True
-    keywords: List[str] = Field(default_factory=list)
-    patterns: List[str] = Field(default_factory=list)
-
-class ContentFilterConfig(BaseModel):
-    enable: bool = True
-    meaningless_words: List[str] = Field(default_factory=list)
-    min_meaningful_length: int = 5
-
-class WhitelistConfig(BaseModel):
-    enable: bool = False
-    keywords: List[str] = Field(default_factory=list)
-
-class DeduplicationConfig(BaseModel):
-    enable: bool = True
-    db_path: str = "/app/data/dedup_db.json" 
-
-class LinkExtractionConfig(BaseModel):
-    check_hyperlinks: bool = True
-    check_bots: bool = True
-
-class LinkCheckerConfig(BaseModel):
-    enabled: bool = False
-    mode: str = "log" 
-    schedule: str = "0 3 * * *" 
-    
-    @field_validator('mode')
-    def check_mode(cls, v):
-        if v not in ['log', 'edit', 'delete']:
-            raise ValueError("link_checker.mode 必须是 'log', 'edit', 或 'delete'")
-        return v
-
-class BotServiceConfig(BaseModel):
-    enabled: bool = False
-    bot_token: str = "YOUR_BOT_TOKEN_HERE" 
-    admin_user_ids: List[int] 
-    
-    @field_validator('bot_token', mode='before')
-    def check_bot_token(cls, v, info: Any):
-        values = info.data
-        if values.get('enabled') and (not v or v == "YOUR_BOT_TOKEN_HERE"):
-            raise ValueError("Bot 服务已启用，但 bot_token 未设置。")
-        return v
-    
-    @field_validator('admin_user_ids', mode='before')
-    def check_admin_ids(cls, v, info: Any):
-        values = info.data
-        if values.get('enabled') and (not v):
-            raise ValueError("Bot 服务已启用，但 admin_user_ids 列表为空。")
-        return v
-
-class Config(BaseModel):
-    docker_container_name: Optional[str] = "tg-forwarder"
-    proxy: Optional[ProxyConfig] = Field(default_factory=ProxyConfig)
-    accounts: List[AccountConfig]
-    sources: List[SourceConfig]
-    targets: TargetConfig
-    forwarding: ForwardingConfig = Field(default_factory=ForwardingConfig)
-    ad_filter: AdFilterConfig = Field(default_factory=AdFilterConfig)
-    content_filter: ContentFilterConfig = Field(default_factory=ContentFilterConfig)
-    whitelist: WhitelistConfig = Field(default_factory=WhitelistConfig)
-    deduplication: DeduplicationConfig = Field(default_factory=DeduplicationConfig)
-    link_extraction: LinkExtractionConfig = Field(default_factory=LinkExtractionConfig)
-    replacements: Dict[str, str] = Field(default_factory=dict)
-    link_checker: Optional[LinkCheckerConfig] = Field(default_factory=LinkCheckerConfig)
-    bot_service: Optional[BotServiceConfig] = Field(default_factory=BotServiceConfig) 
-    
-# --- 核心转发器类 ---
-
-class UltimateForwarder:
-    docker_container_name: str = "tg-forwarder"
-
-    def __init__(self, config: Config, clients: List[TelegramClient]):
-        self.config = config
-        self.clients = clients
-        self.current_client_index = 0
-        self.client_flood_wait: Dict[str, float] = {} 
-        
-        self.dedup_db: Set[str] = self._load_dedup_db()
-        self.progress_db: Dict[str, int] = self._load_progress_db()
-
-        self.ad_patterns = self._compile_patterns(config.ad_filter.patterns if config.ad_filter else [])
-        
-        logger.info(f"终极转发器核心已初始化。")
-        logger.info(f"转发模式: {config.forwarding.mode}")
-        logger.info(f"处理新消息: {config.forwarding.forward_new_only}")
-        logger.info(f"去重数据库: {len(self.dedup_db)} 条记录")
-        logger.info(f"进度数据库: {len(self.progress_db)} 个频道")
-    
-    async def reload(self, new_config: Config):
-        """(新) 热重载配置"""
-        self.config = new_config
-        self.ad_patterns = self._compile_patterns(new_config.ad_filter.patterns if new_config.ad_filter else [])
-        await self.resolve_targets()
-        logger.info("转发器配置已热重载。")
-
-    async def resolve_targets(self):
-        """(新) 解析所有目标标识符"""
-        if not self.clients:
-            logger.error("无可用客户端，无法解析目标。")
-            return
+        if 'docker_container_name' in config_data:
+            DOCKER_CONTAINER_NAME = config_data['docker_container_name']
             
-        client = self.clients[0]
+        config_obj = Config(**config_data)
+        logger.info("✅ 配置文件加载并验证成功。")
+        return config_obj
+        
+    except FileNotFoundError:
+        logger.critical(f"❌ 致命错误: 配置文件 '{path}' 未找到。")
+        logger.critical("---")
+        logger.critical("如果你是第一次运行，请：")
+        logger.critical("1. 将 'config_template.yaml' 复制为 'config.yaml'。")
+        logger.critical("2. 填写 'config.yaml' 中的 API 密钥和频道 ID。")
+        logger.critical("3. (如果你使用 Docker) 确保你使用了 '-v' 来挂载配置文件:")
+        logger.critical(f"   docker run ... -v /path/to/your/config.yaml:{path} ...")
+        logger.critical("---")
+        sys.exit(1)
+    except Exception as e:
+        logger.critical(f"❌ 致命错误: 加载或解析配置文件 {path} 失败: {e}")
+        sys.exit(1)
+
+async def initialize_clients(config: Config):
+    """初始化所有 Telethon 用户客户端"""
+    global clients
+    clients.clear() # (新) 清空旧客户端
+    logger.info(f"正在初始化 {len(config.accounts)} 个用户账号...")
+    
+    for i, acc in enumerate(config.accounts):
+        if not acc.enabled:
+            logger.warning(f"账号 {i+1} (Session: {acc.session_name}) 已被禁用，跳过。")
+            continue
         
         try:
-            entity = await client.get_entity(self.config.targets.default_target)
-            self.config.targets.resolved_default_target_id = entity.id
+            logger.info(f"账号 {i+1} 正在使用会话文件: {acc.session_name}...")
+            session_path = f"/app/data/{acc.session_name}"
+            session_identifier = f"SessionFile ({acc.session_name})"
+            
+            client = TelegramClient(
+                session_path, # <--- 修复: 直接传递路径字符串，而不是 Session(session_path)
+                acc.api_id,
+                acc.api_hash,
+                proxy=config.proxy.get_telethon_proxy() if config.proxy else None
+            )
+            
+            logger.info(f"正在连接账号: {acc.session_name}...")
+
+            if not await client.connect() or not await client.is_user_authorized():
+                logger.warning(f"账号 {acc.session_name} 未登录。")
+                logger.warning("---")
+                logger.warning("程序将等待你输入手机号、验证码和两步验证密码。")
+                logger.warning("!!! (重要) 如果你使用 DOCKER, 你必须现在打开 *另一个* 终端并运行: !!!")
+                logger.warning(f"    docker attach {DOCKER_CONTAINER_NAME}")
+                logger.warning("---")
+            
+            await client.start()
+            
+            me = await client.get_me()
+            logger.info(f"✅ 账号 {i+1} ({me.first_name} / @{me.username}) 登录成功。")
+            clients.append(client)
+            
+        except errors.SessionPasswordNeededError:
+            logger.error(f"❌ 账号 {session_identifier} 需要两步验证密码 (Two-Step Verification)。")
+            logger.warning(f"请在控制台 (docker attach {DOCKER_CONTAINER_NAME}) 中输入你的密码。")
+        except errors.AuthKeyUnregisteredError:
+             logger.error(f"❌ 账号 {session_identifier} 的 Session 已失效，请删除 data 目录下的 {acc.session_name}.session 文件后重试。")
         except Exception as e:
-            logger.error(f"❌ 无法解析默认目标: {self.config.targets.default_target} - {e}")
-
-        for rule in self.config.targets.distribution_rules:
-            try:
-                entity = await client.get_entity(rule.target_identifier)
-                rule.resolved_target_id = entity.id
-            except Exception as e:
-                logger.error(f"❌ 无法解析规则 '{rule.name}' 的目标: {rule.target_identifier} - {e}")
-
-
-    # --- 数据库/状态管理 ---
+            logger.error(f"❌ 账号 {session_identifier} 启动失败: {e}")
     
-    def _get_progress_db_path(self) -> str:
-        return "/app/data/forwarder_progress.json"
-
-    def _load_progress_db(self) -> Dict[str, int]:
-        path = self._get_progress_db_path()
-        try:
-            with open(path, 'r', encoding='utf-8') as f:
-                return json.load(f)
-        except (FileNotFoundError, json.JSONDecodeError):
-            logger.warning(f"未找到进度文件 {path}，将创建新的。")
-            return {}
-
-    def _save_progress_db(self):
-        path = self._get_progress_db_path()
-        try:
-            os.makedirs(os.path.dirname(path), exist_ok=True)
-            with open(path, 'w', encoding='utf-8') as f:
-                json.dump(self.progress_db, f, indent=2)
-        except Exception as e:
-            logger.error(f"保存进度文件 {path} 失败: {e}")
-
-    def _get_channel_progress(self, channel_id: int) -> int:
-        return self.progress_db.get(str(channel_id), 0)
-
-    def _set_channel_progress(self, channel_id: int, message_id: int):
-        current_progress = self.progress_db.get(str(channel_id), 0)
-        if message_id > current_progress:
-            self.progress_db[str(channel_id)] = message_id
-            self._save_progress_db()
-
-    def _load_dedup_db(self) -> Set[str]:
-        path = self.config.deduplication.db_path
-        try:
-            with open(path, 'r', encoding='utf-8') as f:
-                hashes = json.load(f)
-                return set(hashes)
-        except (FileNotFoundError, json.JSONDecodeError):
-            logger.warning(f"未找到去重文件 {path}，将创建新的。")
-            return set()
-
-    def _save_dedup_db(self):
-        path = self.config.deduplication.db_path
-        try:
-            os.makedirs(os.path.dirname(path), exist_ok=True)
-            with open(path, 'w', encoding='utf-8') as f:
-                json.dump(list(self.dedup_db), f) 
-        except Exception as e:
-            logger.error(f"保存去重文件 {path} 失败: {e}")
-
-    # --- 客户端管理 ---
+    if not clients:
+        logger.critical("❌ 致命错误: 没有可用的账号。请检查配置或 Session 文件。")
+        sys.exit(1)
     
-    def _get_next_client(self) -> TelegramClient:
-        start_index = self.current_client_index
-        
-        while True:
-            client = self.clients[self.current_client_index]
-            client_id = client.session.session_id
-            
-            wait_until = self.client_flood_wait.get(client_id, 0)
-            
-            if time.time() > wait_until:
-                self.current_client_index = (self.current_client_index + 1) % len(self.clients)
-                return client
-            
-            self.current_client_index = (self.current_client_index + 1) % len(self.clients)
-            
-            if self.current_client_index == start_index:
-                all_wait_times = [self.client_flood_wait.get(c.session.session_id, 0) for c in self.clients]
-                min_wait_time = min(all_wait_times) if all_wait_times else time.time()
-                sleep_duration = max(1.0, (min_wait_time - time.time()) + 1.0) 
-                
-                logger.warning(f"所有 {len(self.clients)} 个客户端都在 FloodWait。等待 {sleep_duration:.1f} 秒...")
-                time.sleep(sleep_duration) 
-                
-                start_index = self.current_client_index
-                continue
+    logger.info(f"✅ 成功启动 {len(clients)} 个用户客户端。")
 
-    async def _handle_send_error(self, e: Exception, client: TelegramClient):
-        client_id = client.session.session_id
-        if isinstance(e, errors.FloodWaitError):
-            wait_time = e.seconds + 5 
-            logger.warning(f"客户端 {client_id[:5]}... 触发 FloodWait: {wait_time} 秒。")
-            self.client_flood_wait[client_id] = time.time() + wait_time
-        elif isinstance(e, errors.ChatWriteForbiddenError):
-            logger.error(f"客户端 {client_id[:5]}... 无法写入目标频道 (权限不足)。")
-        elif isinstance(e, errors.UserBannedInChannelError):
-            logger.error(f"客户端 {client_id[:5]}... 已被目标频道封禁。")
-        else:
-            logger.error(f"客户端 {client_id[:5]}... 转发时遇到未知错误: {e}")
+async def initialize_bot(config: Config):
+    """(新) 初始化 Bot 客户端"""
+    global bot_client, forwarder, link_checker
+    
+    if not config.bot_service or not config.bot_service.enabled:
+        logger.info("Bot 服务未在配置中启用，跳过。")
+        return
 
-    # --- 消息处理流水线 (Process Pipeline) ---
+    if not config.bot_service.bot_token:
+        logger.error("Bot 服务已启用，但 bot_token 未提供，跳过。")
+        return
 
-    async def process_message(self, event: events.NewMessage.Event):
-        message = event.message
+    logger.info("正在初始化 Bot 客户端...")
+    try:
+        # Bot 使用内存会话
+        bot_client = TelegramClient(
+            None, # <--- 修复: 传递 None 来使用内存会话，而不是 Session(None)
+            config.accounts[0].api_id, # (新) Bot 也需要 API ID/Hash
+            config.accounts[0].api_hash,
+            proxy=config.proxy.get_telethon_proxy() if config.proxy else None
+        )
         
-        peer = event.chat_id
-        numeric_chat_id = 0
-        
-        if isinstance(peer, PeerUser):
-            numeric_chat_id = peer.user_id
-        elif isinstance(peer, PeerChat):
-            numeric_chat_id = peer.chat_id
-        elif isinstance(peer, PeerChannel):
-            numeric_chat_id = peer.channel_id
-        else:
-             # (新) 修复：Telethon 有时会直接返回数字 ID
-             try:
-                 numeric_chat_id = int(peer)
-             except (ValueError, TypeError):
-                 logger.warning(f"收到来自未知类型源 {peer} 的消息，已忽略。")
-                 return
+        await bot_client.start(bot_token=config.bot_service.bot_token)
+        me = await bot_client.get_me()
+        logger.info(f"✅ Bot (@{me.username}) 登录成功。")
 
-        # --- (新) 修复源匹配逻辑 ---
-        username = event.chat.username if event.chat and hasattr(event.chat, 'username') else None
-        source_config = None
-        
-        for s in self.config.sources:
-            s_id_str = str(s.identifier)
-            
-            # 1. 按数字 ID 匹配
-            if s_id_str == str(numeric_chat_id):
-                source_config = s
-                break
-                
-            if username:
-                # 2. 按 "@username" 匹配
-                if s_id_str == f"@{username}":
-                    source_config = s
-                    break
-                # 3. 按 "username" 匹配 (不带@)
-                if s_id_str == username:
-                    source_config = s
-                    break
-                # 4. 按 "https://t.me/username" 匹配
-                if s_id_str == f"https://t.me/{username}":
-                    source_config = s
-                    break
-        # --- 修复结束 ---
-        
-        if not source_config:
-             logger.warning(f"收到来自未配置源 {numeric_chat_id} (@{username if username else 'N/A'}) 的消息，已忽略。")
-             return
-            
-        logger.debug(f"--- [START] 正在处理消息 {numeric_chat_id}/{message.id} ---")
+        # (新) 将服务实例传递给 Bot
+        # 确保 link_checker 已经初始化
+        if not link_checker and config.link_checker.enabled:
+             link_checker = LinkChecker(config, clients[0]) # Bot 使用第一个用户客户端来检测
 
+        bot_service = BotService(config, bot_client, forwarder, link_checker, reload_config_func)
+        await bot_service.register_commands()
+        logger.info("✅ Bot 命令已注册。")
+
+    except Exception as e:
+        logger.error(f"❌ Bot 客户端启动失败: {e}")
+        bot_client = None
+
+
+async def resolve_identifiers(client: TelegramClient, identifiers: List[str | int]) -> List[int]:
+    """(新) 将频道用户名/链接列表解析为数字 ID 列表"""
+    resolved_ids = []
+    for identifier in identifiers:
         try:
-            messages_to_process = await self._extract_links(message, source_config)
-
-            for msg_data in messages_to_process:
-                msg_data['text'] = self._apply_replacements(msg_data['text'])
-                
-                if self._should_filter(msg_data['text'], msg_data['media']):
-                    logger.info(f"消息 {numeric_chat_id}/{message.id} (Text: {msg_data['text'][:30]}...) [被过滤]")
-                    continue
-
-                if self._is_duplicate(msg_data, f"{numeric_chat_id}/{message.id}"):
-                    logger.info(f"消息 {numeric_chat_id}/{message.id} (Text: {msg_data['text'][:30]}...) [重复]")
-                    continue
-                
-                target_id, topic_id = self._find_target(msg_data['text'], msg_data['media'])
-                
-                if not target_id:
-                    logger.error(f"消息 {numeric_chat_id}/{message.id} 无法找到有效的目标 ID。请检查配置。")
-                    continue
-
-                logger.info(f"消息 {numeric_chat_id}/{message.id} [将被发送] -> 目标 {target_id}/(Topic:{topic_id})")
-                await self._send_message(
-                    original_message=message,
-                    message_data=msg_data,
-                    target_id=target_id,
-                    topic_id=topic_id
-                )
-                
-                self._mark_as_processed(msg_data)
-                
-        except Exception as e:
-            logger.error(f"处理消息 {numeric_chat_id}/{message.id} 时发生严重错误: {e}", exc_info=True)
-        finally:
-            logger.debug(f"--- [END] 消息 {numeric_chat_id}/{message.id} 处理完毕 ---")
-            self._set_channel_progress(numeric_chat_id, message.id)
-
-    async def process_history(self, resolved_source_ids: List[int]):
-        """处理历史消息 (仅在 `forward_new_only: false` 时调用)"""
-        client = self._get_next_client() 
-        
-        for source_id in resolved_source_ids:
-            source_config = None
-            entity = None
-            try:
-                # (新) 修复：确保 source_id 是 Telethon 接受的 Peer
-                peer = await client.get_input_entity(source_id)
-                entity = await client.get_entity(peer)
-                
-                username = getattr(entity, 'username', None)
-                if username:
-                     # (新) 同样使用扩展的匹配逻辑
-                     for s in self.config.sources:
-                         s_id_str = str(s.identifier)
-                         if s_id_str == str(source_id) or \
-                            s_id_str == f"@{username}" or \
-                            s_id_str == username or \
-                            s_id_str == f"https://t.me/{username}":
-                             source_config = s
-                             break
-                if not source_config:
-                     source_config = next((s for s in self.config.sources if str(s.identifier) == str(source_id)), None)
-                     
-            except Exception as e:
-                logger.error(f"历史记录：无法获取实体 {source_id}: {e}")
-                continue
-
-            if not source_config:
-                logger.error(f"历史记录：无法找到 {source_id} 的配置，跳过。")
-                continue
+            # Telethon 可以自动处理 int, @username, 和 https://t.me/link
+            entity = await client.get_entity(identifier)
             
-            process_history = not self.config.forwarding.forward_new_only
-            if source_config.forward_new_only is not None:
-                process_history = not source_config.forward_new_only
-                
-            if not process_history:
-                logger.info(f"跳过源 {source_config.identifier} 的历史记录 (已在源或全局配置中禁用)。")
-                continue
-
-            last_id = self._get_channel_progress(source_id)
-            logger.info(f"正在扫描源 {source_config.identifier} ({source_id}) 的历史记录 (从消息 ID {last_id} 开始)...")
-            
-            try:
-                # (新) 使用 peer
-                async for message in client.iter_messages(peer, offset_id=last_id, reverse=True, limit=None):
-                    
-                    # (新) 修复：peer_chat 和 chat_id 需要正确设置
-                    event_chat_id = message.chat_id
-                    
-                    fake_event = events.NewMessage.Event(message=message, peer_user=None, peer_chat=None, chat=None)
-                    
-                    # (新) 模拟 event 对象的属性
-                    fake_event.chat_id = event_chat_id
-                    if not fake_event.chat:
-                        fake_event.chat = entity
-                        
-                    await self.process_message(fake_event)
-                    
-            except Exception as e:
-                logger.error(f"扫描源 {source_config.identifier} 历史记录时失败: {e}")
-                
-            logger.info(f"源 {source_config.identifier} 历史记录扫描完成。")
-
-
-    # --- 流水线步骤 (Pipeline Steps) ---
-
-    async def _extract_links(self, message: Any, config: SourceConfig) -> List[Dict[str, Any]]:
-        results = []
-        main_text = message.text or ""
-        
-        results.append({
-            "text": main_text,
-            "media": message.media,
-            "hash_source": message.id 
-        })
-
-        # TODO: 实现 tgforwarder 的高级链接提取 (check_hyperlinks, check_bots, check_replies)
-        
-        return results
-
-    def _apply_replacements(self, text: str) -> str:
-        if not text or not self.config.replacements:
-            return text
-        
-        for find, replace_with in self.config.replacements.items():
-            text = text.replace(find, replace_with) 
-            
-        return text
-
-    def _compile_patterns(self, patterns: List[str]) -> List[re.Pattern]:
-        compiled = []
-        for p in patterns:
-            try:
-                compiled.append(re.compile(p, re.IGNORECASE))
-            except re.error as e:
-                logger.warning(f"无效的正则表达式: '{p}', 错误: {e}")
-        return compiled
-
-    def _should_filter(self, text: str, media: Any) -> bool:
-        text = text or ""
-        text_lower = text.lower()
-        
-        # 1. 白名单 (最高优先级)
-        if self.config.whitelist and self.config.whitelist.enable:
-            if not any(kw.lower() in text_lower for kw in self.config.whitelist.keywords):
-                logger.debug(f"Filter [Whitelist]: 未命中白名单。")
-                return True 
+            # (新) 确保我们只获取频道的数字 ID
+            if isinstance(entity, (PeerUser, PeerChat)):
+                resolved_ids.append(entity.id)
+            elif isinstance(entity, PeerChannel):
+                resolved_ids.append(entity.channel_id)
             else:
-                logger.debug(f"Filter [Whitelist]: 命中白名单，通过。")
-                return False 
-
-        # 2. 广告过滤 (黑名单)
-        if self.config.ad_filter and self.config.ad_filter.enable:
-            if any(kw.lower() in text_lower for kw in self.config.ad_filter.keywords):
-                logger.debug(f"Filter [Ad Keyword]: 命中广告关键词。")
-                return True
-            for p in self.ad_patterns:
-                if p.search(text):
-                    logger.debug(f"Filter [Ad Pattern]: 命中广告正则 {p.pattern}。")
-                    return True
-
-        # 3. 内容质量过滤 (黑名单)
-        if self.config.content_filter and self.config.content_filter.enable:
-            if not text and not media:
-                logger.debug(f"Filter [Content]: 既无文本也无媒体。")
-                return True 
-            
-            if text_lower in [w.lower() for w in self.config.content_filter.meaningless_words]:
-                logger.debug(f"Filter [Content]: 命中无意义词汇。")
-                return True
+                 # (新) 适配 User, Chat, Channel 对象
+                resolved_ids.append(entity.id)
                 
-            if not media and len(text.strip()) < self.config.content_filter.min_meaningful_length:
-                logger.debug(f"Filter [Content]: 文本过短且无媒体。")
-                return True
-
-        return False 
-
-    def _get_message_hash(self, message_data: Dict[str, Any]) -> Optional[str]:
-        if not self.config.deduplication.enable:
-            return None
+        except ValueError:
+            logger.error(f"❌ 无法解析源: '{identifier}'。它似乎不是一个有效的频道/群组/用户。")
+        except errors.ChannelPrivateError:
+            logger.error(f"❌ 无法访问源: '{identifier}'。你的账号未加入该私有频道。")
+        except Exception as e:
+            logger.error(f"❌ 解析源 '{identifier}' 时出错: {e}")
             
-        media = message_data.get('media')
-        if media:
-            if hasattr(media, 'photo'):
-                return f"photo:{media.photo.id}"
-            if hasattr(media, 'document'):
-                doc_size = getattr(media.document, 'size', '0')
-                return f"doc:{media.document.id}:{doc_size}"
+    # (新) Telethon 需要的格式是 -100...，它会自动处理
+    # 我们只需要确保 get_entity 成功即可
+    
+    # (新) 修复：Telethon 的 NewMessage(chats=...) 需要的是 Peer* 对象
+    # 我们将在 Forwarder 核心中处理 ID 到 Peer 的转换
+    
+    # (新) 直接返回 get_entity 可以接受的原始标识符
+    # return [i for i in identifiers if i]
+    
+    # (新) 返回解析后的数字 ID
+    return list(set(resolved_ids))
+
+
+async def run_forwarder(config: Config):
+    """运行转发器主逻辑"""
+    global forwarder, link_checker
+    
+    await initialize_clients(config)
+    
+    main_client = clients[0] # 第一个客户端用于监听和解析
+    
+    # (新) 解析所有源标识符
+    logger.info("正在解析所有源频道/群组...")
+    source_identifiers = [s.identifier for s in config.sources]
+    resolved_source_ids = await resolve_identifiers(main_client, source_identifiers)
+    
+    if not resolved_source_ids:
+        logger.critical("❌ 无法解析任何源频道，请检查配置或确保账号已加入。")
+        return
         
-        text = message_data.get('text', "")
-        if len(text) > 50: 
-            return f"text:{hash(text)}"
-            
-        hash_source = message_data.get('hash_source')
-        if hash_source:
-            return f"id:{hash_source}"
+    logger.info(f"✅ 成功解析 {len(resolved_source_ids)} 个源。")
+    
+    # 实例化核心转发器
+    forwarder = UltimateForwarder(config, clients)
+    
+    # 1. 注册新消息处理器
+    logger.info("注册新消息事件处理器...")
+    # (新) 监听已解析的 ID
+    @main_client.on(events.NewMessage(chats=resolved_source_ids))
+    async def handle_new_message(event):
+        await forwarder.process_message(event)
         
-        return None
+    logger.info("✅ 事件处理器已注册。")
 
-    def _is_duplicate(self, message_data: Dict[str, Any], log_id: str) -> bool:
-        if not self.config.deduplication.enable:
-            return False
-            
-        msg_hash = self._get_message_hash(message_data)
-        if not msg_hash:
-            logger.debug(f"无法为 {log_id} 生成哈希，跳过。")
-            return False
-            
-        if msg_hash in self.dedup_db:
-            return True
-        return False
+    # (新) 步骤 2: 启动 Bot 服务 (!!! 必须在 process_history 之前!!!)
+    logger.info("正在启动 Bot 服务...")
+    await initialize_bot(config)
 
-    def _mark_as_processed(self, message_data: Dict[str, Any]):
-        if not self.config.deduplication.enable:
-            return
-            
-        msg_hash = self._get_message_hash(message_data)
-        if msg_hash:
-            self.dedup_db.add(msg_hash)
-            self._save_dedup_db()
+    # (新) 步骤 3: (可选) 处理历史消息
+    if not config.forwarding.forward_new_only:
+        logger.info("配置了 `forward_new_only: false`，开始扫描历史消息 (这可能需要一些时间)...")
+        # (新) 传入已解析的 ID
+        await forwarder.process_history(resolved_source_ids)
+        logger.info("✅ 历史消息扫描完成。")
+    else:
+        logger.info("`forward_new_only: true`，跳过历史消息扫描。")
 
-    def _find_target(self, text: str, media: Any) -> Tuple[Optional[int], Optional[int]]:
-        """
-        (新) 查找目标。
-        返回 (resolved_target_id, topic_id)
-        """
-        rules = self.config.targets.distribution_rules
-        if rules:
-            for rule in rules:
-                if rule.check(text, media): 
-                    logger.debug(f"命中分发规则: '{rule.name}'")
-                    if not rule.resolved_target_id:
-                        logger.warning(f"规则 '{rule.name}' 命中，但其目标 {rule.target_identifier} 无法解析或无效，跳过。")
-                        continue
-                    return rule.resolved_target_id, rule.topic_id
-                    
-        logger.debug("未命中分发规则，使用默认目标。")
-        return self.config.targets.resolved_default_target_id, None
+    # (新) 步骤 4: 运行并等待
+    logger.info(f"🚀 终极转发器已启动。正在监听 {len(resolved_source_ids)} 个源。")
+    
+    # (新) 如果 Bot 也在运行，使用 asyncio.gather
+    if bot_client:
+        await asyncio.gather(
+            main_client.run_until_disconnected(),
+            bot_client.run_until_disconnected()
+        )
+    else:
+        await main_client.run_until_disconnected()
 
-    async def _send_message(self, original_message: Any, message_data: Dict[str, Any], target_id: int, topic_id: Optional[int]):
-        
-        text = message_data['text']
-        media = message_data['media']
-        mode = self.config.forwarding.mode
-        
-        send_kwargs = {
-            "reply_to": topic_id
-        }
+async def run_link_checker(config: Config):
+    """运行失效链接检测器"""
+    global link_checker
+    
+    if not config.link_checker or not config.link_checker.enabled:
+        logger.warning("LinkChecker 未在 config.yaml 中启用，退出。")
+        return
 
-        while True:
-            client = self._get_next_client()
-            try:
-                if mode == 'copy':
-                    await client.send_message(
-                        target_id,
-                        message=text,
-                        file=media,
-                        **send_kwargs
-                    )
+    logger.info("启动失效链接检测器...")
+    await initialize_clients(config) # 只需要一个客户端
+    
+    link_checker = LinkChecker(config, clients[0])
+    await link_checker.run()
+    logger.info("✅ 失效链接检测完成。")
+
+async def export_dialogs(config: Config):
+    """导出频道和话题信息"""
+    await initialize_clients(config)
+    main_client = clients[0]
+
+    logger.info("正在导出所有对话... (这可能需要一点时间)")
+    
+    try:
+        dialogs = await main_client.get_dialogs()
+        output = "--- 频道/群组/用户列表 (标识符 / 名称) ---\n"
+        output += "--- (可直接复制 标识符 到 config.yaml) ---\n"
+        topics_output = "\n--- 群组话题列表 (群组ID / 话题ID / 话题名称) ---\n"
+
+        for dialog in dialogs:
+            identifier = ""
+            if dialog.is_channel or dialog.is_group:
+                # (新) 优先使用 username，否则使用 ID
+                if dialog.entity.username:
+                    identifier = f"@{dialog.entity.username}"
                 else:
-                    await client.forward_messages(
-                        target_id,
-                        messages=original_message,
-                        **send_kwargs
-                    )
+                    identifier = str(dialog.id)
+                output += f"{identifier}\t{dialog.title}\n"
                 
-                logger.debug(f"客户端 {client.session.session_id[:5]}... 发送成功。")
-                return 
+                # 检查是否是开启了话题的群组
+                if dialog.is_group and getattr(dialog.entity, 'forum', False):
+                    logger.info(f"正在获取群组 '{dialog.title}' ({dialog.id}) 的话题...")
+                    try:
+                        # (新) 修复了获取话题的逻辑
+                        topics = await main_client.get_topics(dialog.id)
+                        for topic in topics:
+                            topics_output += f"{dialog.id}\t{topic.id}\t{topic.title}\n"
+                    except Exception as e:
+                        logger.warning(f"获取话题失败 for {dialog.title}: {e} (可能是权限不足)")
 
-            except Exception as e:
-                await self._handle_send_error(e, client)
+            elif dialog.is_user:
+                # (新) 同样支持用户
+                if dialog.entity.username:
+                    identifier = f"@{dialog.entity.username}"
+                else:
+                    identifier = str(dialog.id)
+                output += f"{identifier}\t{dialog.title}\n"
+
+
+        print("\n\n" + "="*30)
+        print(output)
+        print(topics_output)
+        print("="*30 + "\n")
+        
+        logger.info("---")
+        logger.info("如何使用:")
+        logger.info("1. 在 'sources' 配置中，复制 '标识符' 列 (例如 @username 或 -100123456789)。")
+        logger.info("2. 在 'targets' 配置中，也使用 '标识符'。")
+        logger.info("3. 在 'targets.distribution_rules' 中，使用 '群组ID' 和 '话题ID'。")
+        
+    except Exception as e:
+        logger.error(f"导出对话失败: {e}")
+
+async def reload_config_func():
+    """(新) Bot 调用的热重载函数"""
+    global forwarder, link_checker, bot_client, CONFIG_PATH
+    
+    logger.warning("🔄 收到 /reload 命令，正在热重载配置...")
+    
+    try:
+        # 1. 重新加载配置文件
+        new_config = load_config(CONFIG_PATH)
+        
+        # 2. 重新初始化需要重载的部分
+        # (注意: 客户端和监听器不能完全重启，否则会断开连接)
+        
+        # 2a. 重载转发器 (它持有所有过滤/分发规则)
+        if forwarder:
+            await forwarder.reload(new_config)
+            logger.info("✅ 转发器规则已热重载。")
+
+        # 2b. 重载链接检测器
+        if link_checker:
+            link_checker.reload(new_config)
+            logger.info("✅ 链接检测器配置已热重载。")
+
+        # 2c. 重载 Bot (主要是 admin_user_ids)
+        if bot_client and bot_client.is_connected():
+             # 简单起见，BotService 内部会重新加载
+             # 我们只需要确保 BotService 实例能拿到新 config
+             pass
+        
+        logger.warning("✅ 配置热重载完毕。")
+        return "✅ 配置热重载完毕。"
+    except Exception as e:
+        logger.error(f"❌ 热重载失败: {e}")
+        return f"❌ 热重载失败: {e}"
+
+
+async def main():
+    global CONFIG_PATH
+    parser = argparse.ArgumentParser(description="TG Ultimate Forwarder - 终极 Telegram 转发器")
+    parser.add_argument(
+        'mode',
+        choices=['run', 'checklinks', 'export'],
+        default='run',
+        nargs='?', 
+        help=(
+            "运行模式: \n"
+            "  'run' (默认): 启动转发器 (和 Bot)。\n"
+            "  'checklinks': 仅运行一次失效链接检测器。\n"
+            "  'export': 导出频道和话题ID。"
+        )
+    )
+    parser.add_argument(
+        '-c', '--config',
+        default='/app/config.yaml', # Docker 内部的绝对路径
+        help="配置文件路径 (默认: /app/config.yaml)"
+    )
+    args = parser.parse_args()
+    CONFIG_PATH = args.config # (新) 保存配置路径以供热重载
+
+    # 将配置加载移到 main() 中
+    config = load_config(CONFIG_PATH)
+
+    try:
+        if args.mode == 'run':
+            await run_forwarder(config)
+        elif args.mode == 'checklinks':
+            await run_link_checker(config)
+        elif args.mode == 'export':
+            await export_dialogs(config)
+            
+    except (KeyboardInterrupt, asyncio.CancelledError):
+        logger.info("程序被用户中断。")
+    except Exception as e:
+        logger.critical(f"❌ 出现未捕获的致命错误: {e}", exc_info=True)
+    finally:
+        if bot_client and bot_client.is_connected():
+            await bot_client.disconnect()
+            logger.info("Bot 客户端已断开连接。")
+        for client in clients:
+            if client.is_connected():
+                await client.disconnect()
+        logger.info("所有用户客户端已断开连接。程序退出。")
+
+if __name__ == "__main__":
+    if not os.path.exists("/app/data"):
+        logger.info("未检测到 /app/data 目录，正在创建...")
+        try:
+            os.makedirs("/app/data")
+        except OSError as e:
+            logger.critical(f"无法创建 /app/data 目录: {e}")
+            logger.critical("请确保你已使用 -v /path/to/your/data:/app/data 挂载了数据卷。")
+            sys.exit(1)
+            
+    asyncio.run(main())

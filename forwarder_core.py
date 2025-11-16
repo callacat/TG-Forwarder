@@ -6,7 +6,7 @@ import asyncio
 import httpx
 import time
 import json
-import os 
+import os # (新) 导入 os，用于处理路径
 from datetime import datetime, timezone
 from telethon import TelegramClient, events, errors
 from telethon.tl.types import MessageEntityTextUrl, MessageMediaDocument, PeerUser, PeerChat, PeerChannel
@@ -329,9 +329,10 @@ class UltimateForwarder:
         
         while True:
             client = self.clients[self.current_client_index]
-            client_id = client.session.session_id
+            # (新) 修复: .session_id -> .path
+            client_key = client.session.path
             
-            wait_until = self.client_flood_wait.get(client_id, 0)
+            wait_until = self.client_flood_wait.get(client_key, 0)
             
             if time.time() > wait_until:
                 self.current_client_index = (self.current_client_index + 1) % len(self.clients)
@@ -340,7 +341,8 @@ class UltimateForwarder:
             self.current_client_index = (self.current_client_index + 1) % len(self.clients)
             
             if self.current_client_index == start_index:
-                all_wait_times = [self.client_flood_wait.get(c.session.session_id, 0) for c in self.clients]
+                # (新) 修复: .session_id -> .path
+                all_wait_times = [self.client_flood_wait.get(c.session.path, 0) for c in self.clients]
                 min_wait_time = min(all_wait_times) if all_wait_times else time.time()
                 sleep_duration = max(1.0, (min_wait_time - time.time()) + 1.0) 
                 
@@ -351,17 +353,21 @@ class UltimateForwarder:
                 continue
 
     async def _handle_send_error(self, e: Exception, client: TelegramClient):
-        client_id = client.session.session_id
+        # (新) 修复: .session_id -> .path
+        client_key = client.session.path
+        client_name = os.path.basename(client_key) # (新) 用于日志
+
         if isinstance(e, errors.FloodWaitError):
             wait_time = e.seconds + 5 
-            logger.warning(f"客户端 {client_id[:5]}... 触发 FloodWait: {wait_time} 秒。")
-            self.client_flood_wait[client_id] = time.time() + wait_time
+            logger.warning(f"客户端 {client_name} 触发 FloodWait: {wait_time} 秒。")
+            # (新) 修复: 使用 client_key 作为字典键
+            self.client_flood_wait[client_key] = time.time() + wait_time
         elif isinstance(e, errors.ChatWriteForbiddenError):
-            logger.error(f"客户端 {client_id[:5]}... 无法写入目标频道 (权限不足)。")
+            logger.error(f"客户端 {client_name} 无法写入目标频道 (权限不足)。")
         elif isinstance(e, errors.UserBannedInChannelError):
-            logger.error(f"客户端 {client_id[:5]}... 已被目标频道封禁。")
+            logger.error(f"客户端 {client_name} 已被目标频道封禁。")
         else:
-            logger.error(f"客户端 {client_id[:5]}... 转发时遇到未知错误: {e}")
+            logger.error(f"客户端 {client_name} 转发时遇到未知错误: {e}")
 
     # --- 消息处理流水线 (Process Pipeline) ---
 
@@ -378,13 +384,42 @@ class UltimateForwarder:
         elif isinstance(peer, PeerChannel):
             numeric_chat_id = peer.channel_id
         else:
-             logger.warning(f"收到来自未知类型源 {peer} 的消息，已忽略。")
-             return
+             # (新) 修复：Telethon 有时会直接返回数字 ID
+             try:
+                 numeric_chat_id = int(peer)
+             except (ValueError, TypeError):
+                 logger.warning(f"收到来自未知类型源 {peer} 的消息，已忽略。")
+                 return
 
-        source_config = next((s for s in self.config.sources if str(s.identifier) == str(numeric_chat_id) or (event.chat and hasattr(event.chat, 'username') and str(s.identifier) == f"@{event.chat.username}")), None)
+        # --- (新) 修复源匹配逻辑 ---
+        username = event.chat.username if event.chat and hasattr(event.chat, 'username') else None
+        source_config = None
+        
+        for s in self.config.sources:
+            s_id_str = str(s.identifier)
+            
+            # 1. 按数字 ID 匹配
+            if s_id_str == str(numeric_chat_id):
+                source_config = s
+                break
+                
+            if username:
+                # 2. 按 "@username" 匹配
+                if s_id_str == f"@{username}":
+                    source_config = s
+                    break
+                # 3. 按 "username" 匹配 (不带@)
+                if s_id_str == username:
+                    source_config = s
+                    break
+                # 4. 按 "https://t.me/username" 匹配
+                if s_id_str == f"https://t.me/{username}":
+                    source_config = s
+                    break
+        # --- 修复结束 ---
         
         if not source_config:
-             logger.warning(f"收到来自未配置源 {numeric_chat_id} (@{event.chat.username if event.chat and hasattr(event.chat, 'username') else 'N/A'}) 的消息，已忽略。")
+             logger.warning(f"收到来自未配置源 {numeric_chat_id} (@{username if username else 'N/A'}) 的消息，已忽略。")
              return
             
         logger.debug(f"--- [START] 正在处理消息 {numeric_chat_id}/{message.id} ---")
@@ -433,12 +468,24 @@ class UltimateForwarder:
             source_config = None
             entity = None
             try:
-                entity = await client.get_entity(source_id)
+                # (新) 修复：确保 source_id 是 Telethon 接受的 Peer
+                peer = await client.get_input_entity(source_id)
+                entity = await client.get_entity(peer)
+                
                 username = getattr(entity, 'username', None)
                 if username:
-                     source_config = next((s for s in self.config.sources if str(s.identifier) == f"@{username}"), None)
+                     # (新) 同样使用扩展的匹配逻辑
+                     for s in self.config.sources:
+                         s_id_str = str(s.identifier)
+                         if s_id_str == str(source_id) or \
+                            s_id_str == f"@{username}" or \
+                            s_id_str == username or \
+                            s_id_str == f"https://t.me/{username}":
+                             source_config = s
+                             break
                 if not source_config:
                      source_config = next((s for s in self.config.sources if str(s.identifier) == str(source_id)), None)
+                     
             except Exception as e:
                 logger.error(f"历史记录：无法获取实体 {source_id}: {e}")
                 continue
@@ -459,11 +506,16 @@ class UltimateForwarder:
             logger.info(f"正在扫描源 {source_config.identifier} ({source_id}) 的历史记录 (从消息 ID {last_id} 开始)...")
             
             try:
-                async for message in client.iter_messages(source_id, offset_id=last_id, reverse=True, limit=None):
-                    peer = await client.get_peer_id(source_id)
-                    fake_event = events.NewMessage.Event(message=message, peer_user=None, peer_chat=peer, chat=None)
-                    fake_event.chat_id = peer 
+                # (新) 使用 peer
+                async for message in client.iter_messages(peer, offset_id=last_id, reverse=True, limit=None):
                     
+                    # (新) 修复：peer_chat 和 chat_id 需要正确设置
+                    event_chat_id = message.chat_id
+                    
+                    fake_event = events.NewMessage.Event(message=message, peer_user=None, peer_chat=None, chat=None)
+                    
+                    # (新) 模拟 event 对象的属性
+                    fake_event.chat_id = event_chat_id
                     if not fake_event.chat:
                         fake_event.chat = entity
                         
