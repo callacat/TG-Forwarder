@@ -702,7 +702,8 @@ class UltimateForwarder:
         if not self.config.deduplication.enable:
             return
             
-        msg_hash = self._get_message_hash(message_G_data)
+        # (新) 修复问题2：修复 'message_G_data' 拼写错误
+        msg_hash = self._get_message_hash(message_data)
         if msg_hash:
             self.dedup_db.add(msg_hash)
             self._save_dedup_db()
@@ -736,27 +737,31 @@ class UltimateForwarder:
         mode = self.config.forwarding.mode
         
         send_kwargs = {}
-        # (新) 修复问题1：使用 'comment_to' 而不是 'top_msg_id'
+        # (新) 修复问题1： 'reply_to' 是用于话题的正确参数
         if topic_id:
-            if mode == 'copy':
-                send_kwargs["reply_to"] = topic_id
-            else:
-                send_kwargs["comment_to"] = topic_id # (新) 修复
+            # 两种模式都使用 reply_to
+            send_kwargs["reply_to"] = topic_id
 
         while True:
             client = self._get_next_client()
             try:
                 if mode == 'copy':
-                    # (新) 修复问题2：处理相册复制
-                    files_to_send = media
-                    if isinstance(original_message, list):
-                        # 如果是相册，提取所有媒体
-                        files_to_send = [msg.media for msg in original_message if msg.media]
+                    # (新) 修复问题2：使用 server-side copy，而不是 re-upload
+                    
+                    # (旧逻辑)
+                    # files_to_send = media
+                    # if isinstance(original_message, list):
+                    #     files_to_send = [msg.media for msg in original_message if msg.media]
+                    
+                    # (新逻辑)
+                    # original_message 是单个 Message 或 list[Message]
+                    # Telethon 的 send_message 可以直接处理
+                    files_to_send = original_message 
                     
                     await client.send_message(
                         target_id,
-                        message=text,
-                        file=files_to_send, # (新)
+                        message=text, # 新的文本/标题
+                        file=files_to_send, # (新) 传入 Message 对象
                         **send_kwargs
                     )
                 else:
@@ -772,7 +777,7 @@ class UltimateForwarder:
 
             except Exception as e:
                 # (新) 修复问题4：现在 target_id 应该是正确的 (-100...)，
-                # 这个 TypeError 错误理论上不应该再发生，但我们保留错误处理以防万一。
+                # (新) 修复问题1： 'reply_to' 是正确的参数，这个错误不应该再发生。
                 if isinstance(e, TypeError) and "unexpected keyword argument" in str(e):
                     logger.error(f"客户端 {client.session_name_for_forwarder} 转发时遇到内部代码错误: {e}")
                     logger.error(f"这通常意味着目标 {target_id} (话题: {topic_id}) 与转发模式 {mode} 不兼容。")
@@ -780,7 +785,8 @@ class UltimateForwarder:
                     try:
                         # 尝试不带 topic_id 再次发送
                         if mode == 'copy':
-                            await client.send_message(target_id, message=text, file=media)
+                            # (新) 修复问题2：使用新逻辑
+                            await client.send_message(target_id, message=text, file=original_message)
                         else:
                             await client.forward_messages(target_id, messages=original_message)
                         return # 重试成功

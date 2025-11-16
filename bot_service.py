@@ -32,6 +32,19 @@ class BotService:
 
     def is_admin(self, event: events.NewMessage.Event) -> bool:
         """检查发件人是否为管理员"""
+        
+        # (新) 修复问题3：允许群组命令，但阻止匿名
+        if event.is_group:
+            if event.sender_id is None:
+                logger.warning(f"忽略来自群组 {event.chat_id} 的匿名管理员命令。请以个人身份发送命令。")
+                return False
+            # 如果 event.sender_id 不是 None，则 fall-through 到下面的检查
+        
+        # (旧的)
+        # if not event.is_private:
+        #     logger.debug("忽略来自群组的命令。")
+        #     return False
+
         # (新) 热重载：直接从 forwarder 获取最新的 admin_ids
         if self.forwarder and self.forwarder.config.bot_service:
             current_admin_ids = self.forwarder.config.bot_service.admin_user_ids
@@ -50,7 +63,9 @@ class BotService:
         @self.bot.on(events.NewMessage(pattern='/start'))
         async def start_handler(event: events.NewMessage.Event):
             if not self.is_admin(event):
-                await event.reply("❌ 你无权访问此 Bot。")
+                # (新) 修复问题3：如果在群组中未授权，不回复
+                if event.is_private:
+                    await event.reply("❌ 你无权访问此 Bot。")
                 return
             
             await event.reply(

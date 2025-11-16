@@ -270,16 +270,23 @@ async def run_forwarder(config: Config):
         # 1. 找到带文字的主消息 (通常是第一条)
         main_message = next((m for m in event.messages if m.text), event.messages[0])
         
-        # 2. 构建一个临时的 "main_event" 对象
+        # 2. (新) 修复问题4：修复 'peer_user' 崩溃
+        # 构建一个临时的 "main_event" 对象
         # (forwarder_core 需要一个 event 对象，而不仅仅是 message 列表)
-        main_event = events.NewMessage.Event(
-            message=main_message,
-            peer_user=None,
-            peer_chat=main_message.peer_id, # 使用主消息的 peer_id
-            chat=await event.get_chat() # 确保 chat 属性存在
-        )
-        # 模拟 chat_id
+        
+        # (新) 修复：使用最小的构造函数，然后手动设置属性
+        main_event = events.NewMessage.Event(message=main_message)
         main_event.chat_id = main_message.chat_id
+        main_event.chat = await event.get_chat()
+        # (旧的崩溃代码)
+        # main_event = events.NewMessage.Event(
+        #     message=main_message,
+        #     peer_user=None,
+        #     peer_chat=main_message.peer_id, # 使用主消息的 peer_id
+        #     chat=await event.get_chat() # 确保 chat 属性存在
+        # )
+        # # 模拟 chat_id
+        # main_event.chat_id = main_message.chat_id
 
         # 3. 获取所有消息的完整列表
         all_messages = event.messages
