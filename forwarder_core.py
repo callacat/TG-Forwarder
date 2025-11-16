@@ -222,6 +222,8 @@ class UltimateForwarder:
         self.progress_db: Dict[str, int] = self._load_progress_db()
 
         self.ad_patterns = self._compile_patterns(config.ad_filter.patterns if config.ad_filter else [])
+        # (新) 修复问题1：将关键词编译为全词匹配
+        self.ad_keyword_patterns = self._compile_word_patterns(config.ad_filter.keywords if config.ad_filter else [])
         
         logger.info(f"终极转发器核心已初始化。")
         logger.info(f"转发模式: {config.forwarding.mode}")
@@ -233,6 +235,8 @@ class UltimateForwarder:
         """(新) 热重载配置"""
         self.config = new_config
         self.ad_patterns = self._compile_patterns(new_config.ad_filter.patterns if new_config.ad_filter else [])
+        # (新) 修复问题1：热重载时也要更新关键词
+        self.ad_keyword_patterns = self._compile_word_patterns(new_config.ad_filter.keywords if new_config.ad_filter else [])
         await self.resolve_targets() # 确保目标被重新解析
         logger.info("转发器配置已热重载。")
 
@@ -495,7 +499,15 @@ class UltimateForwarder:
                 async for message in client.iter_messages(peer, offset_id=last_id, reverse=True, limit=None):
                     
                     try:
-                        event_chat_id = events.utils.get_peer_id(message.peer_id)
+                        # (新) 修复：使用更健壮的 ID 解析
+                        if isinstance(message.peer_id, (int)):
+                            event_chat_id = message.peer_id
+                        else:
+                            event_chat_id = events.utils.get_peer_id(message.peer_id)
+                        
+                        if event_chat_id > 1000000000 and not str(event_chat_id).startswith("-100"):
+                             event_chat_id = int(f"-100{event_chat_id}")
+                             
                     except Exception:
                         continue # 跳过无法解析的消息
                     
@@ -546,6 +558,19 @@ class UltimateForwarder:
                 logger.warning(f"无效的正则表达式: '{p}', 错误: {e}")
         return compiled
 
+    # (新) 修复问题1：用于全词匹配的函数
+    def _compile_word_patterns(self, keywords: List[str]) -> List[re.Pattern]:
+        """将关键词列表编译为全词匹配的正则表达式"""
+        compiled = []
+        for kw in keywords:
+            try:
+                # \b 确保它是独立的词
+                pattern = r'\b' + re.escape(kw) + r'\b'
+                compiled.append(re.compile(pattern, re.IGNORECASE))
+            except re.error as e:
+                logger.warning(f"无效的广告关键词: '{kw}', 错误: {e}")
+        return compiled
+
     def _should_filter(self, text: str, media: Any) -> bool:
         text = text or ""
         text_lower = text.lower()
@@ -561,9 +586,12 @@ class UltimateForwarder:
 
         # 2. 广告过滤 (黑名单)
         if self.config.ad_filter and self.config.ad_filter.enable:
-            if any(kw.lower() in text_lower for kw in self.config.ad_filter.keywords):
-                logger.debug(f"Filter [Ad Keyword]: 命中广告关键词。")
-                return True
+            # (新) 修复问题1：使用全词匹配
+            for p in self.ad_keyword_patterns:
+                if p.search(text):
+                    logger.debug(f"Filter [Ad Keyword]: 命中广告关键词 {p.pattern}。")
+                    return True
+            # (旧) 保持正则表达式匹配
             for p in self.ad_patterns:
                 if p.search(text):
                     logger.debug(f"Filter [Ad Pattern]: 命中广告正则 {p.pattern}。")
@@ -654,28 +682,51 @@ class UltimateForwarder:
         media = message_data['media']
         mode = self.config.forwarding.mode
         
-        # (新) 修复：'reply_to' 是 'send_message' (copy) 用的
-        # 'forward_messages' (forward) 应该用 'top_msg_id'
+        # (新) 修复问题3：只有在 topic_id 存在时才添加参数
         
         while True:
             client = self._get_next_client()
             try:
                 if mode == 'copy':
+                    kwargs = {}
+                    if topic_id:
+                        kwargs['reply_to'] = topic_id
                     await client.send_message(
                         target_id,
                         message=text,
                         file=media,
-                        reply_to=topic_id # (新) 直接传递
+                        **kwargs # 传递动态参数
                     )
                 else: # 'forward' 模式
+                    kwargs = {}
+                    if topic_id:
+                        kwargs['top_msg_id'] = topic_id
                     await client.forward_messages(
                         target_id,
                         messages=original_message,
-                        top_msg_id=topic_id # (新) 修复：使用 top_msg_id
+                        **kwargs # 传递动态参数
                     )
                 
-                logger.debug(f"客户端 {client.session.session_id[:5]}... 发送成功。")
+                logger.debug(f"客户端 {client.session_name_for_forwarder} 发送成功。")
                 return 
 
             except Exception as e:
+                # (新) 增加对 TypeError 的捕获
+                if isinstance(e, TypeError) and "unexpected keyword argument" in str(e):
+                    logger.error(f"客户端 {client.session_name_for_forwarder} 转发时遇到内部代码错误: {e}")
+                    logger.error(f"这通常意味着目标 {target_id} (话题: {topic_id}) 与转发模式 {mode} 不兼容。")
+                    logger.warning("将尝试不带 topic_id 转发...")
+                    try:
+                        # (FIX) 重试时不带任何 topic_id
+                        if mode == 'copy':
+                            await client.send_message(target_id, message=text, file=media)
+                        else:
+                            await client.forward_messages(target_id, messages=original_message)
+                        return # 成功后退出
+                    except Exception as e2:
+                         logger.error(f"重试转发失败: {e2}")
+                         await self._handle_send_error(e2, client) # 处理重试错误
+                         return # 放弃此消息
+                
+                # 处理其他错误
                 await self._handle_send_error(e, client)

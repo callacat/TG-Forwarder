@@ -59,7 +59,8 @@ class BotService:
                 "**可用命令:**\n"
                 "`/status` - 查看服务运行状态。\n"
                 "`/reload` - 热重载 `config.yaml` 文件。\n"
-                "`/run_checklinks` - 手动触发一次失效链接检测。"
+                "`/run_checklinks` - 手动触发一次失效链接检测。\n"
+                "`/export_sources` - (新) 导出已配置的源频道 ID。"
             )
 
         # --- /status ---
@@ -128,16 +129,43 @@ class BotService:
                 logger.error(f"运行链接检测时出错: {e}")
                 await event.reply(f"❌ 运行链接检测时出错: {e}")
 
+        # --- (新) 修复问题2：添加 /export_sources ---
+        @self.bot.on(events.NewMessage(pattern='/export_sources'))
+        async def export_sources_handler(event: events.NewMessage.Event):
+            if not self.is_admin(event): return
+
+            if not self.forwarder or not self.forwarder.config.sources:
+                await event.reply("❌ 未找到已配置的源。")
+                return
+            
+            output = "**✅ 已配置的源频道**\n\n"
+            output += "`config.yaml` 中的标识符 | 解析后的数字 ID\n"
+            output += "--------------------------------------\n"
+            
+            count = 0
+            for s_config in self.forwarder.config.sources:
+                if s_config.resolved_id:
+                    output += f"`{s_config.identifier}` | `{s_config.resolved_id}`\n"
+                    count += 1
+                else:
+                    # 这通常发生在 /reload 之前或解析失败时
+                    output += f"`{s_config.identifier}` | ⚠️ *未解析 (请尝试 /reload)*\n"
+            
+            output += f"\n共计: {count} 个已解析的源。"
+            await event.reply(output)
+        # --- 修复问题2 结束 ---
+
         # --- (新) 自动设置 Bot 命令列表 (已回退到安全版本) ---
         try:
             logger.info("正在为 Bot 设置命令列表...")
             
             # 英文命令
             en_commands = [
-                BotCommand(command="start", description="显示欢迎和帮助信息"),
-                BotCommand(command="status", description="查看服务运行状态"),
-                BotCommand(command="reload", description="热重载 config.yaml 配置文件"),
-                BotCommand(command="run_checklinks", description="手动触发一次失效链接检测")
+                BotCommand(command="start", description="Show welcome message and help"),
+                BotCommand(command="status", description="Check service running status"),
+                BotCommand(command="reload", description="Reload the config.yaml file"),
+                BotCommand(command="run_checklinks", description="Manually trigger a link check"),
+                BotCommand(command="export_sources", description="Export resolved source channel IDs") # (新)
             ]
             
             # 中文命令
@@ -145,7 +173,8 @@ class BotService:
                 BotCommand(command="start", description="显示欢迎和帮助信息"),
                 BotCommand(command="status", description="查看服务运行状态"),
                 BotCommand(command="reload", description="热重载 config.yaml 配置文件"),
-                BotCommand(command="run_checklinks", description="手动触发一次失效链接检测")
+                BotCommand(command="run_checklinks", description="手动触发一次失效链接检测"),
+                BotCommand(command="export_sources", description="导出已解析的源频道 ID") # (新)
             ]
             
             # (新) 修复：回退到只使用 BotCommandScopeDefault()
