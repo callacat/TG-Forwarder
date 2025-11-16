@@ -772,7 +772,8 @@ class UltimateForwarder:
                         **send_kwargs
                     )
                 
-                logger.debug(f"客户端 {client.session.session_id[:5]}... 发送成功。")
+                # (新) 修复问题1：使用 'session_name_for_forwarder' 修复刷屏 Bug
+                logger.debug(f"客户端 {client.session_name_for_forwarder} 发送成功。")
                 return 
 
             except Exception as e:
