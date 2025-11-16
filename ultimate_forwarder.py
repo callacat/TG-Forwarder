@@ -8,6 +8,8 @@ from telethon import TelegramClient, events, errors
 # from telethon.sessions import Session # <--- 移除这个导入
 from telethon.tl.types import PeerUser, PeerChat, PeerChannel
 from typing import List # <--- 添加了这一行来修复错误
+# (新) 修复问题1：导入 Channel 和 Chat 类型
+from telethon.tl.types import Channel, Chat 
 
 # (新) 导入定时任务
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
@@ -195,8 +197,17 @@ async def resolve_identifiers(client: TelegramClient, config: Config) -> List[in
             # 规范化: Channel 对象 ID 是正数，需要转为 -100...
             # Chat 对象 ID 已经是负数
             # User 对象 ID 是正数
-            if hasattr(entity, 'is_channel') and entity.is_channel and not str(resolved_id).startswith("-100"):
-                 resolved_id = int(f"-100{resolved_id}")
+
+            # (新) 修复问题1：使用严格的类型检查
+            if isinstance(entity, Channel):
+                # 无论是 Channel 还是 Supergroup，都添加 -100
+                if not str(resolved_id).startswith("-100"):
+                    resolved_id = int(f"-100{resolved_id}")
+            elif isinstance(entity, Chat):
+                # 普通群组，添加 -
+                if not str(resolved_id).startswith("-"):
+                    resolved_id = int(f"-{resolved_id}")
+            # (新) 如果是 User, resolved_id (正数) 本身就是正确的
             
             s_config.resolved_id = resolved_id # (新) 将解析的ID存回配置对象
             resolved_ids.append(resolved_id)
