@@ -140,7 +140,7 @@ class ForwardingConfig(BaseModel):
     mode: str = "forward" 
     forward_new_only: bool = True 
     mark_as_read: bool = False
-    mark_target_as_read: bool = False # (新) v5.3：添加目标已读选项
+    mark_target_as_read: bool = False 
     
     @field_validator('mode')
     def check_mode(cls, v):
@@ -664,6 +664,8 @@ class UltimateForwarder:
         send_kwargs = {}
         if topic_id:
             send_kwargs["reply_to"] = topic_id
+            
+        sent_message = None 
 
         while True:
             client = self._get_next_client()
@@ -684,14 +686,14 @@ class UltimateForwarder:
                     
                     
                     if is_real_file:
-                        await client.send_message(
+                        sent_message = await client.send_message( 
                             target_id,
                             message=text,            
                             file=media_to_send,      
                             **send_kwargs
                         )
                     else:
-                        await client.send_message(
+                        sent_message = await client.send_message( 
                             target_id,
                             message=text,            
                             file=None,               
@@ -699,18 +701,29 @@ class UltimateForwarder:
                             **send_kwargs
                         )
                 else:
-                    await client.forward_messages(
+                    sent_message = await client.forward_messages( 
                         target_id,
                         messages=original_message, 
                         **send_kwargs
                     )
                 
-                # (新) v5.3：标记目标为已读
-                if self.config.forwarding.mark_target_as_read:
+                # (新) v5.5：修复话题已读
+                # 只有在 topic_id 为 None 时，才标记整个群组已读
+                if self.config.forwarding.mark_target_as_read and sent_message and topic_id is None:
                     try:
-                        await client.mark_read(target_id)
+                        last_message_id = 0
+                        if isinstance(sent_message, list):
+                            last_message_id = sent_message[-1].id
+                        else:
+                            last_message_id = sent_message.id
+                        
+                        await client.mark_read(
+                            target_id, 
+                            max_id=last_message_id
+                            # 移除了 top_msg_id，避免标记所有话题
+                        )
                     except Exception as e:
-                        logger.debug(f"将目标 {target_id} 标记为已读失败: {e}")
+                        logger.debug(f"将目标 {target_id} (非话题) 标记为已读失败: {e}")
 
                 logger.debug(f"客户端 {client.session_name_for_forwarder} 发送成功。")
                 return 
@@ -722,27 +735,38 @@ class UltimateForwarder:
                     logger.warning("将尝试不带 topic_id 转发...")
                     try:
                         # 尝试不带 topic_id 再次发送
+                        sent_message_retry = None 
                         if mode == 'copy':
                             if is_real_file:
-                                await client.send_message(
+                                sent_message_retry = await client.send_message( 
                                     target_id, 
                                     message=text, 
                                     file=media_to_send
                                 )
                             else:
-                                await client.send_message(
+                                sent_message_retry = await client.send_message( 
                                     target_id, 
                                     message=text, 
                                     file=None,
                                     parse_mode='md'
                                 )
                         else:
-                            await client.forward_messages(target_id, messages=original_message)
+                            sent_message_retry = await client.forward_messages(target_id, messages=original_message) 
                         
-                        # (新) v5.3：标记目标为已读 (重试成功时)
-                        if self.config.forwarding.mark_target_as_read:
+                        # (新) v5.5：标记目标为已读 (重试成功时)
+                        if self.config.forwarding.mark_target_as_read and sent_message_retry:
                             try:
-                                await client.mark_read(target_id)
+                                last_message_id = 0
+                                if isinstance(sent_message_retry, list):
+                                    last_message_id = sent_message_retry[-1].id
+                                else:
+                                    last_message_id = sent_message_retry.id
+                                
+                                # 此时 topic_id 必定为 None
+                                await client.mark_read(
+                                    target_id, 
+                                    max_id=last_message_id
+                                )
                             except Exception as e:
                                 logger.debug(f"将目标 {target_id} 标记为已读失败: {e}")
 
