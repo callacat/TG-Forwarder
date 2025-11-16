@@ -1,22 +1,20 @@
 # bot_service.py
 import logging
-import time # (新) 导入 time
-import os # (新) 导入 os，用于处理路径
+import time
+import os
 from telethon import TelegramClient, events
 from telethon.tl.types import Message
 from typing import Callable, Awaitable
-from datetime import datetime, timezone # (新) 导入 datetime, timezone
-from forwarder_core import Config # (新)
-from link_checker import LinkChecker # (新)
+from datetime import datetime, timezone
+from forwarder_core import Config
+from link_checker import LinkChecker
 # (新) 导入 BotCommand 相关
 from telethon.tl.functions.bots import SetBotCommandsRequest
-# (新) 修复：导入所有需要的 Scope 类型
+# (新) 修复：只导入你库中存在的 Scope 类型
 from telethon.tl.types import (
     BotCommand, 
-    BotCommandScopeDefault, 
-    BotCommandScopeAllPrivateChats,
-    BotCommandScopeAllGroupChats,
-    BotCommandScopeAllChatAdministrators
+    BotCommandScopeDefault
+    # (已移除 BotCommandScopeAllPrivateChats 等... 以避免崩溃)
 )
 
 logger = logging.getLogger(__name__)
@@ -123,7 +121,7 @@ class BotService:
                 logger.error(f"运行链接检测时出错: {e}")
                 await event.reply(f"❌ 运行链接检测时出错: {e}")
 
-        # --- (新) 自动设置 Bot 命令列表 (修复问题1, 2, 3) ---
+        # --- (新) 自动设置 Bot 命令列表 (已回退到安全版本) ---
         try:
             logger.info("正在为 Bot 设置命令列表...")
             
@@ -143,43 +141,33 @@ class BotService:
                 BotCommand(command="run_checklinks", description="手动触发一次失效链接检测")
             ]
             
-            # (新) 修复问题1：定义所有三个开关 + 默认
-            scopes_to_set = [
-                (BotCommandScopeDefault(), "Default (默认)"),
-                (BotCommandScopeAllPrivateChats(), "All Private Chats (所有私聊)"),
-                (BotCommandScopeAllGroupChats(), "All Group Chats (所有群组)"),
-                (BotCommandScopeAllChatAdministrators(), "All Group Admins (所有群组管理员)")
-            ]
+            # (新) 修复：回退到只使用 BotCommandScopeDefault()
+            # 这样程序不会崩溃，但可能没有快捷菜单
+            scope = BotCommandScopeDefault()
             
-            for scope, scope_name in scopes_to_set:
-                logger.info(f"--- 正在设置 {scope_name} 作用域的命令 ---")
-                
-                # 1. 设置默认 (所有语言)，使用英语
-                # lang_code="" 是必须的，作为回退
-                await self.bot(SetBotCommandsRequest(
-                    scope=scope,
-                    lang_code="", # 空 lang_code 表示默认
-                    commands=en_commands
-                ))
+            logger.info(f"--- 正在设置 Default (默认) 作用域的命令 ---")
+            
+            # 1. 设置默认 (所有语言)，使用英语
+            await self.bot(SetBotCommandsRequest(
+                scope=scope,
+                lang_code="", # 空 lang_code 表示默认
+                commands=en_commands
+            ))
 
-                # 2. 专门为英语用户设置 (覆盖默认)
-                await self.bot(SetBotCommandsRequest(
-                    scope=scope,
-                    lang_code="en",
-                    commands=en_commands
-                ))
-                
-                # 3. 专门为中文用户设置 (覆盖默认)
-                # (新) 修复问题2：只使用 "zh"，因为 "zh-hans" 是无效的
-                await self.bot(SetBotCommandsRequest(
-                    scope=scope,
-                    lang_code="zh",
-                    commands=zh_commands
-                ))
-                
-                # (新) 修复问题2：移除无效的 "zh-hans" 和 "zh-hant"
+            # 2. 专门为英语用户设置 (覆盖默认)
+            await self.bot(SetBotCommandsRequest(
+                scope=scope,
+                lang_code="en",
+                commands=en_commands
+            ))
+            
+            # 3. 专门为中文用户设置 (覆盖默认)
+            await self.bot(SetBotCommandsRequest(
+                scope=scope,
+                lang_code="zh",
+                commands=zh_commands
+            ))
 
-            logger.info("✅ Bot 命令列表设置成功 (Default + Private + Groups + Admins)。")
+            logger.info("✅ Bot 命令列表设置成功 (Default Scope)。")
         except Exception as e:
-            # (新) 修复问题2：修正 import 错误后，这里的日志不应该再出现
             logger.warning(f"⚠️ 无法设置 Bot 命令列表: {e} (这不影响 Bot 运行)")
