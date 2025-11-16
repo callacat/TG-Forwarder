@@ -10,6 +10,8 @@ import os
 from datetime import datetime, timezone
 from telethon import TelegramClient, events, errors
 from telethon.tl.types import MessageEntityTextUrl, MessageMediaDocument, PeerUser, PeerChat, PeerChannel
+# (新) 修复问题4：导入 Channel 和 Chat
+from telethon.tl.types import Channel, Chat 
 
 # --- 类型提示 ---
 from typing import List, Optional, Tuple, Dict, Set, Any, Union 
@@ -57,10 +59,11 @@ class SourceConfig(BaseModel):
     check_replies: bool = False
     replies_limit: int = 10
     forward_new_only: Optional[bool] = None
-    resolved_id: Optional[int] = Field(None, exclude=True) # (新) 修复问题3：存储解析后的ID
+    resolved_id: Optional[int] = Field(None, exclude=True) # (新) 用于存储解析后的 ID
 
 class TargetDistributionRule(BaseModel):
     name: str 
+    # (新) 增加 all_keywords 字段，用于 AND 逻辑
     all_keywords: List[str] = Field(default_factory=list, description="[AND] 必须 *同时* 包含列表中的所有关键词")
     any_keywords: List[str] = Field(default_factory=list, description="[OR] 包含列表中的 *任意一个* 关键词即可")
     file_types: List[str] = Field(default_factory=list, description="[OR] 匹配任意一个MIME Type") 
@@ -75,28 +78,36 @@ class TargetDistributionRule(BaseModel):
         """
         (已修改) 检查消息是否匹配此规则。
         逻辑: (all_keywords) AND (any_keywords OR file_types OR file_name_patterns)
+        
+        如果 all_keywords, any_keywords, file_types, file_name_patterns 都为空，则规则不匹配。
+        如果 all_keywords 不为空，但 [OR] 组 (any_keywords, file_types, file_name_patterns) 为空，
+        则仅当 all_keywords 匹配时，规则才匹配。
         """
         text_lower = text.lower() if text else ""
         
         # 1. 检查 [AND] all_keywords
         if self.all_keywords:
             if not all(kw.lower() in text_lower for kw in self.all_keywords):
-                return False 
+                return False # [AND] 检查失败，此规则不匹配
         
         # 2. 检查 [OR] 条件组
         or_group_matched = False
         
+        # 检查 [OR] any_keywords
         if self.any_keywords:
             if any(keyword.lower() in text_lower for keyword in self.any_keywords):
                 or_group_matched = True
         
+        # 检查 [OR] media (file_types / file_name_patterns)
         if not or_group_matched and media and isinstance(media, MessageMediaDocument):
             doc = media.document
             if doc:
+                # 检查 [OR] file_types
                 if self.file_types and doc.mime_type:
                     if any(ft.lower() in doc.mime_type.lower() for ft in self.file_types):
                         or_group_matched = True
 
+                # 检查 [OR] file_name_patterns
                 if not or_group_matched and self.file_name_patterns:
                     file_name = next((attr.file_name for attr in doc.attributes if hasattr(attr, 'file_name')), None)
                     if file_name:
@@ -105,7 +116,7 @@ class TargetDistributionRule(BaseModel):
                                 pattern = re.compile(pattern_str.replace('.', r'\.').replace('*', r'.*') + '$', re.IGNORECASE)
                                 if re.search(pattern, file_name):
                                     or_group_matched = True
-                                    break 
+                                    break # 找到一个匹配就够了
                             except re.error:
                                 logger.warning(f"规则 '{self.name}' 中的文件名模式 '{pattern_str}' 无效")
         
@@ -114,24 +125,33 @@ class TargetDistributionRule(BaseModel):
         has_or_group = bool(self.any_keywords or self.file_types or self.file_name_patterns)
 
         if has_all_keywords and not has_or_group:
+            # 只有 [AND] 规则：all_keywords 必须匹配 (在步骤1中已检查)
             return True
         elif not has_all_keywords and has_or_group:
+            # 只有 [OR] 规则：or_group 必须匹配
             return or_group_matched
         elif has_all_keywords and has_or_group:
+            # [AND] + [OR] 规则：两者都必须匹配
+            # all_keywords 已在步骤1中检查通过
             return or_group_matched
         else:
+            # 所有列表都为空，规则无效
             return False
 
 class TargetConfig(BaseModel):
     default_target: Union[int, str]
-    default_topic_id: Optional[int] = None # (新) 修复：添加此字段以匹配 config
+    # (新) 修复问题4：添加 default_topic_id
+    default_topic_id: Optional[int] = None 
     distribution_rules: List[TargetDistributionRule] = Field(default_factory=list)
+    
     resolved_default_target_id: Optional[int] = Field(None, exclude=True)
 
 
 class ForwardingConfig(BaseModel):
     mode: str = "forward" 
     forward_new_only: bool = True 
+    # (新) 自动已读功能
+    mark_as_read: bool = False
     
     @field_validator('mode')
     def check_mode(cls, v):
@@ -141,17 +161,20 @@ class ForwardingConfig(BaseModel):
 
 class AdFilterConfig(BaseModel):
     enable: bool = True
-    keywords: List[str] = Field(default_factory=list)
-    patterns: List[str] = Field(default_factory=list)
+    # (新) 修复问题1：允许列表为 None (当 yaml 中注释掉所有条目时)
+    keywords: Optional[List[str]] = Field(default_factory=list)
+    patterns: Optional[List[str]] = Field(default_factory=list)
 
 class ContentFilterConfig(BaseModel):
     enable: bool = True
-    meaningless_words: List[str] = Field(default_factory=list)
+    # (新) 修复问题1：允许列表为 None
+    meaningless_words: Optional[List[str]] = Field(default_factory=list)
     min_meaningful_length: int = 5
 
 class WhitelistConfig(BaseModel):
     enable: bool = False
-    keywords: List[str] = Field(default_factory=list)
+    # (新) 修复问题1：允许列表为 None
+    keywords: Optional[List[str]] = Field(default_factory=list)
 
 class DeduplicationConfig(BaseModel):
     enable: bool = True
@@ -203,7 +226,8 @@ class Config(BaseModel):
     whitelist: WhitelistConfig = Field(default_factory=WhitelistConfig)
     deduplication: DeduplicationConfig = Field(default_factory=DeduplicationConfig)
     link_extraction: LinkExtractionConfig = Field(default_factory=LinkExtractionConfig)
-    replacements: Dict[str, str] = Field(default_factory=dict)
+    # (新) 修复问题1：允许 replacements 为 None
+    replacements: Optional[Dict[str, str]] = Field(default_factory=dict)
     link_checker: Optional[LinkCheckerConfig] = Field(default_factory=LinkCheckerConfig)
     bot_service: Optional[BotServiceConfig] = Field(default_factory=BotServiceConfig) 
     
@@ -221,9 +245,11 @@ class UltimateForwarder:
         self.dedup_db: Set[str] = self._load_dedup_db()
         self.progress_db: Dict[str, int] = self._load_progress_db()
 
-        self.ad_patterns = self._compile_patterns(config.ad_filter.patterns if config.ad_filter else [])
-        # (新) 修复问题1：将关键词编译为全词匹配
-        self.ad_keyword_patterns = self._compile_word_patterns(config.ad_filter.keywords if config.ad_filter else [])
+        # (新) 修复问题1：在使用列表前检查 None
+        ad_filter = config.ad_filter
+        self.ad_patterns = self._compile_patterns(ad_filter.patterns if ad_filter and ad_filter.patterns else [])
+        # (新) 修复问题3：全词匹配
+        self.ad_keyword_patterns = self._compile_word_patterns(ad_filter.keywords if ad_filter and ad_filter.keywords else [])
         
         logger.info(f"终极转发器核心已初始化。")
         logger.info(f"转发模式: {config.forwarding.mode}")
@@ -234,9 +260,11 @@ class UltimateForwarder:
     async def reload(self, new_config: Config):
         """(新) 热重载配置"""
         self.config = new_config
-        self.ad_patterns = self._compile_patterns(new_config.ad_filter.patterns if new_config.ad_filter else [])
-        # (新) 修复问题1：热重载时也要更新关键词
-        self.ad_keyword_patterns = self._compile_word_patterns(new_config.ad_filter.keywords if new_config.ad_filter else [])
+        # (新) 修复问题1：在使用列表前检查 None
+        new_ad_filter = new_config.ad_filter
+        self.ad_patterns = self._compile_patterns(new_ad_filter.patterns if new_ad_filter and new_ad_filter.patterns else [])
+        # (新) 修复问题3：全词匹配
+        self.ad_keyword_patterns = self._compile_word_patterns(new_ad_filter.keywords if new_ad_filter and new_ad_filter.keywords else [])
         await self.resolve_targets() # 确保目标被重新解析
         logger.info("转发器配置已热重载。")
 
@@ -248,18 +276,31 @@ class UltimateForwarder:
             
         client = self.clients[0]
         
-        try:
-            entity = await client.get_entity(self.config.targets.default_target)
-            self.config.targets.resolved_default_target_id = entity.id
-        except Exception as e:
-            logger.error(f"❌ 无法解析默认目标: {self.config.targets.default_target} - {e}")
-
-        for rule in self.config.targets.distribution_rules:
+        # (新) 修复问题4：为所有目标应用 ID 规范化
+        async def normalize_target(identifier: Union[str, int]) -> Optional[int]:
             try:
-                entity = await client.get_entity(rule.target_identifier)
-                rule.resolved_target_id = entity.id
+                entity = await client.get_entity(identifier)
+                resolved_id = entity.id
+                
+                if isinstance(entity, Channel):
+                    if not str(resolved_id).startswith("-100"):
+                        resolved_id = int(f"-100{resolved_id}")
+                elif isinstance(entity, Chat):
+                    if not str(resolved_id).startswith("-"):
+                        resolved_id = int(f"-{resolved_id}")
+                
+                logger.info(f"目标 '{identifier}' -> 解析为 ID: {resolved_id}")
+                return resolved_id
             except Exception as e:
-                logger.error(f"❌ 无法解析规则 '{rule.name}' 的目标: {rule.target_identifier} - {e}")
+                logger.error(f"❌ 无法解析目标: {identifier} - {e}")
+                return None
+        
+        # 规范化默认目标
+        self.config.targets.resolved_default_target_id = await normalize_target(self.config.targets.default_target)
+
+        # 规范化规则目标
+        for rule in self.config.targets.distribution_rules:
+            rule.resolved_target_id = await normalize_target(rule.target_identifier)
 
 
     # --- 数据库/状态管理 ---
@@ -267,15 +308,15 @@ class UltimateForwarder:
     def _get_progress_db_path(self) -> str:
         return "/app/data/forwarder_progress.json"
 
-    def _save_progress_db_data(self, data: Dict[str, int]):
+    # (新) 修复问题1：立即创建文件
+    def _save_db_data(self, path: str, data: Any):
         """(新) 封装保存逻辑"""
-        path = self._get_progress_db_path()
         try:
             os.makedirs(os.path.dirname(path), exist_ok=True)
             with open(path, 'w', encoding='utf-8') as f:
                 json.dump(data, f, indent=2)
         except Exception as e:
-            logger.error(f"保存进度文件 {path} 失败: {e}")
+            logger.error(f"保存数据库 {path} 失败: {e}")
 
     def _load_progress_db(self) -> Dict[str, int]:
         path = self._get_progress_db_path()
@@ -285,12 +326,12 @@ class UltimateForwarder:
         except (FileNotFoundError, json.JSONDecodeError):
             logger.warning(f"未找到进度文件 {path}，将创建新的。")
             db = {}
-            self._save_progress_db_data(db) # (新) 立即创建文件
+            self._save_db_data(path, db) # (新) 立即创建
             return db
 
     def _save_progress_db(self):
-        """(新) 调用封装的保存逻辑"""
-        self._save_progress_db_data(self.progress_db)
+        path = self._get_progress_db_path()
+        self._save_db_data(path, self.progress_db)
 
     def _get_channel_progress(self, channel_id: int) -> int:
         return self.progress_db.get(str(channel_id), 0)
@@ -301,16 +342,6 @@ class UltimateForwarder:
             self.progress_db[str(channel_id)] = message_id
             self._save_progress_db()
 
-    def _save_dedup_db_data(self, data: Set[str]):
-        """(新) 封装保存逻辑"""
-        path = self.config.deduplication.db_path
-        try:
-            os.makedirs(os.path.dirname(path), exist_ok=True)
-            with open(path, 'w', encoding='utf-8') as f:
-                json.dump(list(data), f) 
-        except Exception as e:
-            logger.error(f"保存去重文件 {path} 失败: {e}")
-
     def _load_dedup_db(self) -> Set[str]:
         path = self.config.deduplication.db_path
         try:
@@ -320,13 +351,12 @@ class UltimateForwarder:
         except (FileNotFoundError, json.JSONDecodeError):
             logger.warning(f"未找到去重文件 {path}，将创建新的。")
             db = set()
-            self._save_dedup_db_data(db) # (新) 立即创建文件
+            self._save_db_data(path, list(db)) # (新) 立即创建
             return db
 
     def _save_dedup_db(self):
-        """(新) 调用封装的保存逻辑"""
-        self._save_dedup_db_data(self.dedup_db)
-    # --- 数据库/状态管理 结束 ---
+        path = self.config.deduplication.db_path
+        self._save_db_data(path, list(self.dedup_db))
 
     # --- 客户端管理 ---
     
@@ -335,6 +365,8 @@ class UltimateForwarder:
         
         while True:
             client = self.clients[self.current_client_index]
+            # --- (新) 核心修复 ---
+            # 使用我们附加的 session_name 作为唯一键
             client_key = client.session_name_for_forwarder
             
             wait_until = self.client_flood_wait.get(client_key, 0)
@@ -346,6 +378,7 @@ class UltimateForwarder:
             self.current_client_index = (self.current_client_index + 1) % len(self.clients)
             
             if self.current_client_index == start_index:
+                # (新) 修复: 使用 session_name_for_forwarder
                 all_wait_times = [self.client_flood_wait.get(c.session_name_for_forwarder, 0) for c in self.clients]
                 min_wait_time = min(all_wait_times) if all_wait_times else time.time()
                 sleep_duration = max(1.0, (min_wait_time - time.time()) + 1.0) 
@@ -357,23 +390,19 @@ class UltimateForwarder:
                 continue
 
     async def _handle_send_error(self, e: Exception, client: TelegramClient):
+        # --- (新) 核心修复 ---
         client_key = client.session_name_for_forwarder
-        client_name = client_key 
+        client_name = client_key # 它本身就是 session_name，很适合日志
 
         if isinstance(e, errors.FloodWaitError):
             wait_time = e.seconds + 5 
             logger.warning(f"客户端 {client_name} 触发 FloodWait: {wait_time} 秒。")
+            # (新) 修复: 使用 client_key 作为字典键
             self.client_flood_wait[client_key] = time.time() + wait_time
         elif isinstance(e, errors.ChatWriteForbiddenError):
             logger.error(f"客户端 {client_name} 无法写入目标频道 (权限不足)。")
         elif isinstance(e, errors.UserBannedInChannelError):
             logger.error(f"客户端 {client_name} 已被目标频道封禁。")
-        
-        # (新) 修复：捕获 'reply_to' 错误，但这个错误现在不应该发生了
-        elif isinstance(e, TypeError) and "unexpected keyword argument 'reply_to'" in str(e):
-             logger.error(f"客户端 {client_name} 转发时遇到内部代码错误: {e}")
-             logger.error("这似乎是一个 Bug，forward_messages 被错误调用。")
-        
         else:
             logger.error(f"客户端 {client_name} 转发时遇到未知错误: {e}")
 
@@ -408,15 +437,14 @@ class UltimateForwarder:
         source_config = None
         
         for s in self.config.sources:
-            # 直接比较解析后的 ID
+            # (新) 修复：直接比较解析后的数字 ID
             if s.resolved_id == numeric_chat_id:
                 source_config = s
                 break
-        # --- (修复问题3 结束) ---
+        # --- 修复结束 ---
         
         if not source_config:
-             username = event.chat.username if event.chat and hasattr(event.chat, 'username') else None
-             logger.warning(f"收到来自未配置源 {numeric_chat_id} (@{username if username else 'N/A'}) 的消息，已忽略。")
+             logger.warning(f"收到来自未配置源 {numeric_chat_id} 的消息，已忽略。")
              return
             
         logger.debug(f"--- [START] 正在处理消息 {numeric_chat_id}/{message.id} ---")
@@ -429,8 +457,10 @@ class UltimateForwarder:
                 # msg_data['text'] = self._apply_replacements(msg_data['text']) # <-- (旧位置)
                 
                 # 1. (新) 先用 *原始* 文本进行过滤
-                if self._should_filter(msg_data['text'], msg_data['media']):
-                    logger.info(f"消息 {numeric_chat_id}/{message.id} (Text: {msg_data['text'][:30]}...) [被过滤]")
+                # (新) 修复问题3：获取详细的过滤原因
+                filter_reason = self._should_filter(msg_data['text'], msg_data['media'])
+                if filter_reason:
+                    logger.info(f"消息 {numeric_chat_id}/{message.id} (Text: {msg_data['text'][:30]}...) [被过滤: {filter_reason}]")
                     continue
 
                 # 2. (新) 再用 *原始* 消息进行去重
@@ -442,7 +472,8 @@ class UltimateForwarder:
                 target_id, topic_id = self._find_target(msg_data['text'], msg_data['media'])
                 
                 if not target_id:
-                    logger.error(f"消息 {numeric_chat_id}/{message.id} 无法找到有效的目标 ID。请检查配置。")
+                    # (新) 修复问题4：添加日志以显示解析失败
+                    logger.error(f"消息 {numeric_chat_id}/{message.id} 无法找到有效的目标 ID。请检查配置或启动日志中的解析错误。")
                     continue
 
                 # 4. (新) 仅在消息确定要发送时，才应用替换
@@ -462,25 +493,22 @@ class UltimateForwarder:
             logger.error(f"处理消息 {numeric_chat_id}/{message.id} 时发生严重错误: {e}", exc_info=True)
         finally:
             logger.debug(f"--- [END] 消息 {numeric_chat_id}/{message.id} 处理完毕 ---")
-            # (新) 修复问题3：使用规范化的 ID
             self._set_channel_progress(numeric_chat_id, message.id)
 
     async def process_history(self, resolved_source_ids: List[int]):
         """处理历史消息 (仅在 `forward_new_only: false` 时调用)"""
         client = self._get_next_client() 
         
-        for source_id in resolved_source_ids: # source_id 已经是规范化的 -100...
+        for source_id in resolved_source_ids:
             source_config = None
             entity = None
             try:
-                # (新) 修复问题3：匹配逻辑
-                for s in self.config.sources:
-                    if s.resolved_id == source_id:
-                        source_config = s
-                        break
-                
+                # (新) 修复：确保 source_id 是 Telethon 接受的 Peer
                 peer = await client.get_input_entity(source_id)
                 entity = await client.get_entity(peer)
+                
+                # (新) 修复问题3：使用解析后的 ID 查找配置
+                source_config = next((s for s in self.config.sources if s.resolved_id == source_id), None)
                      
             except Exception as e:
                 logger.error(f"历史记录：无法获取实体 {source_id}: {e}")
@@ -505,23 +533,13 @@ class UltimateForwarder:
                 # (新) 使用 peer
                 async for message in client.iter_messages(peer, offset_id=last_id, reverse=True, limit=None):
                     
-                    try:
-                        # (新) 修复：使用更健壮的 ID 解析
-                        if isinstance(message.peer_id, (int)):
-                            event_chat_id = message.peer_id
-                        else:
-                            event_chat_id = events.utils.get_peer_id(message.peer_id)
-                        
-                        if event_chat_id > 1000000000 and not str(event_chat_id).startswith("-100"):
-                             event_chat_id = int(f"-100{event_chat_id}")
-                             
-                    except Exception:
-                        continue # 跳过无法解析的消息
+                    # (新) 修复：peer_chat 和 chat_id 需要正确设置
+                    event_chat_id = message.chat_id
                     
                     fake_event = events.NewMessage.Event(message=message, peer_user=None, peer_chat=None, chat=None)
                     
+                    # (新) 模拟 event 对象的属性
                     fake_event.chat_id = event_chat_id
-                    fake_event.peer_id = message.peer_id 
                     if not fake_event.chat:
                         fake_event.chat = entity
                         
@@ -544,10 +562,13 @@ class UltimateForwarder:
             "media": message.media,
             "hash_source": message.id 
         })
+
+        # TODO: 实现 tgforwarder 的高级链接提取 (check_hyperlinks, check_bots, check_replies)
         
         return results
 
     def _apply_replacements(self, text: str) -> str:
+        # (新) 修复问题1：在函数开头检查 None
         if not text or not self.config.replacements:
             return text
         
@@ -565,60 +586,63 @@ class UltimateForwarder:
                 logger.warning(f"无效的正则表达式: '{p}', 错误: {e}")
         return compiled
 
-    # (新) 修复问题1：用于全词匹配的函数
+    # (新) 修复问题3：全词匹配
     def _compile_word_patterns(self, keywords: List[str]) -> List[re.Pattern]:
-        """将关键词列表编译为全词匹配的正则表达式"""
+        """将关键词列表编译为全词匹配的正则表达式列表"""
         compiled = []
         for kw in keywords:
             try:
-                # \b 确保它是独立的词
+                # \b 确保是单词边界 (全词匹配)
                 pattern = r'\b' + re.escape(kw) + r'\b'
                 compiled.append(re.compile(pattern, re.IGNORECASE))
             except re.error as e:
                 logger.warning(f"无效的广告关键词: '{kw}', 错误: {e}")
         return compiled
 
-    def _should_filter(self, text: str, media: Any) -> bool:
+    def _should_filter(self, text: str, media: Any) -> Optional[str]: # (新) 修复问题3：返回 Optional[str]
         text = text or ""
         text_lower = text.lower()
         
         # 1. 白名单 (最高优先级)
         if self.config.whitelist and self.config.whitelist.enable:
-            if not any(kw.lower() in text_lower for kw in self.config.whitelist.keywords):
+            # (新) 修复问题1：在使用列表前检查 None
+            whitelist_keywords = self.config.whitelist.keywords if self.config.whitelist.keywords else []
+            if not any(kw.lower() in text_lower for kw in whitelist_keywords):
                 logger.debug(f"Filter [Whitelist]: 未命中白名单。")
-                return True 
+                return "Whitelist (未命中)" # (新) 修复问题3
             else:
                 logger.debug(f"Filter [Whitelist]: 命中白名单，通过。")
-                return False 
+                return None # (新) 修复问题3
 
         # 2. 广告过滤 (黑名单)
         if self.config.ad_filter and self.config.ad_filter.enable:
-            # (新) 修复问题1：使用全词匹配
+            # (新) 修复问题3：使用全词匹配
             for p in self.ad_keyword_patterns:
                 if p.search(text):
                     logger.debug(f"Filter [Ad Keyword]: 命中广告关键词 {p.pattern}。")
-                    return True
-            # (旧) 保持正则表达式匹配
+                    return f"Blacklist (关键词: {p.pattern})" # (新) 修复问题3
             for p in self.ad_patterns:
                 if p.search(text):
                     logger.debug(f"Filter [Ad Pattern]: 命中广告正则 {p.pattern}。")
-                    return True
+                    return f"Blacklist (正则: {p.pattern})" # (新) 修复问题3
 
         # 3. 内容质量过滤 (黑名单)
         if self.config.content_filter and self.config.content_filter.enable:
             if not text and not media:
                 logger.debug(f"Filter [Content]: 既无文本也无媒体。")
-                return True 
+                return "Content Filter (空消息)" # (新) 修复问题3
             
-            if text_lower in [w.lower() for w in self.config.content_filter.meaningless_words]:
+            # (新) 修复问题1：在使用列表前检查 None
+            meaningless = [w.lower() for w in self.config.content_filter.meaningless_words] if self.config.content_filter.meaningless_words else []
+            if text_lower in meaningless:
                 logger.debug(f"Filter [Content]: 命中无意义词汇。")
-                return True
+                return "Content Filter (无意义词汇)" # (新) 修复问题3
                 
             if not media and len(text.strip()) < self.config.content_filter.min_meaningful_length:
                 logger.debug(f"Filter [Content]: 文本过短且无媒体。")
-                return True
+                return f"Content Filter (文本过短: {len(text.strip())} < {self.config.content_filter.min_meaningful_length})" # (新) 修复问题3
 
-        return False 
+        return None # (新) 修复问题3：默认通过
 
     def _get_message_hash(self, message_data: Dict[str, Any]) -> Optional[str]:
         if not self.config.deduplication.enable:
@@ -680,7 +704,7 @@ class UltimateForwarder:
                     return rule.resolved_target_id, rule.topic_id
                     
         logger.debug("未命中分发规则，使用默认目标。")
-        # (新) 修复：返回默认 topic_id
+        # (新) 修复问题4：返回 default_topic_id
         return self.config.targets.resolved_default_target_id, self.config.targets.default_topic_id
 
     async def _send_message(self, original_message: Any, message_data: Dict[str, Any], target_id: int, topic_id: Optional[int]):
@@ -689,51 +713,50 @@ class UltimateForwarder:
         media = message_data['media']
         mode = self.config.forwarding.mode
         
+        send_kwargs = {}
         # (新) 修复问题3：只有在 topic_id 存在时才添加参数
-        
+        if topic_id:
+            if mode == 'copy':
+                send_kwargs["reply_to"] = topic_id
+            else:
+                send_kwargs["top_msg_id"] = topic_id
+
         while True:
             client = self._get_next_client()
             try:
                 if mode == 'copy':
-                    kwargs = {}
-                    if topic_id:
-                        kwargs['reply_to'] = topic_id
                     await client.send_message(
                         target_id,
                         message=text,
                         file=media,
-                        **kwargs # 传递动态参数
+                        **send_kwargs
                     )
-                else: # 'forward' 模式
-                    kwargs = {}
-                    if topic_id:
-                        kwargs['top_msg_id'] = topic_id
+                else:
                     await client.forward_messages(
                         target_id,
                         messages=original_message,
-                        **kwargs # 传递动态参数
+                        **send_kwargs
                     )
                 
-                logger.debug(f"客户端 {client.session_name_for_forwarder} 发送成功。")
+                logger.debug(f"客户端 {client.session.session_id[:5]}... 发送成功。")
                 return 
 
             except Exception as e:
-                # (新) 增加对 TypeError 的捕获
+                # (新) 修复问题4：现在 target_id 应该是正确的 (-100...)，
+                # 这个 TypeError 错误理论上不应该再发生，但我们保留错误处理以防万一。
                 if isinstance(e, TypeError) and "unexpected keyword argument" in str(e):
                     logger.error(f"客户端 {client.session_name_for_forwarder} 转发时遇到内部代码错误: {e}")
                     logger.error(f"这通常意味着目标 {target_id} (话题: {topic_id}) 与转发模式 {mode} 不兼容。")
                     logger.warning("将尝试不带 topic_id 转发...")
                     try:
-                        # (FIX) 重试时不带任何 topic_id
+                        # 尝试不带 topic_id 再次发送
                         if mode == 'copy':
                             await client.send_message(target_id, message=text, file=media)
                         else:
                             await client.forward_messages(target_id, messages=original_message)
-                        return # 成功后退出
+                        return # 重试成功
                     except Exception as e2:
-                         logger.error(f"重试转发失败: {e2}")
-                         await self._handle_send_error(e2, client) # 处理重试错误
-                         return # 放弃此消息
-                
-                # 处理其他错误
-                await self._handle_send_error(e, client)
+                        logger.error(f"不带 topic_id 重试失败: {e2}")
+                        await self._handle_send_error(e2, client) # 处理重试的错误
+                else:
+                    await self._handle_send_error(e, client)

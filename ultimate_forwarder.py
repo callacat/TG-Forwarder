@@ -250,6 +250,15 @@ async def run_forwarder(config: Config):
     async def handle_new_message(event):
         await forwarder.process_message(event)
         
+        # (新) 自动已读功能
+        if forwarder.config.forwarding.mark_as_read:
+            try:
+                # event.mark_read() 是最简单的方法
+                await event.mark_read() 
+            except Exception as e:
+                # 忽略错误 (例如, 在群组中没有管理员权限无法标记已读)
+                logger.debug(f"将 {event.chat_id} 标记为已读失败: {e}")
+        
     logger.info("✅ 事件处理器已注册。")
 
     # (新) 步骤 2: 启动 Bot 服务 (!!! 必须在 process_history 之前!!!)
