@@ -1,11 +1,18 @@
-import asyncio
+import argparse
+import yaml
+import sys
+import os
+from telethon import TelegramClient, events, errors
+from telethon.sessions import Session # <--- (这一行将在下面被移除)
+from telethon.tl.types import PeerUser, PeerChat, PeerChannel
+from typing import List # <--- 添加了这一行来修复错误
 import logging
 import argparse
 import yaml
 import sys
 import os
 from telethon import TelegramClient, events, errors
-from telethon.sessions import Session
+# from telethon.sessions import Session # <--- 移除这个导入
 from telethon.tl.types import PeerUser, PeerChat, PeerChannel
 from typing import List # <--- 添加了这一行来修复错误
 
@@ -81,7 +88,7 @@ async def initialize_clients(config: Config):
             session_identifier = f"SessionFile ({acc.session_name})"
             
             client = TelegramClient(
-                Session(session_path),
+                session_path, # <--- 修复: 直接传递路径字符串，而不是 Session(session_path)
                 acc.api_id,
                 acc.api_hash,
                 proxy=config.proxy.get_telethon_proxy() if config.proxy else None
@@ -133,7 +140,7 @@ async def initialize_bot(config: Config):
     try:
         # Bot 使用内存会话
         bot_client = TelegramClient(
-            Session(None), 
+            None, # <--- 修复: 传递 None 来使用内存会话，而不是 Session(None)
             config.accounts[0].api_id, # (新) Bot 也需要 API ID/Hash
             config.accounts[0].api_hash,
             proxy=config.proxy.get_telethon_proxy() if config.proxy else None
