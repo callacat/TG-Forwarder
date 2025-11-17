@@ -1,0 +1,385 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>TG Forwarder 配置面板</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <style>
+        /* 简单的加载动画 */
+        @keyframes spin {
+            to { transform: rotate(360deg); }
+        }
+        .loader {
+            border: 4px solid rgba(0, 0, 0, .1);
+            border-left-color: #3b82f6;
+            border-radius: 50%;
+            width: 1.25rem;
+            height: 1.25rem;
+            animation: spin 1s linear infinite;
+        }
+        /* 隐藏滚动条 (Tailwind) */
+        .no-scrollbar::-webkit-scrollbar { display: none; }
+        .no-scrollbar { -ms-overflow-style: none; scrollbar-width: none; }
+    </style>
+</head>
+<body class="bg-gray-100 text-gray-800 font-sans antialiased">
+
+    <!-- 
+    (新) v8.2：这是我们的单页应用 (SPA) 
+    它首先会显示一个登录遮罩，
+    成功后，再显示主应用 (#app-shell)。
+    -->
+
+    <!-- 登录遮罩 -->
+    <div id="login-modal" class="fixed inset-0 z-50 flex items-center justify-center bg-black bg-opacity-50 transition-opacity duration-300">
+        <div class="bg-white rounded-lg shadow-xl p-6 w-full max-w-sm mx-4">
+            <h2 class="text-2xl font-bold text-center text-gray-900 mb-4">登录</h2>
+            <p class="text-sm text-gray-600 text-center mb-4">
+                请输入你在 <code>config.yaml</code> 中设置的 <code>web_ui.password</code>。
+            </p>
+            <div class="space-y-4">
+                <div>
+                    <label for="password-input" class="block text-sm font-medium text-gray-700">密码</label>
+                    <input type="password" id="password-input" class="mt-1 block w-full px-3 py-2 border border-gray-300 rounded-md shadow-sm placeholder-gray-400 focus:outline-none focus:ring-blue-500 focus:border-blue-500" placeholder="你的密码">
+                </div>
+                <div id="login-error" class="text-red-500 text-sm font-medium hidden">
+                    密码错误。
+                </div>
+                <button id="login-button" class="w-full flex justify-center py-2 px-4 border border-transparent rounded-md shadow-sm text-sm font-medium text-white bg-blue-600 hover:bg-blue-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-blue-500">
+                    <span id="login-button-text">登录</span>
+                    <div id="login-button-loader" class="loader hidden"></div>
+                </button>
+            </div>
+        </div>
+    </div>
+
+    <!-- 主应用外壳 (默认隐藏) -->
+    <div id="app-shell" class="hidden min-h-screen">
+        
+        <!-- 顶部导航栏 -->
+        <nav class="bg-white shadow-md sticky top-0 z-40">
+            <div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
+                <div class="flex justify-between items-center h-16">
+                    <div class="flex-shrink-0 flex items-center">
+                        <span class="text-2xl font-bold text-blue-600">TG Forwarder</span>
+                    </div>
+                    <div class="hidden sm:ml-6 sm:flex sm:space-x-8" id="main-nav">
+                        <!-- 导航标签将由 JS 动态插入 -->
+                    </div>
+                    <div class="sm:hidden flex items-center">
+                        <!-- 移动端菜单按钮 (暂不实现，简化) -->
+                    </div>
+                </div>
+            </div>
+        </nav>
+
+        <!-- 主内容区域 -->
+        <main class="py-10">
+            <div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
+                
+                <!-- "请 Reload" 的全局提示 -->
+                <div id="reload-notice" class="bg-yellow-100 border-l-4 border-yellow-500 text-yellow-700 p-4 rounded-md mb-6 shadow hidden" role="alert">
+                    <div class="flex">
+                        <div class="py-1"><svg class="h-6 w-6 text-yellow-500 mr-4" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z"/></svg></div>
+                        <div>
+                            <p class="font-bold">规则已保存！</p>
+                            <p class="text-sm">配置已成功保存到 <code>rules_db.json</code>。请在你的 Bot 聊天中发送 <code>/reload</code> 命令，以使更改在正在运行的程序中生效。</p>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- 动态内容面板 -->
+                <div id="content-panels">
+                    <!-- 面板将由 JS 动态插入 -->
+                </div>
+
+            </div>
+        </main>
+
+    </div>
+
+    <!-- JS 逻辑 -->
+    <script>
+        // --- (新) v8.2：全局状态和 API 帮助程序 ---
+        
+        // 我们将使用 "admin" 作为所有 API 调用的硬编码用户名
+        const API_USERNAME = "admin";
+        let API_PASSWORD = "";
+        let AUTH_HEADER = "";
+
+        /**
+         * API 请求的包装器 (Wrapper)
+         * 它会自动添加认证并处理 401 (未授权)
+         */
+        async function apiFetch(url, options = {}) {
+            if (!AUTH_HEADER) {
+                console.error("API 认证未设置。");
+                showLoginModal(); // 如果认证丢失，强制重新登录
+                throw new Error("未认证");
+            }
+
+            const defaultHeaders = {
+                'Authorization': AUTH_HEADER,
+                'Content-Type': 'application/json'
+            };
+
+            const config = {
+                ...options,
+                headers: {
+                    ...defaultHeaders,
+                    ...options.headers,
+                }
+            };
+            
+            if (options.body) {
+                config.body = JSON.stringify(options.body);
+            }
+
+            try {
+                const response = await fetch(url, config);
+                
+                if (response.status === 401) {
+                    // 密码错误或会话已过期
+                    console.error("API 认证失败 (401)");
+                    showLoginModal("密码错误或会话已过期。");
+                    throw new Error("认证失败");
+                }
+                
+                if (!response.ok) {
+                    const errorData = await response.json();
+                    throw new Error(errorData.detail || `HTTP 错误 ${response.status}`);
+                }
+                
+                // 检查响应是否为空
+                const text = await response.text();
+                return text ? JSON.parse(text) : {}; // 如果为空则返回空对象
+
+            } catch (error) {
+                console.error(`API 请求 ${url} 失败:`, error);
+                throw error;
+            }
+        }
+
+        // --- 登录逻辑 ---
+        
+        const loginModal = document.getElementById('login-modal');
+        const loginButton = document.getElementById('login-button');
+        const loginBtnText = document.getElementById('login-button-text');
+        const loginBtnLoader = document.getElementById('login-button-loader');
+        const passwordInput = document.getElementById('password-input');
+        const loginError = document.getElementById('login-error');
+        const appShell = document.getElementById('app-shell');
+
+        function showLoginModal(errorMsg = null) {
+            loginModal.classList.remove('opacity-0', 'pointer-events-none');
+            loginModal.classList.add('opacity-100');
+            appShell.classList.add('hidden');
+            if (errorMsg) {
+                loginError.textContent = errorMsg;
+                loginError.classList.remove('hidden');
+            } else {
+                loginError.classList.add('hidden');
+            }
+            passwordInput.focus();
+        }
+
+        function hideLoginModal() {
+            loginModal.classList.add('opacity-0', 'pointer-events-none');
+            loginModal.classList.remove('opacity-100');
+            appShell.classList.remove('hidden');
+        }
+        
+        function setLoading(isLoading) {
+             if(isLoading) {
+                loginBtnText.classList.add('hidden');
+                loginBtnLoader.classList.remove('hidden');
+                loginButton.disabled = true;
+             } else {
+                loginBtnText.classList.remove('hidden');
+                loginBtnLoader.classList.add('hidden');
+                loginButton.disabled = false;
+             }
+        }
+
+        async function handleLogin() {
+            setLoading(true);
+            loginError.classList.add('hidden');
+
+            const password = passwordInput.value;
+            if (!password) {
+                showLoginModal("请输入密码。");
+                setLoading(false);
+                return;
+            }
+
+            // 1. 设置全局认证
+            API_PASSWORD = password;
+            AUTH_HEADER = 'Basic ' + btoa(API_USERNAME + ':' + API_PASSWORD);
+
+            try {
+                // 2. 发送一个测试请求
+                await apiFetch('/api/rules');
+                
+                // 3. 成功
+                setLoading(false);
+                hideLoginModal();
+                initializeApp(); // 启动主应用
+                
+            } catch (error) {
+                // 4. 失败 (apiFetch 内部已处理 401)
+                setLoading(false);
+                AUTH_HEADER = ""; // 清除错误的认证
+                loginError.textContent = "密码错误。请重试。";
+                loginError.classList.remove('hidden');
+            }
+        }
+        
+        loginButton.addEventListener('click', handleLogin);
+        passwordInput.addEventListener('keypress', (e) => {
+            if (e.key === 'Enter') {
+                handleLogin();
+            }
+        });
+
+        // --- 主应用逻辑 ---
+        
+        const mainNav = document.getElementById('main-nav');
+        const contentPanels = document.getElementById('content-panels');
+        const reloadNotice = document.getElementById('reload-notice');
+        
+        // 应用程序的状态
+        let state = {
+            rules: {}
+        };
+        
+        // 导航定义
+        const TABS = {
+            'rules': "转发规则",
+            'sources': "监控源",
+            'blacklist': "黑名单",
+            'whitelist': "白名单"
+        };
+        
+        function showReloadNotice() {
+            reloadNotice.classList.remove('hidden');
+        }
+
+        // (占位符) 在下一步，我们将填充这些函数
+        function renderRulesPanel() {
+            return `
+                <div class="bg-white p-6 rounded-lg shadow">
+                    <h2 class="text-2xl font-semibold mb-4">转发规则 (Distribution Rules)</h2>
+                    <p class="text-gray-600">
+                        (下一步：v8.3) 这里将显示一个用于添加、查看和删除转发规则的完整表单。
+                    </p>
+                </div>
+            `;
+        }
+        
+        function renderSourcesPanel() {
+            return `
+                <div class="bg-white p-6 rounded-lg shadow">
+                    <h2 class="text-2xl font-semibold mb-4">监控源 (Sources)</h2>
+                    <p class="text-gray-600">
+                        (下一步：v8.3) 这里将显示一个用于添加和删除源频道的表单。
+                    </p>
+                </div>
+            `;
+        }
+        
+        function renderBlacklistPanel() {
+            return `
+                <div class="bg-white p-6 rounded-lg shadow">
+                    <h2 class="text-2xl font-semibold mb-4">黑名单 (Ad Filter)</h2>
+                    <p class="text-gray-600">
+                        (下一步：v8.3) 这里将显示一个用于管理黑名单 (子字符串, 全词, 文件名, 正则) 的表单。
+                    </p>
+                </div>
+            `;
+        }
+
+        function renderWhitelistPanel() {
+             return `
+                <div class="bg-white p-6 rounded-lg shadow">
+                    <h2 class="text-2xl font-semibold mb-4">白名单 (Whitelist)</h2>
+                    <p class="text-gray-600">
+                        (下一步：v8.3) 这里将显示一个用于管理白名单的表单。
+                    </p>
+                </div>
+            `;
+        }
+        
+        function navigateToTab(tabId) {
+             // 1. 更新导航栏 UI
+             Array.from(mainNav.children).forEach(el => {
+                if (el.dataset.tab === tabId) {
+                    el.classList.add('border-blue-500', 'text-gray-900');
+                    el.classList.remove('border-transparent', 'text-gray-500', 'hover:border-gray-300', 'hover:text-gray-700');
+                } else {
+                    el.classList.remove('border-blue-500', 'text-gray-900');
+                    el.classList.add('border-transparent', 'text-gray-500', 'hover:border-gray-300', 'hover:text-gray-700');
+                }
+             });
+             
+             // 2. 显示对应的内容面板
+             Array.from(contentPanels.children).forEach(el => {
+                if (el.id === `panel-${tabId}`) {
+                    el.classList.remove('hidden');
+                } else {
+                    el.classList.add('hidden');
+                }
+             });
+        }
+        
+        /**
+         * 初始化应用程序 (登录成功后调用)
+         */
+        async function initializeApp() {
+            // 1. 渲染导航栏
+            mainNav.innerHTML = Object.entries(TABS).map(([id, name], index) => `
+                <a href="#" 
+                   data-tab="${id}" 
+                   class="${index === 0 ? 'border-blue-500 text-gray-900' : 'border-transparent text-gray-500 hover:border-gray-300 hover:text-gray-700'} 
+                          inline-flex items-center px-1 pt-1 border-b-2 text-sm font-medium">
+                    ${name}
+                </a>
+            `).join('');
+            
+            // 2. 渲染内容面板 (带占位符)
+            contentPanels.innerHTML = `
+                <div id="panel-rules">${renderRulesPanel()}</div>
+                <div id="panel-sources" class="hidden">${renderSourcesPanel()}</div>
+                <div id="panel-blacklist" class="hidden">${renderBlacklistPanel()}</div>
+                <div id="panel-whitelist" class="hidden">${renderWhitelistPanel()}</div>
+            `;
+            
+            // 3. 绑定导航点击事件
+            mainNav.addEventListener('click', (e) => {
+                if (e.target.dataset.tab) {
+                    e.preventDefault();
+                    navigateToTab(e.target.dataset.tab);
+                }
+            });
+            
+            // 4. 加载真实数据 (我们将在 v8.3 中实现)
+            // loadAllRules();
+        }
+        
+        // (占位符)
+        async function loadAllRules() {
+            try {
+                const data = await apiFetch('/api/rules');
+                state.rules = data;
+                console.log("已加载规则:", state.rules);
+                // (下一步: 在这里调用 render...() 函数来填充表单)
+            } catch (error) {
+                console.error("加载规则失败:", error);
+                // apiFetch 内部已处理 401
+            }
+        }
+
+    </script>
+
+</body>
+</html>

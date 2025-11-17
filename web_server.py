@@ -3,10 +3,10 @@ import logging
 import json
 import os
 import asyncio
-import secrets # (新) v8.1：导入 secrets
-from fastapi import FastAPI, HTTPException, Request, Depends # (新) v8.1：导入 Depends
-from fastapi.security import HTTPBasic, HTTPBasicCredentials # (新) v8.1：导入安全
-from fastapi.responses import HTMLResponse, JSONResponse
+import secrets 
+from fastapi import FastAPI, HTTPException, Request, Depends 
+from fastapi.security import HTTPBasic, HTTPBasicCredentials 
+from fastapi.responses import HTMLResponse, JSONResponse, FileResponse # (新) v8.2：导入 FileResponse
 from pydantic import BaseModel, Field
 from typing import List, Optional, Dict, Any
 
@@ -180,24 +180,23 @@ async def update_whitelist(config: WhitelistConfig, auth: bool = Depends(get_cur
     await save_rules_to_db()
     return {"status": "success", "message": "白名单已更新。"}
 
-
 # --- Web UI 前端 ---
-# (新) v8.1：/ 路由是公共的，它不需要 'Depends'
+# (新) v8.2：修改 / 路由
 @app.get("/", response_class=HTMLResponse)
-async def get_web_ui_placeholder():
+async def get_web_ui():
     """
-    这是一个*临时*的占位符。
-    在下一步 (v8.2)，我们将用一个漂亮的 JS 前端 (index.html) 替换它。
+    (新) v8.2：提供 index.html 
+    这个 HTML 文件是我们的单页应用 (SPA) 前端。
     """
-    return """
-    <html>
-        <head>
-            <title>TG Forwarder API</title>
-        </head>
-        <body>
-            <h1>TG Forwarder API (v8.1) 正在运行</h1>
-            <p>这是 Web API 后端。要查看可用的 API 接口，请访问 <a href="/docs">/docs</a>。</p>
-            <p>API 现在受密码保护。在下一步，我们将构建 Web UI 前端 (index.html)。</p>
-        </body>
-    </html>
-    """
+    ui_path = "/app/index.html"
+    if not os.path.exists(ui_path):
+        # 这是一个备用占位符，以防 index.html 丢失
+        return HTMLResponse(content="""
+        <html><body>
+            <h1>错误：未找到 <code>index.html</code>。</h1>
+            <p>Web 服务器正在运行，但前端文件丢失。</p>
+        </body></html>
+        """, status_code=404)
+        
+    # 从磁盘读取并返回 index.html
+    return FileResponse(ui_path)
