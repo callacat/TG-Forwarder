@@ -41,6 +41,17 @@ app = FastAPI(
 
 # --- 数据库核心功能 ---
 
+# (新) v8.0.1：修复死锁
+async def _save_rules_to_db_internal():
+    """(新) 内部保存函数，不获取锁。假定调用方已持有锁。"""
+    try:
+        with open(RULES_DB_PATH, 'w', encoding='utf-8') as f:
+            # (新) v8.0.1：使用 .model_dump() 替换 .dict()
+            json.dump(rules_db.model_dump(), f, indent=2)
+        logger.info("✅ 规则已成功保存到 rules_db.json。")
+    except Exception as e:
+        logger.error(f"❌ 保存 rules_db.json 失败: {e}")
+
 async def load_rules_from_db():
     """从 JSON 文件加载规则到内存"""
     global rules_db
@@ -48,7 +59,7 @@ async def load_rules_from_db():
         if not os.path.exists(RULES_DB_PATH):
             logger.warning(f"未找到规则数据库 {RULES_DB_PATH}，将创建新的。")
             rules_db = RulesDatabase() # 使用默认空模型
-            await save_rules_to_db() # 立即创建
+            await _save_rules_to_db_internal() # (新) v8.0.1：调用内部函数
         else:
             try:
                 with open(RULES_DB_PATH, 'r', encoding='utf-8') as f:
@@ -60,14 +71,9 @@ async def load_rules_from_db():
                 rules_db = RulesDatabase()
 
 async def save_rules_to_db():
-    """将内存中的规则保存回 JSON 文件"""
+    """将内存中的规则保存回 JSON 文件 (供 API 安全调用)"""
     async with db_lock:
-        try:
-            with open(RULES_DB_PATH, 'w', encoding='utf-8') as f:
-                json.dump(rules_db.model_dump(), f, indent=2)
-            logger.info("✅ 规则已成功保存到 rules_db.json。")
-        except Exception as e:
-            logger.error(f"❌ 保存 rules_db.json 失败: {e}")
+        await _save_rules_to_db_internal() # (新) v8.0.1：调用内部函数
 
 # --- API 路由 (Endpoints) ---
 
