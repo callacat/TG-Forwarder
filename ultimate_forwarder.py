@@ -9,6 +9,12 @@ from telethon.tl.types import PeerUser, PeerChat, PeerChannel, Message
 from telethon.tl.types import Channel, Chat 
 from typing import List, Dict 
 
+# (新) v8.0：导入 uvicorn
+import uvicorn
+
+# (新) v9.0：导入 database
+import database
+
 # (新) 导入定时任务
 from apscheduler.schedulers.asyncio import AsyncIOScheduler 
 from apscheduler.triggers.cron import CronTrigger
@@ -16,10 +22,11 @@ from apscheduler.triggers.cron import CronTrigger
 # 假设 forwarder_core 和 link_checker 在同一目录下
 from forwarder_core import UltimateForwarder, Config, AccountConfig
 from link_checker import LinkChecker
-from bot_service import BotService # (新) 导入 Bot 服务
+from bot_service import BotService 
+# (新) v8.0：导入 web_server
+import web_server
 
 # --- (新) v5.9：日志配置现在由 main() 中的 config 驱动 ---
-# 我们在这里只设置一个临时的基础配置，以便 load_config() 可以打印日志
 logging.basicConfig(
     format='%(asctime)s - [%(levelname)s] - %(message)s',
     level="INFO", # 临时级别
@@ -28,7 +35,6 @@ logging.basicConfig(
     ]
 )
 logger = logging.getLogger(__name__)
-# (新) v5.9：临时将 telethon 设为 WARNING，避免启动时刷屏
 logging.getLogger('telethon').setLevel(logging.WARNING) 
 
 
@@ -37,7 +43,7 @@ clients = []
 bot_client = None 
 forwarder = None 
 link_checker = None 
-DOCKER_CONTAINER_NAME = "tgf" # 默认值
+DOCKER_CONTAINER_NAME = "tgf" 
 CONFIG_PATH = "/app/config.yaml" 
 
 def setup_logging(app_level: str = "INFO", telethon_level: str = "WARNING"):
@@ -45,21 +51,17 @@ def setup_logging(app_level: str = "INFO", telethon_level: str = "WARNING"):
     app_level = app_level.upper()
     telethon_level = telethon_level.upper()
     
-    # 1. 配置根记录器 (我们自己的程序)
-    # (新) v5.9：使用 force=True 覆盖临时配置
     logging.basicConfig(
         format='%(asctime)s - [%(levelname)s] - %(message)s',
-        level=app_level, # 使用配置的级别
+        level=app_level, 
         handlers=[
             logging.StreamHandler(sys.stdout)
         ],
         force=True 
     )
     
-    # 2. 配置 Telethon 记录器
     logging.getLogger('telethon').setLevel(telethon_level)
     
-    # 重新获取 logger 实例以应用新级别
     global logger
     logger = logging.getLogger(__name__)
     
@@ -293,29 +295,30 @@ async def run_forwarder(config: Config):
     logger.info("正在启动 Bot 服务...")
     await initialize_bot(config)
 
-    # 4. 启动定时任务 (Link Checker)
+    # 4. 启动定时任务 (Link Checker & v9.0 DB Prune)
     if config.link_checker and config.link_checker.enabled:
         if not link_checker: 
              link_checker = LinkChecker(config, main_client)
         
         try:
-            trigger = CronTrigger.from_crontab(config.link_checker.schedule)
             scheduler = AsyncIOScheduler(timezone="UTC")
+            # 任务 1: 链接检测
+            trigger = CronTrigger.from_crontab(config.link_checker.schedule)
             scheduler.add_job(link_checker.run, trigger, name="run_link_checker_job")
-            scheduler.start()
             logger.info(f"✅ 链接检测器定时任务已启动 (Cron: {config.link_checker.schedule} UTC)。")
+
+            # (新) v9.0：任务 2: 数据库清理
+            # 每天凌晨 4:05 运行
+            prune_trigger = CronTrigger.from_crontab("5 4 * * *")
+            scheduler.add_job(database.prune_old_hashes, prune_trigger, name="prune_db_job", args=[30])
+            logger.info(f"✅ 数据库清理定时任务已启动 (Cron: 5 4 * * *)。")
+            
+            scheduler.start()
+            
         except ValueError as e:
             logger.warning(f"⚠️ 链接检测器 cron 表达式 '{config.link_checker.schedule}' 无效，定时任务未启动: {e}")
-        except AttributeError: 
-            try:
-                from apscheduler.schedulers.async_ import AsyncIOScheduler as AsyncIOSchedulerV4
-                trigger_v4 = CronTrigger.from_crontab(config.link_checker.schedule)
-                scheduler_v4 = AsyncIOSchedulerV4(timezone="UTC")
-                scheduler_v4.add_job(link_checker.run, trigger_v4, name="run_link_checker_job")
-                scheduler_v4.start()
-                logger.info(f"✅ 链接检测器定时任务已启动 (Cron: {config.link_checker.schedule} UTC)。")
-            except Exception as e_v4:
-                logger.error(f"❌ 链接检测器启动失败 (尝试 V3 和 V4 后): {e_v4}")
+        except Exception as e_v4:
+            logger.error(f"❌ 链接检测器启动失败: {e_v4}")
 
 
     # 5. (可选) 处理历史消息
@@ -326,16 +329,27 @@ async def run_forwarder(config: Config):
     else:
         logger.info("`forward_new_only: true`，跳过历史消息扫描。")
 
+    # (新) v8.0：准备 Web 服务器任务
+    # 注意：我们假设 Dockerfile 中 EXPOSE 8080，并且用户会使用 -p 8080:8080
+    uvicorn_config = uvicorn.Config(web_server.app, host="0.0.0.0", port=8080, log_level="info")
+    server = uvicorn.Server(uvicorn_config)
+    
+    # (新) v8.0：从 rules_db.json 加载规则
+    await web_server.load_rules_from_db()
+
     # 6. 运行并等待
     logger.info(f"🚀 终极转发器已启动。正在监听 {len(resolved_source_ids)} 个源。")
+    logger.info(f"🚀 Web UI (v8.0) 正在 http://0.0.0.0:8080 上启动。")
+    
+    tasks_to_run = [
+        main_client.run_until_disconnected(),
+        server.serve() # (新) v8.0：运行 Web 服务器
+    ]
     
     if bot_client:
-        await asyncio.gather(
-            main_client.run_until_disconnected(),
-            bot_client.run_until_disconnected()
-        )
-    else:
-        await main_client.run_until_disconnected()
+        tasks_to_run.append(bot_client.run_until_disconnected())
+
+    await asyncio.gather(*tasks_to_run)
 
 async def run_link_checker(config: Config):
     """运行失效链接检测器"""
@@ -344,6 +358,9 @@ async def run_link_checker(config: Config):
     if not config.link_checker or not config.link_checker.enabled:
         logger.warning("LinkChecker 未在 config.yaml 中启用，退出。")
         return
+        
+    # (新) v9.0：运行任务前必须初始化数据库
+    await database.init_db()
 
     logger.info("启动失效链接检测器...")
     await initialize_clients(config) 
@@ -418,22 +435,22 @@ async def reload_config_func():
     try:
         new_config = load_config(CONFIG_PATH)
         
-        # (新) v5.9：在重载时也应用日志级别
         if new_config.logging_level:
             setup_logging(new_config.logging_level.app, new_config.logging_level.telethon)
         
+        # (新) v8.0：同时重载 Web UI 的规则
+        await web_server.load_rules_from_db()
+        
+        # (旧)
         await resolve_identifiers(clients[0], new_config)
 
         if forwarder:
-            await forwarder.reload(new_config)
-            # (新) v5.9：重载函数现在由 forwarder.reload 内部调用
-            # logger.info("✅ 转发器规则已热重载。") # <-- 已移动
+            await forwarder.reload(new_config) 
 
         if link_checker:
             link_checker.reload(new_config)
             logger.info("✅ 链接检测器配置已热重载。")
         
-        # logger.warning("✅ 配置热重载完毕。") # <-- forwarder.reload 会打印
         return "✅ 配置热重载完毕。"
     except Exception as e:
         logger.error(f"❌ 热重载失败: {e}")
@@ -450,7 +467,7 @@ async def main():
         nargs='?', 
         help=(
             "运行模式: \n"
-            "  'run' (默认): 启动转发器 (和 Bot)。\n"
+            "  'run' (默认): 启动转发器、Bot 和 Web UI。\n"
             "  'checklinks': 仅运行一次失效链接检测器。\n"
             "  'export': 导出频道和话题ID。"
         )
@@ -465,13 +482,16 @@ async def main():
 
     config = load_config(CONFIG_PATH)
 
-    # (新) v5.9：现在我们有了配置，正式设置日志记录器
     if config.logging_level:
         setup_logging(config.logging_level.app, config.logging_level.telethon)
     else:
         setup_logging() # 使用默认值 (INFO, WARNING)
 
     try:
+        # (新) v9.0：在任何操作之前初始化数据库
+        if args.mode in ['run', 'checklinks']:
+            await database.init_db()
+            
         if args.mode == 'run':
             await run_forwarder(config)
         elif args.mode == 'checklinks':
@@ -484,6 +504,11 @@ async def main():
     except Exception as e:
         logger.critical(f"❌ 出现未捕获的致命错误: {e}", exc_info=True)
     finally:
+        # (新) v9.0：安全关闭数据库连接
+        if database._db_conn:
+             await database._db_conn.close()
+             logger.info("数据库连接已关闭。")
+             
         if bot_client and bot_client.is_connected():
             await bot_client.disconnect()
             logger.info("Bot 客户端已断开连接。")
@@ -503,3 +528,22 @@ if __name__ == "__main__":
             sys.exit(1)
             
     asyncio.run(main())
+```
+
+---
+
+### 你的下一步
+
+1.  **替换** `ultimate_forwarder.py`。
+2.  **重新构建** Docker 镜像 (因为 `ultimate_forwarder.py` 变了)。
+3.  **（重要）**在你的 `docker run` 命令中，**添加端口映射** `-p 8080:8080`。
+
+    ```bash
+    docker run -d \
+      -it \
+      --name tgf \
+      -p 8080:8080 \
+      -v ~/tg_forwarder/config.yaml:/app/config.yaml \
+      -v ~/tg_forwarder/data:/app/data \
+      --restart always \
+      dswang2233/tgf:latest
