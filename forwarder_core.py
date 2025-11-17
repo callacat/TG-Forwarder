@@ -242,9 +242,6 @@ class UltimateForwarder:
         logger.info(f"终极转发器核心已初始化。")
         logger.info(f"转发模式: {config.forwarding.mode}")
         logger.info(f"处理新消息: {config.forwarding.forward_new_only}")
-        # (新) v9.0：移除日志
-        # logger.info(f"去重数据库: {len(self.dedup_db)} 条记录")
-        # logger.info(f"进度数据库: {len(self.progress_db)} 个频道")
     
     async def reload(self, new_config: Config):
         """热重载配置"""
@@ -254,13 +251,12 @@ class UltimateForwarder:
         self.ad_keyword_word_patterns = self._compile_word_patterns(new_ad_filter.keywords_word if new_ad_filter and new_ad_filter.keywords_word else [])
         await self.resolve_targets() 
         
-        # (新) v9.0：移除循环导入
-        if new_config.logging_level:
-            # 导入主模块的 setup_logging 函数
-            from ultimate_forwarder import setup_logging
-            setup_logging(new_config.logging_level.app, new_config.logging_level.telethon)
+        # (新) v9.0：修复循环导入。日志重载由 ultimate_forwarder.py 的 reload_config_func 处理
+        # if new_config.logging_level:
+        #     from ultimate_forwarder import setup_logging
+        #     setup_logging(new_config.logging_level.app, new_config.logging_level.telethon)
         
-        logger.info("转发器配置已热重载。")
+        logger.info("转发器规则已热重载。")
 
     async def resolve_targets(self):
         """解析所有目标标识符"""
@@ -304,7 +300,6 @@ class UltimateForwarder:
 
     # (新) v9.0：修改 _set_channel_progress
     async def _set_channel_progress(self, channel_id: int, message_id: int):
-        # (新) v9.0：不再需要检查 "current_progress"
         await database.set_progress(channel_id, message_id)
 
 

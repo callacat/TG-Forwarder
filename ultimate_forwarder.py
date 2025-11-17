@@ -330,7 +330,6 @@ async def run_forwarder(config: Config):
         logger.info("`forward_new_only: true`，跳过历史消息扫描。")
 
     # (新) v8.0：准备 Web 服务器任务
-    # 注意：我们假设 Dockerfile 中 EXPOSE 8080，并且用户会使用 -p 8080:8080
     uvicorn_config = uvicorn.Config(web_server.app, host="0.0.0.0", port=8080, log_level="info")
     server = uvicorn.Server(uvicorn_config)
     

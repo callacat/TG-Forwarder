@@ -171,7 +171,7 @@ async def add_pending_link(url: str, message_id: int):
     except Exception as e:
         logger.error(f"添加待检测链接 {url} 失败: {e}")
 
-async def get_links_to_check() -> List[tuple]:
+async def get_links_to_check() -> list:
     """获取所有待检测 (pending) 或无效 (invalid) 的链接"""
     try:
         db = await get_db()
