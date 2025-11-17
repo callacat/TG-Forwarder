@@ -19,6 +19,11 @@ from pydantic import BaseModel, Field, HttpUrl, field_validator, model_validator
 
 logger = logging.getLogger(__name__)
 
+# --- (新) v5.9：日志配置模型 ---
+class LoggingLevelConfig(BaseModel):
+    app: str = "INFO"
+    telethon: str = "WARNING"
+
 # --- 配置模型 (使用 Pydantic 进行验证) ---
 
 class ProxyConfig(BaseModel):
@@ -150,7 +155,6 @@ class ForwardingConfig(BaseModel):
 
 class AdFilterConfig(BaseModel):
     enable: bool = True
-    # (新) v5.8：拆分为两个列表
     keywords_substring: Optional[List[str]] = Field(default_factory=list)
     keywords_word: Optional[List[str]] = Field(default_factory=list)
     patterns: Optional[List[str]] = Field(default_factory=list)
@@ -204,6 +208,9 @@ class BotServiceConfig(BaseModel):
 
 class Config(BaseModel):
     docker_container_name: Optional[str] = "tg-forwarder"
+    # (新) v5.9：添加日志级别配置
+    logging_level: Optional[LoggingLevelConfig] = Field(default_factory=LoggingLevelConfig)
+    
     proxy: Optional[ProxyConfig] = Field(default_factory=ProxyConfig)
     accounts: List[AccountConfig]
     sources: List[SourceConfig]
@@ -234,7 +241,6 @@ class UltimateForwarder:
 
         ad_filter = config.ad_filter
         self.ad_patterns = self._compile_patterns(ad_filter.patterns if ad_filter and ad_filter.patterns else [])
-        # (新) v5.8：添加 ad_keyword_word_patterns
         self.ad_keyword_word_patterns = self._compile_word_patterns(ad_filter.keywords_word if ad_filter and ad_filter.keywords_word else [])
         
         logger.info(f"终极转发器核心已初始化。")
@@ -248,9 +254,15 @@ class UltimateForwarder:
         self.config = new_config
         new_ad_filter = new_config.ad_filter
         self.ad_patterns = self._compile_patterns(new_ad_filter.patterns if new_ad_filter and new_ad_filter.patterns else [])
-        # (新) v5.8：添加 ad_keyword_word_patterns
         self.ad_keyword_word_patterns = self._compile_word_patterns(new_ad_filter.keywords_word if new_ad_filter and new_ad_filter.keywords_word else [])
         await self.resolve_targets() # 确保目标被重新解析
+        
+        # (新) v5.9：热重载日志级别
+        if new_config.logging_level:
+            # 导入主模块的 setup_logging 函数
+            from ultimate_forwarder import setup_logging
+            setup_logging(new_config.logging_level.app, new_config.logging_level.telethon)
+        
         logger.info("转发器配置已热重载。")
 
     async def resolve_targets(self):
@@ -543,13 +555,11 @@ class UltimateForwarder:
                 logger.warning(f"无效的正则表达式: '{p}', 错误: {e}")
         return compiled
 
-    # (新) v5.8：重新添加 _compile_word_patterns
     def _compile_word_patterns(self, keywords: List[str]) -> List[re.Pattern]:
         """将关键词列表编译为全词匹配的正则表达式列表"""
         compiled = []
         for kw in keywords:
             try:
-                # \b 确保是单词边界 (全词匹配)
                 pattern = r'\b' + re.escape(kw) + r'\b'
                 compiled.append(re.compile(pattern, re.IGNORECASE))
             except re.error as e:

@@ -4,6 +4,15 @@
 # --- 全局配置 ---
 docker_container_name: "tgf" # 你 `docker run --name` 时使用的容器名，用于登录提示
 
+# (新) v5.9：日志级别设置
+# DEBUG - 最详细，用于排错
+# INFO - 正常，显示启动和转发信息
+# WARNING - (推荐) 只显示警告和错误
+# ERROR - 只显示严重错误
+logging_level:
+  app: "INFO"       # 本程序 (ultimate_forwarder) 的日志级别
+  telethon: "WARNING" # Telethon 库的日志级别 (设为 INFO 或 DEBUG 会导致刷屏)
+
 # --- Bot 服务配置 ---
 bot_service:
   enabled: true

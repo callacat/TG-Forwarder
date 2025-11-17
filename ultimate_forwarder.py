@@ -18,18 +18,19 @@ from forwarder_core import UltimateForwarder, Config, AccountConfig
 from link_checker import LinkChecker
 from bot_service import BotService # (新) 导入 Bot 服务
 
-# --- 日志配置 ---
-LOG_LEVEL = os.environ.get('LOG_LEVEL', 'INFO').upper()
+# --- (新) v5.9：日志配置现在由 main() 中的 config 驱动 ---
+# 我们在这里只设置一个临时的基础配置，以便 load_config() 可以打印日志
 logging.basicConfig(
     format='%(asctime)s - [%(levelname)s] - %(message)s',
-    level=LOG_LEVEL,
+    level="INFO", # 临时级别
     handlers=[
         logging.StreamHandler(sys.stdout)
     ]
 )
-# (新) v5.5：调高日志级别以排错
-logging.getLogger('telethon').setLevel(logging.INFO) 
 logger = logging.getLogger(__name__)
+# (新) v5.9：临时将 telethon 设为 WARNING，避免启动时刷屏
+logging.getLogger('telethon').setLevel(logging.WARNING) 
+
 
 # --- 全局变量 ---
 clients = [] 
@@ -38,6 +39,34 @@ forwarder = None
 link_checker = None 
 DOCKER_CONTAINER_NAME = "tgf" # 默认值
 CONFIG_PATH = "/app/config.yaml" 
+
+def setup_logging(app_level: str = "INFO", telethon_level: str = "WARNING"):
+    """(新) v5.9：根据配置设置日志级别"""
+    app_level = app_level.upper()
+    telethon_level = telethon_level.upper()
+    
+    # 1. 配置根记录器 (我们自己的程序)
+    # (新) v5.9：使用 force=True 覆盖临时配置
+    logging.basicConfig(
+        format='%(asctime)s - [%(levelname)s] - %(message)s',
+        level=app_level, # 使用配置的级别
+        handlers=[
+            logging.StreamHandler(sys.stdout)
+        ],
+        force=True 
+    )
+    
+    # 2. 配置 Telethon 记录器
+    logging.getLogger('telethon').setLevel(telethon_level)
+    
+    # 重新获取 logger 实例以应用新级别
+    global logger
+    logger = logging.getLogger(__name__)
+    
+    logger.info(f"程序日志级别已设置为: {app_level}")
+    logger.info(f"Telethon 日志级别已设置为: {telethon_level}")
+    if telethon_level == "INFO" or telethon_level == "DEBUG":
+         logger.warning("Telethon 日志级别设置为 INFO/DEBUG，可能会导致大量刷屏。")
 
 def load_config(path):
     """加载 YAML 配置文件"""
@@ -389,17 +418,22 @@ async def reload_config_func():
     try:
         new_config = load_config(CONFIG_PATH)
         
+        # (新) v5.9：在重载时也应用日志级别
+        if new_config.logging_level:
+            setup_logging(new_config.logging_level.app, new_config.logging_level.telethon)
+        
         await resolve_identifiers(clients[0], new_config)
 
         if forwarder:
             await forwarder.reload(new_config)
-            logger.info("✅ 转发器规则已热重载。")
+            # (新) v5.9：重载函数现在由 forwarder.reload 内部调用
+            # logger.info("✅ 转发器规则已热重载。") # <-- 已移动
 
         if link_checker:
             link_checker.reload(new_config)
             logger.info("✅ 链接检测器配置已热重载。")
         
-        logger.warning("✅ 配置热重载完毕。")
+        # logger.warning("✅ 配置热重载完毕。") # <-- forwarder.reload 会打印
         return "✅ 配置热重载完毕。"
     except Exception as e:
         logger.error(f"❌ 热重载失败: {e}")
@@ -430,6 +464,12 @@ async def main():
     CONFIG_PATH = args.config 
 
     config = load_config(CONFIG_PATH)
+
+    # (新) v5.9：现在我们有了配置，正式设置日志记录器
+    if config.logging_level:
+        setup_logging(config.logging_level.app, config.logging_level.telethon)
+    else:
+        setup_logging() # 使用默认值 (INFO, WARNING)
 
     try:
         if args.mode == 'run':
