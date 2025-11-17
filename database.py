@@ -134,8 +134,61 @@ async def set_progress(channel_id: int, message_id: int):
         logger.error(f"设置进度失败: {e}")
 
 # --- 链接检测 (Link Checker) API (v9.0 蓝图) ---
-# (我们将在重构 link_checker.py 时实现这些)
-# async def get_links_to_check(): ...
-# async def update_link_status(...): ...
-# async def get_link_checker_progress(): ...
-# async def set_link_checker_progress(...): ...
+
+async def get_link_checker_progress() -> int:
+    """获取 link_checker 扫描到的最后 message_id"""
+    try:
+        db = await get_db()
+        async with db.execute("SELECT message_id FROM link_checker WHERE url = ?", ("_meta_",)) as cursor:
+            row = await cursor.fetchone()
+            return row[0] if row else 0
+    except Exception as e:
+        logger.error(f"获取链接检测进度失败: {e}")
+        return 0
+
+async def set_link_checker_progress(message_id: int):
+    """设置 link_checker 的最后 message_id"""
+    try:
+        db = await get_db()
+        await db.execute(
+            "INSERT OR REPLACE INTO link_checker (url, message_id, status) VALUES (?, ?, ?)", 
+            ("_meta_", message_id, "progress")
+        )
+        await db.commit()
+    except Exception as e:
+        logger.error(f"设置链接检测进度失败: {e}")
+
+async def add_pending_link(url: str, message_id: int):
+    """添加一个新的待检测链接"""
+    try:
+        db = await get_db()
+        # 仅在链接不存在时插入
+        await db.execute(
+            "INSERT OR IGNORE INTO link_checker (url, message_id, status) VALUES (?, ?, ?)",
+            (url, message_id, "pending")
+        )
+        await db.commit()
+    except Exception as e:
+        logger.error(f"添加待检测链接 {url} 失败: {e}")
+
+async def get_links_to_check() -> List[tuple]:
+    """获取所有待检测 (pending) 或无效 (invalid) 的链接"""
+    try:
+        db = await get_db()
+        async with db.execute("SELECT url, message_id FROM link_checker WHERE status != 'valid' AND url != '_meta_'") as cursor:
+            return await cursor.fetchall()
+    except Exception as e:
+        logger.error(f"获取待检测链接列表失败: {e}")
+        return []
+
+async def update_link_status(url: str, status: str):
+    """更新一个链接的状态 ('valid', 'invalid')"""
+    try:
+        db = await get_db()
+        await db.execute(
+            "UPDATE link_checker SET status = ?, last_checked = ? WHERE url = ?",
+            (status, datetime.now(), url)
+        )
+        await db.commit()
+    except Exception as e:
+        logger.error(f"更新链接状态 {url} 失败: {e}")

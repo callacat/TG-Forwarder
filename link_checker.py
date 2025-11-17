@@ -10,7 +10,10 @@ from bs4 import BeautifulSoup
 import re
 from typing import List, Dict, Any
 from forwarder_core import Config # 复用配置模型
-from datetime import datetime, timezone # (新) 导入
+from datetime import datetime, timezone 
+
+# (新) v9.0：导入 database
+import database
 
 logger = logging.getLogger(__name__)
 
@@ -19,53 +22,27 @@ logger = logging.getLogger(__name__)
 class LinkChecker:
     def __init__(self, config: Config, client: TelegramClient):
         self.client = client
-        self.reload(config) # (新) 使用 reload 方法初始化
+        self.reload(config) 
         
     def reload(self, config: Config):
         """(新) 热重载配置"""
         self.config = config
         self.checker_config = config.link_checker
         
-        # (新) 解析目标
-        # 注意: link_checker 比较简单，只检查默认目标
         self.target_channel_identifier = config.targets.default_target
         self.target_channel_id = None # 将在 run 时解析
         
-        # TODO: 让用户在 config.yaml 中配置要检查的网盘域名
         self.net_disk_domains = [
             'pan.quark.cn', 'aliyundrive.com', 'alipan.com',
             '115.com', 'pan.baidu.com', 'cloud.189.cn', 'drive.uc.cn'
         ]
         
-        self.db_path = "/app/data/link_checker_db.json"
-        self.link_db: Dict[str, Dict[str, Any]] = self._load_db()
+        # (新) v9.0：移除 db_path 和 link_db
+        
         logger.info("链接检测器配置已重载。")
 
-    # (新) 修复问题1：立即创建文件
-    def _save_db_data(self, data: Dict[str, Dict[str, Any]]):
-        """(新) 封装保存逻辑"""
-        try:
-            os.makedirs(os.path.dirname(self.db_path), exist_ok=True)
-            with open(self.db_path, 'w', encoding='utf-8') as f:
-                json.dump(data, f, indent=2)
-        except Exception as e:
-            logger.error(f"保存链接检测数据库 {self.db_path} 失败: {e}")
-
-    def _load_db(self) -> Dict[str, Dict[str, Any]]:
-        """加载链接状态数据库"""
-        try:
-            with open(self.db_path, 'r', encoding='utf-8') as f:
-                return json.load(f)
-        except (FileNotFoundError, json.JSONDecodeError):
-            logger.info(f"未找到链接检测数据库 {self.db_path}，将创建新的。")
-            db = {}
-            self._save_db_data(db) # (新) 立即创建
-            return db
-
-    def _save_db(self):
-        """保存链接状态数据库"""
-        self._save_db_data(self.link_db) # (新) 调用封装的保存逻辑
-
+    # (新) v9.0：移除 _save_db_data, _load_db, _save_db
+    
     def _extract_links(self, message_text: str) -> List[str]:
         """从消息文本中提取网盘链接"""
         if not message_text:
@@ -78,7 +55,6 @@ class LinkChecker:
     async def _check_link_validity(self, url: str) -> bool:
         """
         检查单个链接的有效性 (简化版)。
-        一个真正的实现需要像 TGNetDiskLinkChecker.py 那样为每个网盘编写单独的检测逻辑。
         """
         try:
             async with httpx.AsyncClient(timeout=10.0, follow_redirects=True) as client:
@@ -106,7 +82,6 @@ class LinkChecker:
             logger.error("Link checker 未在配置中启用。")
             return
 
-        # (新) 运行时解析目标 ID
         if not self.target_channel_id:
             try:
                 entity = await self.client.get_entity(self.target_channel_identifier)
@@ -118,12 +93,12 @@ class LinkChecker:
         logger.info(f"检测模式: {self.checker_config.mode}")
         logger.info(f"目标频道: {self.target_channel_identifier} (ID: {self.target_channel_id})")
         
-        last_processed_id = self.link_db.get("_meta", {}).get("last_processed_id", 0)
+        # (新) v9.0：从数据库获取进度
+        last_processed_id = await database.get_link_checker_progress()
         logger.info(f"从消息 ID {last_processed_id} 开始扫描频道...")
         
         new_links_found = 0
         try:
-            # (新) 使用解析后的 ID
             async for message in self.client.iter_messages(self.target_channel_id, min_id=last_processed_id):
                 if not message.text: 
                     continue
@@ -131,39 +106,36 @@ class LinkChecker:
                 links = self._extract_links(message.text)
                 if links:
                     for link in links:
-                        if link not in self.link_db:
-                            self.link_db[link] = {
-                                "message_id": message.id,
-                                "status": "pending", 
-                                "last_checked": None
-                            }
-                            new_links_found += 1
+                        # (新) v9.0：将链接添加到数据库
+                        await database.add_pending_link(link, message.id)
+                        new_links_found += 1 # (新) 修复：这里可能不准，但只是个日志
                 
                 last_processed_id = max(last_processed_id, message.id)
 
-            self.link_db["_meta"] = {"last_processed_id": last_processed_id}
-            logger.info(f"频道扫描完成，发现 {new_links_found} 个新链接。")
+            # (新) v9.0：保存进度到数据库
+            await database.set_link_checker_progress(last_processed_id)
+            logger.info(f"频道扫描完成，发现 {new_links_found} 个新链接（或已存在）。")
 
         except Exception as e:
             logger.error(f"扫描频道 {self.target_channel_id} 失败: {e}")
 
-        links_to_check = [link for link, data in self.link_db.items() if link != "_meta" and data['status'] != 'valid']
+        # (新) v9.0：从数据库获取待检测链接
+        links_to_check = await database.get_links_to_check()
         logger.info(f"总共有 {len(links_to_check)} 个链接需要检测...")
 
         invalid_messages: Dict[int, List[str]] = {} 
 
-        for link in links_to_check:
+        for (link, msg_id) in links_to_check:
             is_valid = await self._check_link_validity(link)
-            data = self.link_db[link]
-            data['last_checked'] = datetime.now(timezone.utc).isoformat()
             
             if is_valid:
-                data['status'] = 'valid'
+                # (新) v9.0：更新数据库
+                await database.update_link_status(link, 'valid')
             else:
-                data['status'] = 'invalid'
-                logger.warning(f"检测到失效链接: {link} (Message ID: {data['message_id']})")
+                # (新) v9.0：更新数据库
+                await database.update_link_status(link, 'invalid')
+                logger.warning(f"检测到失效链接: {link} (Message ID: {msg_id})")
                 
-                msg_id = data['message_id']
                 if msg_id not in invalid_messages:
                     invalid_messages[msg_id] = []
                 invalid_messages[msg_id].append(link)
@@ -201,5 +173,5 @@ class LinkChecker:
             except RPCError as e:
                 logger.error(f"批量删除消息失败: {e}")
 
-        self._save_db()
+        # (新) v9.0：移除 _save_db()
         logger.info("--- 失效链接检测器运行完毕 ---")

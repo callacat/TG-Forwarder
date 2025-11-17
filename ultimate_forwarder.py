@@ -528,22 +528,3 @@ if __name__ == "__main__":
             sys.exit(1)
             
     asyncio.run(main())
-```
-
----
-
-### 你的下一步
-
-1.  **替换** `ultimate_forwarder.py`。
-2.  **重新构建** Docker 镜像 (因为 `ultimate_forwarder.py` 变了)。
-3.  **（重要）**在你的 `docker run` 命令中，**添加端口映射** `-p 8080:8080`。
-
-    ```bash
-    docker run -d \
-      -it \
-      --name tgf \
-      -p 8080:8080 \
-      -v ~/tg_forwarder/config.yaml:/app/config.yaml \
-      -v ~/tg_forwarder/data:/app/data \
-      --restart always \
-      dswang2233/tgf:latest

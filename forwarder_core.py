@@ -13,18 +13,21 @@ from telethon.tl.types import Message, MessageEntityTextUrl, MessageMediaDocumen
 from telethon.tl.types import Channel, Chat
 from telethon.tl.types import MessageMediaWebPage
 
+# (新) v9.0：导入 database
+import database
+
 # --- 类型提示 ---
 from typing import List, Optional, Tuple, Dict, Set, Any, Union 
 from pydantic import BaseModel, Field, HttpUrl, field_validator, model_validator
 
 logger = logging.getLogger(__name__)
 
-# --- (新) v5.9：日志配置模型 ---
+# --- 日志配置模型 ---
 class LoggingLevelConfig(BaseModel):
     app: str = "INFO"
     telethon: str = "WARNING"
 
-# --- 配置模型 (使用 Pydantic 进行验证) ---
+# --- 配置模型 ---
 
 class ProxyConfig(BaseModel):
     enabled: bool = False
@@ -35,7 +38,6 @@ class ProxyConfig(BaseModel):
     password: Optional[str] = None
     
     def get_telethon_proxy(self):
-        """返回 Telethon 接受的代理元组"""
         if not self.enabled:
             return None
         return (self.proxy_type, self.addr, self.port, True, self.username, self.password)
@@ -68,10 +70,10 @@ class SourceConfig(BaseModel):
 
 class TargetDistributionRule(BaseModel):
     name: str 
-    all_keywords: List[str] = Field(default_factory=list, description="[AND] 必须 *同时* 包含列表中的所有关键词")
-    any_keywords: List[str] = Field(default_factory=list, description="[OR] 包含列表中的 *任意一个* 关键词即可")
-    file_types: List[str] = Field(default_factory=list, description="[OR] 匹配任意一个MIME Type") 
-    file_name_patterns: List[str] = Field(default_factory=list, description="[OR] 匹配任意一个文件名通配符") 
+    all_keywords: List[str] = Field(default_factory=list)
+    any_keywords: List[str] = Field(default_factory=list)
+    file_types: List[str] = Field(default_factory=list) 
+    file_name_patterns: List[str] = Field(default_factory=list) 
 
     target_identifier: Union[int, str]
     topic_id: Optional[int] = None 
@@ -79,10 +81,6 @@ class TargetDistributionRule(BaseModel):
     resolved_target_id: Optional[int] = Field(None, exclude=True)
     
     def check(self, text: str, media: Any) -> bool:
-        """
-        检查消息是否匹配此规则。
-        逻辑: (all_keywords) AND (any_keywords OR file_types OR file_name_patterns)
-        """
         text_lower = text.lower() if text else ""
         
         # 1. 检查 [AND] all_keywords
@@ -93,21 +91,17 @@ class TargetDistributionRule(BaseModel):
         # 2. 检查 [OR] 条件组
         or_group_matched = False
         
-        # 检查 [OR] any_keywords
         if self.any_keywords:
             if any(keyword.lower() in text_lower for keyword in self.any_keywords):
                 or_group_matched = True
         
-        # 检查 [OR] media (file_types / file_name_patterns)
         if not or_group_matched and media and isinstance(media, MessageMediaDocument):
             doc = media.document
             if doc:
-                # 检查 [OR] file_types
                 if self.file_types and doc.mime_type:
                     if any(ft.lower() in doc.mime_type.lower() for ft in self.file_types):
                         or_group_matched = True
 
-                # 检查 [OR] file_name_patterns
                 if not or_group_matched and self.file_name_patterns:
                     file_name = next((attr.file_name for attr in doc.attributes if hasattr(attr, 'file_name')), None)
                     if file_name:
@@ -158,7 +152,6 @@ class AdFilterConfig(BaseModel):
     keywords_substring: Optional[List[str]] = Field(default_factory=list)
     keywords_word: Optional[List[str]] = Field(default_factory=list)
     patterns: Optional[List[str]] = Field(default_factory=list)
-    # (新) v6.0：添加文件名关键词
     file_name_keywords: Optional[List[str]] = Field(default_factory=list)
 
 class ContentFilterConfig(BaseModel):
@@ -172,7 +165,8 @@ class WhitelistConfig(BaseModel):
 
 class DeduplicationConfig(BaseModel):
     enable: bool = True
-    db_path: str = "/app/data/dedup_db.json" 
+    # (新) v9.0：db_path 已被 database.py 取代，但我们保留它以兼容旧配置
+    db_path: Optional[str] = "/app/data/dedup_db.json" 
 
 class LinkExtractionConfig(BaseModel):
     check_hyperlinks: bool = True
@@ -237,8 +231,9 @@ class UltimateForwarder:
         self.current_client_index = 0
         self.client_flood_wait: Dict[str, float] = {} 
         
-        self.dedup_db: Set[str] = self._load_dedup_db()
-        self.progress_db: Dict[str, int] = self._load_progress_db()
+        # (新) v9.0：移除 dedup_db 和 progress_db 的内存加载
+        # self.dedup_db: Set[str] = self._load_dedup_db()
+        # self.progress_db: Dict[str, int] = self._load_progress_db()
 
         ad_filter = config.ad_filter
         self.ad_patterns = self._compile_patterns(ad_filter.patterns if ad_filter and ad_filter.patterns else [])
@@ -247,8 +242,9 @@ class UltimateForwarder:
         logger.info(f"终极转发器核心已初始化。")
         logger.info(f"转发模式: {config.forwarding.mode}")
         logger.info(f"处理新消息: {config.forwarding.forward_new_only}")
-        logger.info(f"去重数据库: {len(self.dedup_db)} 条记录")
-        logger.info(f"进度数据库: {len(self.progress_db)} 个频道")
+        # (新) v9.0：移除日志
+        # logger.info(f"去重数据库: {len(self.dedup_db)} 条记录")
+        # logger.info(f"进度数据库: {len(self.progress_db)} 个频道")
     
     async def reload(self, new_config: Config):
         """热重载配置"""
@@ -258,7 +254,9 @@ class UltimateForwarder:
         self.ad_keyword_word_patterns = self._compile_word_patterns(new_ad_filter.keywords_word if new_ad_filter and new_ad_filter.keywords_word else [])
         await self.resolve_targets() 
         
+        # (新) v9.0：移除循环导入
         if new_config.logging_level:
+            # 导入主模块的 setup_logging 函数
             from ultimate_forwarder import setup_logging
             setup_logging(new_config.logging_level.app, new_config.logging_level.telethon)
         
@@ -296,59 +294,19 @@ class UltimateForwarder:
             rule.resolved_target_id = await normalize_target(rule.target_identifier)
 
 
-    # --- 数据库/状态管理 ---
+    # --- (新) v9.0：移除数据库/状态管理函数 ---
+    # 移除 _get_progress_db_path, _save_db_data, _load_progress_db, 
+    # _save_progress_db, _load_dedup_db, _save_dedup_db
     
-    def _get_progress_db_path(self) -> str:
-        return "/app/data/forwarder_progress.json"
+    # (新) v9.0：修改 _get_channel_progress
+    async def _get_channel_progress(self, channel_id: int) -> int:
+        return await database.get_progress(channel_id)
 
-    def _save_db_data(self, path: str, data: Any):
-        """封装保存逻辑"""
-        try:
-            os.makedirs(os.path.dirname(path), exist_ok=True)
-            with open(path, 'w', encoding='utf-8') as f:
-                json.dump(data, f, indent=2)
-        except Exception as e:
-            logger.error(f"保存数据库 {path} 失败: {e}")
+    # (新) v9.0：修改 _set_channel_progress
+    async def _set_channel_progress(self, channel_id: int, message_id: int):
+        # (新) v9.0：不再需要检查 "current_progress"
+        await database.set_progress(channel_id, message_id)
 
-    def _load_progress_db(self) -> Dict[str, int]:
-        path = self._get_progress_db_path()
-        try:
-            with open(path, 'r', encoding='utf-8') as f:
-                return json.load(f)
-        except (FileNotFoundError, json.JSONDecodeError):
-            logger.warning(f"未找到进度文件 {path}，将创建新的。")
-            db = {}
-            self._save_db_data(path, db) 
-            return db
-
-    def _save_progress_db(self):
-        path = self._get_progress_db_path()
-        self._save_db_data(path, self.progress_db)
-
-    def _get_channel_progress(self, channel_id: int) -> int:
-        return self.progress_db.get(str(channel_id), 0)
-
-    def _set_channel_progress(self, channel_id: int, message_id: int):
-        current_progress = self.progress_db.get(str(channel_id), 0)
-        if message_id > current_progress:
-            self.progress_db[str(channel_id)] = message_id
-            self._save_progress_db()
-
-    def _load_dedup_db(self) -> Set[str]:
-        path = self.config.deduplication.db_path
-        try:
-            with open(path, 'r', encoding='utf-8') as f:
-                hashes = json.load(f)
-                return set(hashes)
-        except (FileNotFoundError, json.JSONDecodeError):
-            logger.warning(f"未找到去重文件 {path}，将创建新的。")
-            db = set()
-            self._save_db_data(path, list(db)) 
-            return db
-
-    def _save_dedup_db(self):
-        path = self.config.deduplication.db_path
-        self._save_db_data(path, list(self.dedup_db))
 
     # --- 客户端管理 ---
     
@@ -438,7 +396,8 @@ class UltimateForwarder:
                     logger.info(f"消息 {numeric_chat_id}/{message.id} (Text: {msg_data['text'][:30]}...) [被过滤: {filter_reason}]")
                     return 
 
-                if self._is_duplicate(msg_data, f"{numeric_chat_id}/{message.id}"):
+                # (新) v9.0：修改 _is_duplicate
+                if await self._is_duplicate(msg_data, f"{numeric_chat_id}/{message.id}"):
                     logger.info(f"消息 {numeric_chat_id}/{message.id} (Text: {msg_data['text'][:30]}...) [重复]")
                     return 
 
@@ -461,13 +420,15 @@ class UltimateForwarder:
                     topic_id=topic_id
                 )
                 
-                self._mark_as_processed(msg_data)
+                # (新) v9.0：修改 _mark_as_processed
+                await self._mark_as_processed(msg_data)
                 
         except Exception as e:
             logger.error(f"处理消息 {numeric_chat_id}/{message.id} 时发生严重错误: {e}", exc_info=True)
         finally:
             logger.debug(f"--- [END] 消息 {numeric_chat_id}/{message.id} 处理完毕 ---")
-            self._set_channel_progress(numeric_chat_id, message.id)
+            # (新) v9.0：修改 _set_channel_progress
+            await self._set_channel_progress(numeric_chat_id, message.id)
 
     async def process_history(self, resolved_source_ids: List[int]):
         """处理历史消息 (仅在 `forward_new_only: false` 时调用)"""
@@ -498,7 +459,8 @@ class UltimateForwarder:
                 logger.info(f"跳过源 {source_config.identifier} 的历史记录 (已在源或全局配置中禁用)。")
                 continue
 
-            last_id = self._get_channel_progress(source_id)
+            # (新) v9.0：修改 _get_channel_progress
+            last_id = await self._get_channel_progress(source_id)
             logger.info(f"正在扫描源 {source_config.identifier} ({source_id}) 的历史记录 (从消息 ID {last_id} 开始)...")
             
             try:
@@ -579,20 +541,17 @@ class UltimateForwarder:
 
         # 2. 广告过滤 (黑名单)
         if self.config.ad_filter and self.config.ad_filter.enable:
-            # v5.8：检查子字符串列表 (用于中文)
             ad_keywords_sub = self.config.ad_filter.keywords_substring if self.config.ad_filter.keywords_substring else []
             for kw in ad_keywords_sub:
                 if kw.lower() in text_lower:
                     logger.debug(f"Filter [Ad Substring]: 命中广告关键词 {kw}。")
                     return f"Blacklist (关键词: {kw})"
             
-            # v5.8：检查全词匹配列表 (用于英文)
             for p in self.ad_keyword_word_patterns:
                 if p.search(text):
                     logger.debug(f"Filter [Ad Word]: 命中广告全词 {p.pattern}。")
                     return f"Blacklist (全词: {p.pattern})"
             
-            # (新) v6.0：检查文件名关键词
             file_keywords = self.config.ad_filter.file_name_keywords if self.config.ad_filter.file_name_keywords else []
             if file_keywords and media and isinstance(media, MessageMediaDocument):
                 doc = media.document
@@ -605,7 +564,6 @@ class UltimateForwarder:
                                 logger.debug(f"Filter [Ad Filename]: 命中文件名关键词 {kw}。")
                                 return f"Blacklist (文件名: {kw})"
 
-            # v5.8：检查正则表达式
             for p in self.ad_patterns:
                 if p.search(text):
                     logger.debug(f"Filter [Ad Pattern]: 命中广告正则 {p.pattern}。")
@@ -650,7 +608,8 @@ class UltimateForwarder:
         
         return None
 
-    def _is_duplicate(self, message_data: Dict[str, Any], log_id: str) -> bool:
+    # (新) v9.0：修改 _is_duplicate
+    async def _is_duplicate(self, message_data: Dict[str, Any], log_id: str) -> bool:
         if not self.config.deduplication.enable:
             return False
             
@@ -659,18 +618,16 @@ class UltimateForwarder:
             logger.debug(f"无法为 {log_id} 生成哈希，跳过。")
             return False
             
-        if msg_hash in self.dedup_db:
-            return True
-        return False
+        return await database.check_hash(msg_hash)
 
-    def _mark_as_processed(self, message_data: Dict[str, Any]):
+    # (新) v9.0：修改 _mark_as_processed
+    async def _mark_as_processed(self, message_data: Dict[str, Any]):
         if not self.config.deduplication.enable:
             return
             
         msg_hash = self._get_message_hash(message_data)
         if msg_hash:
-            self.dedup_db.add(msg_hash)
-            self._save_dedup_db() 
+            await database.add_hash(msg_hash)
 
     def _find_target(self, text: str, media: Any) -> Tuple[Optional[int], Optional[int]]:
         """
