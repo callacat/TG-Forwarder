@@ -27,6 +27,10 @@ class LoggingLevelConfig(BaseModel):
     app: str = "INFO"
     telethon: str = "WARNING"
 
+# (新) v8.1：Web UI 配置模型
+class WebUIConfig(BaseModel):
+    password: str = "password"
+
 # --- 配置模型 ---
 
 class ProxyConfig(BaseModel):
@@ -205,6 +209,7 @@ class BotServiceConfig(BaseModel):
 class Config(BaseModel):
     docker_container_name: Optional[str] = "tg-forwarder"
     logging_level: Optional[LoggingLevelConfig] = Field(default_factory=LoggingLevelConfig)
+    web_ui: Optional[WebUIConfig] = Field(default_factory=WebUIConfig) # (新) v8.1
     
     proxy: Optional[ProxyConfig] = Field(default_factory=ProxyConfig)
     accounts: List[AccountConfig]

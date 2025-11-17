@@ -13,6 +13,10 @@ logging_level:
   app: "INFO"       # 本程序 (ultimate_forwarder) 的日志级别
   telethon: "WARNING" # Telethon 库的日志级别 (设为 INFO 或 DEBUG 会导致刷屏)
 
+# (新) v8.1：Web UI 安全配置
+web_ui:
+  password: "password" # (重要!) 启动前必须修改这个密码
+
 # --- Bot 服务配置 ---
 bot_service:
   enabled: true

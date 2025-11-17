@@ -485,6 +485,16 @@ async def main():
         setup_logging(config.logging_level.app, config.logging_level.telethon)
     else:
         setup_logging() # 使用默认值 (INFO, WARNING)
+    # (新) v8.1：将密码注入 Web 服务器
+    if config.web_ui and config.web_ui.password != "password":
+        web_server.set_web_ui_password(config.web_ui.password)
+    else:
+        logger.warning("!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!")
+        logger.warning("!!! 警告：你没有在 config.yaml 中设置 'web_ui.password'。")
+        logger.warning("!!! Web UI (8080 端口) 现在是*不安全*的，任何人都可以访问。")
+        logger.warning("!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!")
+        # 我们仍然设置一个默认值，以防万一
+        web_server.set_web_ui_password("password")
 
     try:
         # (新) v9.0：在任何操作之前初始化数据库
