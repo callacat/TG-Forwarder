@@ -108,7 +108,7 @@ class TargetDistributionRule(BaseModel):
                     if file_name:
                         for pattern_str in self.file_name_patterns:
                             try:
-                                pattern = re.compile(pattern_str.replace('.', r'\.').replace('*', r'.*') + '$', re.IGNORECASE)
+                                pattern = re.compile(re.escape(pattern_str).replace(r'\*', r'.*'), re.IGNORECASE)
                                 if re.search(pattern, file_name):
                                     or_group_matched = True
                                     break 
@@ -150,7 +150,9 @@ class ForwardingConfig(BaseModel):
 
 class AdFilterConfig(BaseModel):
     enable: bool = True
-    keywords: Optional[List[str]] = Field(default_factory=list)
+    # (新) v5.8：拆分为两个列表
+    keywords_substring: Optional[List[str]] = Field(default_factory=list)
+    keywords_word: Optional[List[str]] = Field(default_factory=list)
     patterns: Optional[List[str]] = Field(default_factory=list)
 
 class ContentFilterConfig(BaseModel):
@@ -232,7 +234,8 @@ class UltimateForwarder:
 
         ad_filter = config.ad_filter
         self.ad_patterns = self._compile_patterns(ad_filter.patterns if ad_filter and ad_filter.patterns else [])
-        self.ad_keyword_patterns = self._compile_word_patterns(ad_filter.keywords if ad_filter and ad_filter.keywords else [])
+        # (新) v5.8：添加 ad_keyword_word_patterns
+        self.ad_keyword_word_patterns = self._compile_word_patterns(ad_filter.keywords_word if ad_filter and ad_filter.keywords_word else [])
         
         logger.info(f"终极转发器核心已初始化。")
         logger.info(f"转发模式: {config.forwarding.mode}")
@@ -245,7 +248,8 @@ class UltimateForwarder:
         self.config = new_config
         new_ad_filter = new_config.ad_filter
         self.ad_patterns = self._compile_patterns(new_ad_filter.patterns if new_ad_filter and new_ad_filter.patterns else [])
-        self.ad_keyword_patterns = self._compile_word_patterns(new_ad_filter.keywords if new_ad_filter and new_ad_filter.keywords else [])
+        # (新) v5.8：添加 ad_keyword_word_patterns
+        self.ad_keyword_word_patterns = self._compile_word_patterns(new_ad_filter.keywords_word if new_ad_filter and new_ad_filter.keywords_word else [])
         await self.resolve_targets() # 确保目标被重新解析
         logger.info("转发器配置已热重载。")
 
@@ -539,11 +543,13 @@ class UltimateForwarder:
                 logger.warning(f"无效的正则表达式: '{p}', 错误: {e}")
         return compiled
 
+    # (新) v5.8：重新添加 _compile_word_patterns
     def _compile_word_patterns(self, keywords: List[str]) -> List[re.Pattern]:
         """将关键词列表编译为全词匹配的正则表达式列表"""
         compiled = []
         for kw in keywords:
             try:
+                # \b 确保是单词边界 (全词匹配)
                 pattern = r'\b' + re.escape(kw) + r'\b'
                 compiled.append(re.compile(pattern, re.IGNORECASE))
             except re.error as e:
@@ -566,10 +572,20 @@ class UltimateForwarder:
 
         # 2. 广告过滤 (黑名单)
         if self.config.ad_filter and self.config.ad_filter.enable:
-            for p in self.ad_keyword_patterns:
+            # (新) v5.8：检查子字符串列表 (用于中文)
+            ad_keywords_sub = self.config.ad_filter.keywords_substring if self.config.ad_filter.keywords_substring else []
+            for kw in ad_keywords_sub:
+                if kw.lower() in text_lower:
+                    logger.debug(f"Filter [Ad Substring]: 命中广告关键词 {kw}。")
+                    return f"Blacklist (关键词: {kw})"
+            
+            # (新) v5.8：检查全词匹配列表 (用于英文)
+            for p in self.ad_keyword_word_patterns:
                 if p.search(text):
-                    logger.debug(f"Filter [Ad Keyword]: 命中广告关键词 {p.pattern}。")
-                    return f"Blacklist (关键词: {p.pattern})" 
+                    logger.debug(f"Filter [Ad Word]: 命中广告全词 {p.pattern}。")
+                    return f"Blacklist (全词: {p.pattern})"
+            
+            # (新) v5.8：检查正则表达式
             for p in self.ad_patterns:
                 if p.search(text):
                     logger.debug(f"Filter [Ad Pattern]: 命中广告正则 {p.pattern}。")
@@ -707,9 +723,7 @@ class UltimateForwarder:
                         **send_kwargs
                     )
                 
-                # (新) v5.5：修复话题已读
-                # 只有在 topic_id 为 None 时，才标记整个群组已读
-                if self.config.forwarding.mark_target_as_read and sent_message and topic_id is None:
+                if self.config.forwarding.mark_target_as_read and sent_message:
                     try:
                         last_message_id = 0
                         if isinstance(sent_message, list):
@@ -719,11 +733,11 @@ class UltimateForwarder:
                         
                         await client.mark_read(
                             target_id, 
-                            max_id=last_message_id
-                            # 移除了 top_msg_id，避免标记所有话题
+                            max_id=last_message_id,
+                            top_msg_id=topic_id 
                         )
                     except Exception as e:
-                        logger.debug(f"将目标 {target_id} (非话题) 标记为已读失败: {e}")
+                        logger.debug(f"将目标 {target_id} (话题: {topic_id}) 标记为已读失败: {e}")
 
                 logger.debug(f"客户端 {client.session_name_for_forwarder} 发送成功。")
                 return 
@@ -753,7 +767,6 @@ class UltimateForwarder:
                         else:
                             sent_message_retry = await client.forward_messages(target_id, messages=original_message) 
                         
-                        # (新) v5.5：标记目标为已读 (重试成功时)
                         if self.config.forwarding.mark_target_as_read and sent_message_retry:
                             try:
                                 last_message_id = 0
@@ -762,10 +775,10 @@ class UltimateForwarder:
                                 else:
                                     last_message_id = sent_message_retry.id
                                 
-                                # 此时 topic_id 必定为 None
                                 await client.mark_read(
                                     target_id, 
-                                    max_id=last_message_id
+                                    max_id=last_message_id,
+                                    top_msg_id=None 
                                 )
                             except Exception as e:
                                 logger.debug(f"将目标 {target_id} 标记为已读失败: {e}")

@@ -47,7 +47,7 @@ accounts:
 # (重要!) 你的 `accounts` 中的账号 *必须* 加入这些频道才能监控
 sources:
   - identifier: -1001234567890 # (必需) 源频道/群组 标识符
-    check_replies: true    # (可选) 是否检查此频道的评论区 (TODO)
+    check_replies: false    # (可选) 是否检查此频道的评论区 (TODO)
     replies_limit: 5       # (可选) 检查评论区的最后5条
     forward_new_only: null # (可选) 覆盖全局设置, true/false
   # - identifier: "@SomeOtherChannel"
@@ -57,75 +57,35 @@ sources:
 targets:
   # 默认目标，同样支持三种格式
   default_target: -1009876543210
-  # default_topic_id: 99       # (可选) 默认话题 ID
-  # (可选) 分发规则 (新功能)
-  # (已更新) 规则按 *优先级* (从上到下) 匹配，第一个命中的规则生效。
+  default_topic_id: null       # (可选) 默认话题 ID (例如 1)
   
-  # 规则逻辑:
+  # (可选) 分发规则
+  # 规则按 *优先级* (从上到下) 匹配，第一个命中的规则生效。
+  
+  # 匹配逻辑:
   # 匹配 = (满足 *所有* all_keywords [AND]) 
   #       AND 
   #       (满足 *任一* any_keywords [OR] 满足 *任一* file_types [OR] 满足 *任一* file_name_patterns)
   
-  # 提示:
-  # - 如果 all_keywords, any_keywords, file_types, file_name_patterns 都为空，规则无效
-  # - 如果 [OR] 组 (any/file) 为空，则仅匹配 all_keywords
-  
-  # 示例: 按照你提供的分类 (从最具体到最笼统)
   distribution_rules:
-    # --- 平台 (最具体) ---
-    - name: "Windows 软件"
-      all_keywords: ["win", "pc"] # [AND] 必须包含 "win" 或 "pc"
-      any_keywords: ["#软件", "app", "工具", "#工具"] # [OR] 必须包含任一 "软件" 关键词
-      target_identifier: -1009876543210 
-      topic_id: 10 # 假设是 "Windows" 话题
-
-    - name: "Android 软件"
-      all_keywords: ["android", "安卓"]
-      any_keywords: ["#软件", "app", "工具", "#工具", "apk"]
+    # 示例 1: 仅匹配文件名
+    - name: "APK 文件"
+      file_name_patterns: ["*.apk", "*.apk.1"]
       target_identifier: -1009876543210 
       topic_id: 11 # 假设是 "Android" 话题
 
-    - name: "iOS 软件"
-      all_keywords: ["ios", "iphone", "ipad"]
-      any_keywords: ["#软件", "app", "工具", "#工具", "ipa"]
+    # 示例 2: 匹配文件名 AND 关键词
+    - name: "Windows 软件 (带关键词)"
+      all_keywords: ["win", "pc"] 
+      file_name_patterns: ["*.exe", "*.msi"] 
       target_identifier: -1009876543210 
-      topic_id: 12 # 假设是 "iOS" 话题
+      topic_id: 10 # 假设是 "Windows" 话题
       
-    - name: "macOS 软件"
-      all_keywords: ["macos", "mac"]
-      any_keywords: ["#软件", "app", "工具", "#工具", "dmg"]
-      target_identifier: -1009876543210 
-      topic_id: 13 # 假设是 "macOS" 话题
-
-    - name: "Web/在线工具"
-      all_keywords: ["web", "在线", "网站"]
-      any_keywords: ["#工具", "app", "服务"]
-      target_identifier: -1009876543210 
-      topic_id: 14 # 假设是 "Web" 话题
-      
-    # --- 类型 (较笼统) ---
+    # 示例 3: 匹配文本 (不关心文件)
     - name: "影视"
-      any_keywords: ["#影视", "电影", "电视剧", "动漫", "BluRay", "4K", "REMUX", "S01E", "BDRip"]
+      any_keywords: ["#影视", "电影", "电视剧", "动漫", "4K"]
       target_identifier: -1009876543210
       topic_id: 20 # 假设是 "影视" 话题
-
-    - name: "音乐"
-      any_keywords: ["#音乐", "Music", "FLAC", "MP3", "专辑"]
-      file_types: ["audio/mpeg", "audio/flac"]
-      target_identifier: -1009876543210
-      topic_id: 21 # 假设是 "音乐" 话题
-      
-    - name: "新闻"
-      any_keywords: ["#新闻", "快讯", "报道", "资讯"]
-      target_identifier: -1009876543210
-      topic_id: 22 # 假设是 "新闻" 话题
-
-    - name: "日常"
-      any_keywords: ["#日常", "碎碎念"]
-      target_identifier: -1009876543210
-      topic_id: 23 # 假设是 "日常" 话题
-
-    # 最后的 `default_target` 会接收所有未匹配上述规则的消息 (即 "兜底")
 
 # --- 5. 转发行为 ---
 forwarding:
@@ -137,36 +97,23 @@ forwarding:
   # true  = (默认) 只处理程序启动后收到的新消息。
   # false = 程序启动时，会回溯所有源频道的历史消息 (从上次停止的地方开始)。
   forward_new_only: true
-  # (新) 自动已读:
-  # true  = 转发消息后，自动将源频道标记为已读 (治好强迫症)
-  # false = (默认) 保持未读
+  # 自动已读源频道:
   mark_as_read: false
-  # (新) v5.3：自动已读目标频道:
-  # true  = 转发消息后，自动将 *目标* 频道/群组标记为已读
-  # false = (默认) 保持未读
+  # 自动已读目标频道:
   mark_target_as_read: false
-  
+
 # --- 6. 过滤器 (可选) ---
-#
-# 过滤逻辑优先级:
-# 1. 白名单 (Whitelist):
-#    - 如果 `whitelist: enable: true`:
-#    - 只有 *命中* 白名单的消息会 [通过]，并跳过所有黑名单。
-#    - 未命中白名单的消息会被 [过滤]。
-# 2. 黑名单 (Ad/Content Filter):
-#    - 如果 `whitelist: enable: false`:
-#    - 消息默认 [通过]。
-#    - 但如果 *命中* `ad_filter` 或 `content_filter`，消息会被 [过滤]。
-# 3. 默认:
-#    - 如果所有过滤器都 `enable: false`，所有消息 [通过]。
-#
 ad_filter:
   enable: true
-  keywords:
-    - "广告"
+  # (新) v5.8：用于 "发财娱乐" 这样的中文词 (子字符串匹配)
+  keywords_substring:
+    - "发财娱乐"
     - "推广"
-    - "t.me/ad_channel"
-  patterns: # 正则表达式
+  # (新) v5.8：用于 "ad" 这样的英文词 (全词匹配)
+  keywords_word:
+    - "ad"
+    - "promo"
+  patterns: # (正则表达式)
     - "group[0-9]{3,}"
 
 content_filter:
@@ -176,7 +123,7 @@ content_filter:
 
 whitelist:
   enable: false
-  keywords:
+  keywords: # (子字符串匹配)
     - "#MyKeep"
     - "重要"
 
@@ -190,7 +137,6 @@ link_extraction:
   check_bots: false       # 是否模拟点击机器人按钮 (TODO)
 
 replacements:
-  # (新) 修复：修正了模板中的错误示例
   # 格式: "要查找的内容": "要替换成的内容"
   
   # (示例) 删除 "#ad" 标签:
@@ -203,11 +149,10 @@ replacements:
   # "": "#ad"  # <--- 这会导致 "h#adt#at#ap#as..." 的错误
 
 # --- 8. 失效链接检测器 (可选) ---
-# 可以通过 Bot 的 /run_checklinks 命令触发
 link_checker:
   enabled: true
   # "log"    = 只在日志中报告
   # "edit"   = 编辑原消息，标注 [链接已失效]
   # "delete" = 删除包含失效链接的消息
   mode: "edit"
-  schedule: "0 3 * * *" # (TODO) 定时任务尚未实现, 请使用 Bot 手动触发
+  schedule: "0 3 * * *" # 定时任务 (Cron 表达式, UTC 时间)
