@@ -158,6 +158,8 @@ class AdFilterConfig(BaseModel):
     keywords_substring: Optional[List[str]] = Field(default_factory=list)
     keywords_word: Optional[List[str]] = Field(default_factory=list)
     patterns: Optional[List[str]] = Field(default_factory=list)
+    # (新) v6.0：添加文件名关键词
+    file_name_keywords: Optional[List[str]] = Field(default_factory=list)
 
 class ContentFilterConfig(BaseModel):
     enable: bool = True
@@ -208,7 +210,6 @@ class BotServiceConfig(BaseModel):
 
 class Config(BaseModel):
     docker_container_name: Optional[str] = "tg-forwarder"
-    # (新) v5.9：添加日志级别配置
     logging_level: Optional[LoggingLevelConfig] = Field(default_factory=LoggingLevelConfig)
     
     proxy: Optional[ProxyConfig] = Field(default_factory=ProxyConfig)
@@ -255,11 +256,9 @@ class UltimateForwarder:
         new_ad_filter = new_config.ad_filter
         self.ad_patterns = self._compile_patterns(new_ad_filter.patterns if new_ad_filter and new_ad_filter.patterns else [])
         self.ad_keyword_word_patterns = self._compile_word_patterns(new_ad_filter.keywords_word if new_ad_filter and new_ad_filter.keywords_word else [])
-        await self.resolve_targets() # 确保目标被重新解析
+        await self.resolve_targets() 
         
-        # (新) v5.9：热重载日志级别
         if new_config.logging_level:
-            # 导入主模块的 setup_logging 函数
             from ultimate_forwarder import setup_logging
             setup_logging(new_config.logging_level.app, new_config.logging_level.telethon)
         
@@ -291,10 +290,8 @@ class UltimateForwarder:
                 logger.error(f"❌ 无法解析目标: {identifier} - {e}")
                 return None
         
-        # 规范化默认目标
         self.config.targets.resolved_default_target_id = await normalize_target(self.config.targets.default_target)
 
-        # 规范化规则目标
         for rule in self.config.targets.distribution_rules:
             rule.resolved_target_id = await normalize_target(rule.target_identifier)
 
@@ -321,7 +318,7 @@ class UltimateForwarder:
         except (FileNotFoundError, json.JSONDecodeError):
             logger.warning(f"未找到进度文件 {path}，将创建新的。")
             db = {}
-            self._save_db_data(path, db) # 立即创建
+            self._save_db_data(path, db) 
             return db
 
     def _save_progress_db(self):
@@ -346,7 +343,7 @@ class UltimateForwarder:
         except (FileNotFoundError, json.JSONDecodeError):
             logger.warning(f"未找到去重文件 {path}，将创建新的。")
             db = set()
-            self._save_db_data(path, list(db)) # 立即创建
+            self._save_db_data(path, list(db)) 
             return db
 
     def _save_dedup_db(self):
@@ -582,20 +579,33 @@ class UltimateForwarder:
 
         # 2. 广告过滤 (黑名单)
         if self.config.ad_filter and self.config.ad_filter.enable:
-            # (新) v5.8：检查子字符串列表 (用于中文)
+            # v5.8：检查子字符串列表 (用于中文)
             ad_keywords_sub = self.config.ad_filter.keywords_substring if self.config.ad_filter.keywords_substring else []
             for kw in ad_keywords_sub:
                 if kw.lower() in text_lower:
                     logger.debug(f"Filter [Ad Substring]: 命中广告关键词 {kw}。")
                     return f"Blacklist (关键词: {kw})"
             
-            # (新) v5.8：检查全词匹配列表 (用于英文)
+            # v5.8：检查全词匹配列表 (用于英文)
             for p in self.ad_keyword_word_patterns:
                 if p.search(text):
                     logger.debug(f"Filter [Ad Word]: 命中广告全词 {p.pattern}。")
                     return f"Blacklist (全词: {p.pattern})"
             
-            # (新) v5.8：检查正则表达式
+            # (新) v6.0：检查文件名关键词
+            file_keywords = self.config.ad_filter.file_name_keywords if self.config.ad_filter.file_name_keywords else []
+            if file_keywords and media and isinstance(media, MessageMediaDocument):
+                doc = media.document
+                if doc:
+                    file_name = next((attr.file_name for attr in doc.attributes if hasattr(attr, 'file_name')), None)
+                    if file_name:
+                        file_name_lower = file_name.lower()
+                        for kw in file_keywords:
+                            if kw.lower() in file_name_lower:
+                                logger.debug(f"Filter [Ad Filename]: 命中文件名关键词 {kw}。")
+                                return f"Blacklist (文件名: {kw})"
+
+            # v5.8：检查正则表达式
             for p in self.ad_patterns:
                 if p.search(text):
                     logger.debug(f"Filter [Ad Pattern]: 命中广告正则 {p.pattern}。")

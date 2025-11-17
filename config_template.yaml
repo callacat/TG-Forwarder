@@ -122,6 +122,11 @@ ad_filter:
   keywords_word:
     - "ad"
     - "promo"
+  # (新) v6.0：用于 "芒果VPN" 这样的文件名 (子字符串匹配)
+  file_name_keywords:
+    - "芒果VPN"
+    - "毒舌加速器"
+    - "swage"
   patterns: # (正则表达式)
     - "group[0-9]{3,}"
 
