@@ -5,15 +5,12 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>TG Forwarder Pro</title>
     
-    <!-- 1. 字体: Inter (现代 UI 标配) -->
+    <!-- 1. 字体: Inter -->
     <link rel="preconnect" href="https://rsms.me/">
     <link rel="stylesheet" href="https://rsms.me/inter/inter.css">
     
-    <!-- 2. 核心: Alpine.js (轻量级响应式框架) & Tailwind -->
-    <script src="https://cdn.jsdelivr.net/npm/alpinejs@3.13.5/dist/cdn.min.js"></script>
+    <!-- 2. 核心: Tailwind CSS (CDN) -->
     <script src="https://cdn.tailwindcss.com"></script>
-    
-    <!-- 3. Tailwind 配置 (自定义 Zinc 色系) -->
     <script>
         tailwind.config = {
             darkMode: 'class',
@@ -21,7 +18,6 @@
                 extend: {
                     fontFamily: { sans: ['Inter', 'sans-serif'] },
                     colors: {
-                        // 类似于 Vercel 的灰色系
                         gray: {
                             850: '#1f2937',
                             900: '#111827',
@@ -40,25 +36,242 @@
             }
         }
     </script>
-    <style>
+
+    <!-- 3. 自定义样式 (type="text/tailwindcss" 使得 @apply 生效) -->
+    <style type="text/tailwindcss">
         [x-cloak] { display: none !important; }
+        
         /* 自定义滚动条 */
         ::-webkit-scrollbar { width: 6px; height: 6px; }
         ::-webkit-scrollbar-track { background: transparent; }
         ::-webkit-scrollbar-thumb { background: #d1d5db; border-radius: 3px; }
         .dark ::-webkit-scrollbar-thumb { background: #4b5563; }
         
-        /* Range Input Reset */
-        input[type=range] { -webkit-appearance: none; background: transparent; }
+        /* 滑块样式重置 */
+        input[type=range] { 
+            -webkit-appearance: none; /* VSCode 警告可忽略，这是 Chrome/Safari 必需的 */
+            appearance: none;         /* 标准属性 */
+            background: transparent; 
+        }
         input[type=range]::-webkit-slider-thumb {
-            -webkit-appearance: none; height: 16px; width: 16px; border-radius: 50%;
-            background: #3b82f6; cursor: pointer; margin-top: -6px; box-shadow: 0 1px 3px rgba(0,0,0,0.3);
+            -webkit-appearance: none; 
+            height: 16px; width: 16px; border-radius: 50%;
+            background: #3b82f6; cursor: pointer; margin-top: -6px; 
+            box-shadow: 0 1px 3px rgba(0,0,0,0.3);
         }
         input[type=range]::-webkit-slider-runnable-track {
             width: 100%; height: 4px; cursor: pointer; background: #e5e7eb; border-radius: 2px;
         }
         .dark input[type=range]::-webkit-slider-runnable-track { background: #374151; }
+
+        /* 提取的组件类 (需要 Tailwind CDN 处理) */
+        .form-input, .form-textarea {
+            @apply w-full px-4 py-2 rounded-lg border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-900 focus:ring-2 focus:ring-blue-500 outline-none text-sm transition-colors;
+        }
     </style>
+
+    <!-- 4. 应用逻辑 (前置加载，解决 app is not defined 问题) -->
+    <script>
+        // 通用工具函数
+        const arrayToText = (arr) => (arr || []).join('\n');
+        const textToArray = (text) => text.split('\n').map(s => s.trim()).filter(Boolean);
+
+        function app() {
+            return {
+                authenticated: false,
+                password: '',
+                loading: false,
+                loadingData: false,
+                theme: localStorage.getItem('theme') || 'system',
+                currentTab: 'status',
+                needsReload: false,
+                
+                // 数据模型
+                stats: {},
+                settings: { dedup_retention_days: 30 },
+                rules: { sources: [], distribution_rules: [] },
+                blacklist: { substring: '', word: '' },
+                
+                // 临时表单数据
+                newSource: '',
+                newRule: { name: '', target: '', topic: '', keywords: '', files: '' },
+                
+                // Toast 系统
+                toasts: [],
+                
+                // Tab 定义
+                tabs: [
+                    { id: 'status', name: '状态概览' },
+                    { id: 'sources', name: '监控源' },
+                    { id: 'rules', name: '转发规则' },
+                    { id: 'blacklist', name: '过滤黑名单' }
+                ],
+
+                async initApp() {
+                    // 尝试自动登录
+                    const savedPwd = localStorage.getItem('tgf_pwd');
+                    if (savedPwd) {
+                        this.password = savedPwd;
+                        await this.login();
+                    }
+                },
+
+                async login() {
+                    this.loading = true;
+                    try {
+                        const headers = { 'Authorization': 'Basic ' + btoa('admin:' + this.password) };
+                        const res = await fetch('/api/rules', { headers });
+                        if (!res.ok) throw new Error('认证失败');
+                        
+                        this.authenticated = true;
+                        localStorage.setItem('tgf_pwd', this.password);
+                        await this.fetchAllData();
+                        this.showToast('Welcome', '登录成功', 'success');
+                    } catch (e) {
+                        this.password = '';
+                        localStorage.removeItem('tgf_pwd');
+                        this.showToast('Error', '密码错误', 'error');
+                    } finally {
+                        this.loading = false;
+                    }
+                },
+
+                async api(url, method = 'GET', body = null) {
+                    const headers = { 
+                        'Authorization': 'Basic ' + btoa('admin:' + this.password),
+                        'Content-Type': 'application/json'
+                    };
+                    const opts = { method, headers };
+                    if (body) opts.body = JSON.stringify(body);
+                    
+                    const res = await fetch(url, opts);
+                    if (!res.ok) {
+                        const err = await res.json();
+                        throw new Error(err.detail || '请求失败');
+                    }
+                    return res.json();
+                },
+
+                async fetchAllData() {
+                    this.loadingData = true;
+                    try {
+                        const [rules, stats, settings] = await Promise.all([
+                            this.api('/api/rules'),
+                            this.api('/api/stats'),
+                            this.api('/api/settings/dedup')
+                        ]);
+                        this.rules = rules;
+                        this.stats = stats;
+                        this.settings = settings;
+                        
+                        // 映射黑名单数据
+                        this.blacklist.substring = arrayToText(rules.ad_filter?.keywords_substring);
+                        this.blacklist.word = arrayToText(rules.ad_filter?.keywords_word);
+                    } catch (e) {
+                        this.showToast('API Error', e.message, 'error');
+                    } finally {
+                        this.loadingData = false;
+                    }
+                },
+
+                // --- Actions ---
+                
+                async saveSettings() {
+                    try {
+                        await this.api('/api/settings/dedup', 'POST', { days: parseInt(this.settings.dedup_retention_days) });
+                        this.showToast('Saved', '设置已保存');
+                    } catch(e) { this.showToast('Error', e.message, 'error'); }
+                },
+
+                async addSource() {
+                    if (!this.newSource) return;
+                    try {
+                        await this.api('/api/sources/add', 'POST', { identifier: this.newSource });
+                        this.rules.sources.push({ identifier: this.newSource, resolved_id: null });
+                        this.newSource = '';
+                        this.needsReload = true;
+                        this.showToast('Success', '源已添加');
+                    } catch(e) { this.showToast('Error', e.message, 'error'); }
+                },
+
+                async removeSource(id) {
+                    if (!confirm('确认删除?')) return;
+                    try {
+                        await this.api('/api/sources/remove', 'POST', { identifier: id });
+                        this.rules.sources = this.rules.sources.filter(s => s.identifier !== id);
+                        this.needsReload = true;
+                        this.showToast('Deleted', '源已删除');
+                    } catch(e) { this.showToast('Error', e.message, 'error'); }
+                },
+
+                async addRule() {
+                    if(!this.newRule.name || !this.newRule.target) return this.showToast('Warning', '名称和目标必填', 'error');
+                    const payload = {
+                        name: this.newRule.name,
+                        target_identifier: this.newRule.target,
+                        topic_id: this.newRule.topic ? parseInt(this.newRule.topic) : null,
+                        all_keywords: textToArray(this.newRule.keywords),
+                        file_name_patterns: textToArray(this.newRule.files)
+                    };
+                    try {
+                        await this.api('/api/rules/add', 'POST', payload);
+                        this.rules.distribution_rules.push(payload);
+                        // Reset form
+                        this.newRule = { name: '', target: '', topic: '', keywords: '', files: '' };
+                        this.needsReload = true;
+                        this.showToast('Success', '规则已添加');
+                    } catch(e) { this.showToast('Error', e.message, 'error'); }
+                },
+
+                async removeRule(name) {
+                    if(!confirm('删除规则?')) return;
+                    try {
+                        await this.api('/api/rules/remove', 'POST', { name });
+                        this.rules.distribution_rules = this.rules.distribution_rules.filter(r => r.name !== name);
+                        this.needsReload = true;
+                        this.showToast('Deleted', '规则已移除');
+                    } catch(e) { this.showToast('Error', e.message, 'error'); }
+                },
+
+                async saveBlacklist() {
+                    try {
+                        const payload = {
+                            enable: true,
+                            keywords_substring: textToArray(this.blacklist.substring),
+                            keywords_word: textToArray(this.blacklist.word),
+                            // 保留原有的其他字段
+                            file_name_keywords: this.rules.ad_filter?.file_name_keywords || [],
+                            patterns: this.rules.ad_filter?.patterns || []
+                        };
+                        await this.api('/api/blacklist/update', 'POST', payload);
+                        this.needsReload = true;
+                        this.showToast('Success', '黑名单已更新');
+                    } catch(e) { this.showToast('Error', e.message, 'error'); }
+                },
+
+                // --- Utilities ---
+                
+                toggleTheme() {
+                    const modes = ['light', 'dark', 'system'];
+                    const next = modes[(modes.indexOf(this.theme) + 1) % modes.length];
+                    this.theme = next;
+                    localStorage.setItem('theme', next);
+                },
+
+                showToast(title, message, type = 'success') {
+                    const id = Date.now();
+                    this.toasts.push({ id, title, message, type, visible: true });
+                    setTimeout(() => {
+                        const t = this.toasts.find(t => t.id === id);
+                        if(t) t.visible = false;
+                    }, 3000); // 3秒后消失
+                }
+            }
+        }
+    </script>
+
+    <!-- 5. Alpine.js (defer 加载，确保在 app 定义之后运行) -->
+    <script src="https://cdn.jsdelivr.net/npm/alpinejs@3.13.5/dist/cdn.min.js"></script>
 </head>
 
 <!-- 
@@ -83,7 +296,7 @@
                 x-transition:leave="transition ease-in duration-200"
                 x-transition:leave-start="opacity-100 transform translate-x-0"
                 x-transition:leave-end="opacity-0 transform translate-x-8"
-                class="pointer-events-auto max-w-xs w-full bg-white dark:bg-gray-800 shadow-lg rounded-lg pointer-events-auto ring-1 ring-black ring-opacity-5 overflow-hidden"
+                class="pointer-events-auto max-w-xs w-full bg-white dark:bg-gray-800 shadow-lg rounded-lg ring-1 ring-black ring-opacity-5 overflow-hidden"
             >
                 <div class="p-4 flex items-start">
                     <div class="flex-shrink-0">
@@ -299,210 +512,5 @@
 
         </main>
     </div>
-
-    <script>
-        // 通用工具函数
-        const arrayToText = (arr) => (arr || []).join('\n');
-        const textToArray = (text) => text.split('\n').map(s => s.trim()).filter(Boolean);
-
-        function app() {
-            return {
-                authenticated: false,
-                password: '',
-                loading: false,
-                loadingData: false,
-                theme: localStorage.getItem('theme') || 'system',
-                currentTab: 'status',
-                needsReload: false,
-                
-                // 数据模型
-                stats: {},
-                settings: { dedup_retention_days: 30 },
-                rules: { sources: [], distribution_rules: [] },
-                blacklist: { substring: '', word: '' },
-                
-                // 临时表单数据
-                newSource: '',
-                newRule: { name: '', target: '', topic: '', keywords: '', files: '' },
-                
-                // Toast 系统
-                toasts: [],
-                
-                // Tab 定义
-                tabs: [
-                    { id: 'status', name: '状态概览' },
-                    { id: 'sources', name: '监控源' },
-                    { id: 'rules', name: '转发规则' },
-                    { id: 'blacklist', name: '过滤黑名单' }
-                ],
-
-                async initApp() {
-                    // 尝试自动登录
-                    const savedPwd = localStorage.getItem('tgf_pwd');
-                    if (savedPwd) {
-                        this.password = savedPwd;
-                        await this.login();
-                    }
-                },
-
-                async login() {
-                    this.loading = true;
-                    try {
-                        const headers = { 'Authorization': 'Basic ' + btoa('admin:' + this.password) };
-                        const res = await fetch('/api/rules', { headers });
-                        if (!res.ok) throw new Error('认证失败');
-                        
-                        this.authenticated = true;
-                        localStorage.setItem('tgf_pwd', this.password);
-                        await this.fetchAllData();
-                        this.showToast('Welcome', '登录成功', 'success');
-                    } catch (e) {
-                        this.password = '';
-                        localStorage.removeItem('tgf_pwd');
-                        this.showToast('Error', '密码错误', 'error');
-                    } finally {
-                        this.loading = false;
-                    }
-                },
-
-                async api(url, method = 'GET', body = null) {
-                    const headers = { 
-                        'Authorization': 'Basic ' + btoa('admin:' + this.password),
-                        'Content-Type': 'application/json'
-                    };
-                    const opts = { method, headers };
-                    if (body) opts.body = JSON.stringify(body);
-                    
-                    const res = await fetch(url, opts);
-                    if (!res.ok) {
-                        const err = await res.json();
-                        throw new Error(err.detail || '请求失败');
-                    }
-                    return res.json();
-                },
-
-                async fetchAllData() {
-                    this.loadingData = true;
-                    try {
-                        const [rules, stats, settings] = await Promise.all([
-                            this.api('/api/rules'),
-                            this.api('/api/stats'),
-                            this.api('/api/settings/dedup')
-                        ]);
-                        this.rules = rules;
-                        this.stats = stats;
-                        this.settings = settings;
-                        
-                        // 映射黑名单数据
-                        this.blacklist.substring = arrayToText(rules.ad_filter?.keywords_substring);
-                        this.blacklist.word = arrayToText(rules.ad_filter?.keywords_word);
-                    } catch (e) {
-                        this.showToast('API Error', e.message, 'error');
-                    } finally {
-                        this.loadingData = false;
-                    }
-                },
-
-                // --- Actions ---
-                
-                async saveSettings() {
-                    try {
-                        await this.api('/api/settings/dedup', 'POST', { days: parseInt(this.settings.dedup_retention_days) });
-                        this.showToast('Saved', '设置已保存');
-                    } catch(e) { this.showToast('Error', e.message, 'error'); }
-                },
-
-                async addSource() {
-                    if (!this.newSource) return;
-                    try {
-                        await this.api('/api/sources/add', 'POST', { identifier: this.newSource });
-                        this.rules.sources.push({ identifier: this.newSource, resolved_id: null });
-                        this.newSource = '';
-                        this.needsReload = true;
-                        this.showToast('Success', '源已添加');
-                    } catch(e) { this.showToast('Error', e.message, 'error'); }
-                },
-
-                async removeSource(id) {
-                    if (!confirm('确认删除?')) return;
-                    try {
-                        await this.api('/api/sources/remove', 'POST', { identifier: id });
-                        this.rules.sources = this.rules.sources.filter(s => s.identifier !== id);
-                        this.needsReload = true;
-                        this.showToast('Deleted', '源已删除');
-                    } catch(e) { this.showToast('Error', e.message, 'error'); }
-                },
-
-                async addRule() {
-                    if(!this.newRule.name || !this.newRule.target) return this.showToast('Warning', '名称和目标必填', 'error');
-                    const payload = {
-                        name: this.newRule.name,
-                        target_identifier: this.newRule.target,
-                        topic_id: this.newRule.topic ? parseInt(this.newRule.topic) : null,
-                        all_keywords: textToArray(this.newRule.keywords),
-                        file_name_patterns: textToArray(this.newRule.files)
-                    };
-                    try {
-                        await this.api('/api/rules/add', 'POST', payload);
-                        this.rules.distribution_rules.push(payload);
-                        // Reset form
-                        this.newRule = { name: '', target: '', topic: '', keywords: '', files: '' };
-                        this.needsReload = true;
-                        this.showToast('Success', '规则已添加');
-                    } catch(e) { this.showToast('Error', e.message, 'error'); }
-                },
-
-                async removeRule(name) {
-                    if(!confirm('删除规则?')) return;
-                    try {
-                        await this.api('/api/rules/remove', 'POST', { name });
-                        this.rules.distribution_rules = this.rules.distribution_rules.filter(r => r.name !== name);
-                        this.needsReload = true;
-                        this.showToast('Deleted', '规则已移除');
-                    } catch(e) { this.showToast('Error', e.message, 'error'); }
-                },
-
-                async saveBlacklist() {
-                    try {
-                        const payload = {
-                            enable: true,
-                            keywords_substring: textToArray(this.blacklist.substring),
-                            keywords_word: textToArray(this.blacklist.word),
-                            // 保留原有的其他字段
-                            file_name_keywords: this.rules.ad_filter?.file_name_keywords || [],
-                            patterns: this.rules.ad_filter?.patterns || []
-                        };
-                        await this.api('/api/blacklist/update', 'POST', payload);
-                        this.needsReload = true;
-                        this.showToast('Success', '黑名单已更新');
-                    } catch(e) { this.showToast('Error', e.message, 'error'); }
-                },
-
-                // --- Utilities ---
-                
-                toggleTheme() {
-                    const modes = ['light', 'dark', 'system'];
-                    const next = modes[(modes.indexOf(this.theme) + 1) % modes.length];
-                    this.theme = next;
-                    localStorage.setItem('theme', next);
-                },
-
-                showToast(title, message, type = 'success') {
-                    const id = Date.now();
-                    this.toasts.push({ id, title, message, type, visible: true });
-                    setTimeout(() => {
-                        const t = this.toasts.find(t => t.id === id);
-                        if(t) t.visible = false;
-                    }, 3000); // 3秒后消失
-                }
-            }
-        }
-    </script>
-    <style>
-        /* Tailwind Base Classes applied in style for cleaner HTML */
-        .form-input, .form-textarea {
-            @apply w-full px-4 py-2 rounded-lg border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-900 focus:ring-2 focus:ring-blue-500 outline-none text-sm transition-colors;
-        }
-    </style>
 </body>
 </html>
