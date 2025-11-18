@@ -69,12 +69,12 @@ class TargetDistributionRule(BaseModel):
     def check(self, text: str, media: Any) -> bool:
         text_lower = text.lower() if text else ""
         
-        # 1. 检查 [AND] all_keywords (必须全部包含)
+        # 1. 检查 [AND] all_keywords
         if self.all_keywords:
             if not all(kw.lower() in text_lower for kw in self.all_keywords):
                 return False 
         
-        # 2. 检查 [OR] 条件组 (满足任一即可)
+        # 2. 检查 [OR] 条件组
         has_or_conditions = bool(self.any_keywords or self.file_types or self.file_name_patterns)
         if not has_or_conditions:
             return True
@@ -113,17 +113,14 @@ class TargetConfig(BaseModel):
     distribution_rules: List[TargetDistributionRule] = Field(default_factory=list)
     resolved_default_target_id: Optional[int] = None
 
-# --- (修改) 动态系统设置 ---
 class SystemSettings(BaseModel):
     """可以从 Web UI 动态修改的系统设置"""
     dedup_retention_days: int = 30
-    forwarding_mode: str = "copy"  # forward / copy
+    forwarding_mode: str = "copy"
     forward_new_only: bool = True
-    mark_as_read: bool = False         # 源频道已读
-    mark_target_as_read: bool = False  # 目标频道已读
-    
-    # (新增) 默认目标设置
-    default_target: str = "" # 使用字符串以兼容 @username 或 -100ID
+    mark_as_read: bool = False
+    mark_target_as_read: bool = False
+    default_target: str = "" 
     default_topic_id: Optional[int] = None
     
     @field_validator('forwarding_mode')
@@ -132,13 +129,6 @@ class SystemSettings(BaseModel):
             raise ValueError("mode 必须是 'forward' 或 'copy'")
         return v
 
-# --- 旧的静态配置模型 ---
-class ForwardingConfig(BaseModel):
-    mode: str = "forward" 
-    forward_new_only: bool = True 
-    mark_as_read: bool = False
-    mark_target_as_read: bool = False 
-
 class AdFilterConfig(BaseModel):
     enable: bool = True
     keywords_substring: Optional[List[str]] = Field(default_factory=list)
@@ -146,9 +136,10 @@ class AdFilterConfig(BaseModel):
     patterns: Optional[List[str]] = Field(default_factory=list)
     file_name_keywords: Optional[List[str]] = Field(default_factory=list)
 
+# --- (修改) 内容过滤器模型 ---
 class ContentFilterConfig(BaseModel):
     enable: bool = True
-    meaningless_words: Optional[List[str]] = Field(default_factory=list)
+    meaningless_words: List[str] = Field(default_factory=list)
     min_meaningful_length: int = 5
 
 class WhitelistConfig(BaseModel):
@@ -172,6 +163,12 @@ class BotServiceConfig(BaseModel):
     enabled: bool = False
     bot_token: str = "YOUR_BOT_TOKEN_HERE" 
     admin_user_ids: List[int] = Field(default_factory=list)
+
+class ForwardingConfig(BaseModel): # 保留用于读取旧配置
+    mode: str = "forward"
+    forward_new_only: bool = True
+    mark_as_read: bool = False
+    mark_target_as_read: bool = False
 
 class Config(BaseModel):
     docker_container_name: Optional[str] = "tg-forwarder"
@@ -201,3 +198,7 @@ class RulesDatabase(BaseModel):
     ad_filter: AdFilterConfig = Field(default_factory=AdFilterConfig)
     whitelist: WhitelistConfig = Field(default_factory=WhitelistConfig)
     settings: SystemSettings = Field(default_factory=SystemSettings)
+    
+    # (新增) 动态管理内容过滤和替换
+    content_filter: ContentFilterConfig = Field(default_factory=ContentFilterConfig)
+    replacements: Dict[str, str] = Field(default_factory=dict)

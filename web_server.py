@@ -15,6 +15,7 @@ from models import (
     TargetDistributionRule, 
     AdFilterConfig, 
     WhitelistConfig,
+    ContentFilterConfig, # 新增导入
     RulesDatabase,
     SystemSettings
 )
@@ -64,7 +65,6 @@ async def load_rules_from_db(config: Optional[Config] = None):
                         forward_new_only=config.forwarding.forward_new_only,
                         mark_as_read=config.forwarding.mark_as_read,
                         mark_target_as_read=config.forwarding.mark_target_as_read,
-                        # (新增) 迁移默认目标
                         default_target=str(config.targets.default_target),
                         default_topic_id=config.targets.default_topic_id
                     )
@@ -74,7 +74,10 @@ async def load_rules_from_db(config: Optional[Config] = None):
                         distribution_rules=config.targets.distribution_rules,
                         ad_filter=config.ad_filter,
                         whitelist=config.whitelist,
-                        settings=initial_settings
+                        settings=initial_settings,
+                        # (新增) 迁移内容过滤和替换
+                        content_filter=config.content_filter,
+                        replacements=config.replacements or {}
                     )
                     logger.info("✅ 成功迁移旧配置到 Web 数据库。")
                 except Exception as e:
@@ -109,26 +112,25 @@ async def get_stats(auth: bool = Depends(get_current_user)):
                 "whitelist_keywords": len(rules_db.whitelist.keywords or []),
                 "blacklist_substring": len(rules_db.ad_filter.keywords_substring or []),
                 "blacklist_word": len(rules_db.ad_filter.keywords_word or []),
+                # (新增) 统计信息
+                "replacements_count": len(rules_db.replacements)
             }
         return {**db_stats, **rule_stats}
     except Exception:
         return {}
 
-# --- 设置 API (新) ---
+# --- 设置 API ---
 @app.get("/api/settings", response_model=SystemSettings)
 async def get_settings(auth: bool = Depends(get_current_user)):
-    """获取当前的系统设置"""
     return rules_db.settings
 
 @app.post("/api/settings/update")
 async def update_settings(settings: SystemSettings, auth: bool = Depends(get_current_user)):
-    """更新系统设置"""
     rules_db.settings = settings
     await database.set_dedup_retention(settings.dedup_retention_days)
     await save_rules_to_db()
     return {"status": "success", "message": "系统设置已更新。"}
 
-# 兼容旧 API
 @app.get("/api/settings/dedup")
 async def get_dedup_legacy(auth: bool = Depends(get_current_user)):
     return {"dedup_retention_days": rules_db.settings.dedup_retention_days}
@@ -181,6 +183,28 @@ async def get_whitelist(auth: bool = Depends(get_current_user)):
 @app.post("/api/whitelist/update")
 async def update_whitelist(config: WhitelistConfig, auth: bool = Depends(get_current_user)):
     rules_db.whitelist = config
+    await save_rules_to_db()
+    return {"status": "success"}
+
+# --- (新增) 内容过滤与替换 API ---
+
+@app.get("/api/content_filter", response_model=ContentFilterConfig)
+async def get_content_filter(auth: bool = Depends(get_current_user)):
+    return rules_db.content_filter
+
+@app.post("/api/content_filter/update")
+async def update_content_filter(config: ContentFilterConfig, auth: bool = Depends(get_current_user)):
+    rules_db.content_filter = config
+    await save_rules_to_db()
+    return {"status": "success"}
+
+@app.get("/api/replacements", response_model=Dict[str, str])
+async def get_replacements(auth: bool = Depends(get_current_user)):
+    return rules_db.replacements
+
+@app.post("/api/replacements/update")
+async def update_replacements(data: Dict[str, str], auth: bool = Depends(get_current_user)):
+    rules_db.replacements = data
     await save_rules_to_db()
     return {"status": "success"}
 

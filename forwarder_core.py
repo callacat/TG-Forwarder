@@ -76,12 +76,10 @@ class UltimateForwarder:
                 logger.error(f"❌ 无法解析目标: {identifier} - {e}")
                 return None
         
-        # (修改) 解析动态设置中的默认目标
         settings = web_server.rules_db.settings
         if settings.default_target:
             self.config.targets.resolved_default_target_id = await normalize_target(settings.default_target)
         
-        # 解析内存中的规则目标
         for rule in web_server.rules_db.distribution_rules:
             rule.resolved_target_id = await normalize_target(rule.target_identifier)
 
@@ -188,8 +186,10 @@ class UltimateForwarder:
     # --- 辅助方法 ---
 
     def _apply_replacements(self, text: str) -> str:
-        if not text or not self.config.replacements: return text
-        for find, replace_with in self.config.replacements.items():
+        # (修改) 读取动态规则
+        replacements = web_server.rules_db.replacements
+        if not text or not replacements: return text
+        for find, replace_with in replacements.items():
             text = text.replace(find, replace_with) 
         return text
 
@@ -203,9 +203,10 @@ class UltimateForwarder:
         text = text or ""
         text_lower = text.lower()
         
+        # (修改) 从 rules_db 读取动态内容过滤器
         whitelist = web_server.rules_db.whitelist
         ad_filter = web_server.rules_db.ad_filter
-        content_filter = self.config.content_filter
+        content_filter = web_server.rules_db.content_filter
         
         if whitelist and whitelist.enable:
             if any(kw.lower() in text_lower for kw in (whitelist.keywords or [])):
@@ -258,15 +259,12 @@ class UltimateForwarder:
         if msg_hash: await database.add_hash(msg_hash)
 
     def _find_target(self, text: str, media: Any) -> Tuple[Optional[int], Optional[int]]:
-        # 优先匹配内存中的分发规则
         for rule in web_server.rules_db.distribution_rules:
             if rule.check(text, media): 
                 logger.debug(f"命中分发规则: '{rule.name}'")
                 return rule.resolved_target_id, rule.topic_id
         
-        # (修改) 使用动态设置的默认目标
         settings = web_server.rules_db.settings
-        # 我们使用 config 中的 resolved_default_target_id，它已经被 resolve_targets 更新为 settings 的值
         return self.config.targets.resolved_default_target_id, settings.default_topic_id
 
     async def _send_message(self, original_message: Union[Message, List[Message]], message_data: Dict[str, Any], target_id: int, topic_id: Optional[int]):
