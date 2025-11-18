@@ -3,79 +3,96 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>TG Forwarder Pro</title>
+    <title>TG 终极转发器</title>
     
     <!-- 1. 字体: Inter -->
     <link rel="preconnect" href="https://rsms.me/">
     <link rel="stylesheet" href="https://rsms.me/inter/inter.css">
     
-    <!-- 2. 核心: Tailwind CSS (CDN) -->
+    <!-- 2. 核心样式: 静态 Tailwind CSS (兜底用) -->
+    <link rel="stylesheet" href="https://unpkg.com/tailwindcss@2.2.19/dist/tailwind.min.css">
+
+    <!-- 3. 运行时 Tailwind (高级特性) -->
     <script src="https://cdn.tailwindcss.com"></script>
     <script>
-        tailwind.config = {
-            darkMode: 'class',
-            theme: {
-                extend: {
-                    fontFamily: { sans: ['Inter', 'sans-serif'] },
-                    colors: {
-                        gray: {
-                            850: '#1f2937',
-                            900: '#111827',
-                            950: '#030712',
+        try {
+            if (typeof tailwind !== 'undefined') {
+                tailwind.config = {
+                    darkMode: 'class',
+                    theme: {
+                        extend: {
+                            fontFamily: { sans: ['Inter', 'sans-serif'] },
+                            colors: {
+                                // Zinc 色系，用于夜间模式的高级质感
+                                zinc: {
+                                    50: '#fafafa', 100: '#f4f4f5', 200: '#e4e4e7', 300: '#d4d4d8',
+                                    400: '#a1a1aa', 500: '#71717a', 600: '#52525b', 700: '#3f3f46',
+                                    800: '#27272a', 900: '#18181b', 950: '#09090b',
+                                }
+                            }
                         }
-                    },
-                    animation: {
-                        'fade-in': 'fadeIn 0.3s ease-out',
-                        'slide-up': 'slideUp 0.3s ease-out',
-                    },
-                    keyframes: {
-                        fadeIn: { '0%': { opacity: '0' }, '100%': { opacity: '1' } },
-                        slideUp: { '0%': { transform: 'translateY(10px)', opacity: '0' }, '100%': { transform: 'translateY(0)', opacity: '1' } }
                     }
                 }
             }
-        }
+        } catch (e) { console.warn('Tailwind Runtime Config Failed:', e); }
     </script>
 
-    <!-- 3. 自定义样式 (type="text/tailwindcss" 使得 @apply 生效) -->
-    <style type="text/tailwindcss">
+    <!-- 4. 自定义样式 (Zinc 色系补全 & 组件样式) -->
+    <style>
         [x-cloak] { display: none !important; }
         
-        /* 自定义滚动条 */
+        /* 补全 Zinc 色系 (防止 JS 加载失败时缺失颜色) */
+        .bg-zinc-50 { background-color: #fafafa; }
+        .bg-zinc-100 { background-color: #f4f4f5; }
+        .bg-zinc-800 { background-color: #27272a; }
+        .bg-zinc-900 { background-color: #18181b; }
+        .bg-zinc-950 { background-color: #09090b; }
+        
+        .text-zinc-400 { color: #a1a1aa; }
+        .text-zinc-500 { color: #71717a; }
+        
+        .border-zinc-200 { border-color: #e4e4e7; }
+        .border-zinc-700 { border-color: #3f3f46; }
+        .border-zinc-800 { border-color: #27272a; }
+
+        /* 夜间模式覆盖 */
+        .dark .dark\:bg-zinc-900 { background-color: #18181b; }
+        .dark .dark\:bg-zinc-950 { background-color: #09090b; }
+        .dark .dark\:border-zinc-800 { border-color: #27272a; }
+        .dark .dark\:text-zinc-100 { color: #f4f4f5; }
+        .dark .dark\:text-zinc-400 { color: #a1a1aa; }
+
+        /* 滚动条 */
         ::-webkit-scrollbar { width: 6px; height: 6px; }
         ::-webkit-scrollbar-track { background: transparent; }
-        ::-webkit-scrollbar-thumb { background: #d1d5db; border-radius: 3px; }
-        .dark ::-webkit-scrollbar-thumb { background: #4b5563; }
+        ::-webkit-scrollbar-thumb { background: #d4d4d8; border-radius: 3px; }
+        .dark ::-webkit-scrollbar-thumb { background: #52525b; }
         
-        /* 滑块样式重置 */
-        input[type=range] { 
-            -webkit-appearance: none; /* VSCode 警告可忽略，这是 Chrome/Safari 必需的 */
-            appearance: none;         /* 标准属性 */
-            background: transparent; 
-        }
-        input[type=range]::-webkit-slider-thumb {
-            -webkit-appearance: none; 
-            height: 16px; width: 16px; border-radius: 50%;
-            background: #3b82f6; cursor: pointer; margin-top: -6px; 
-            box-shadow: 0 1px 3px rgba(0,0,0,0.3);
-        }
-        input[type=range]::-webkit-slider-runnable-track {
-            width: 100%; height: 4px; cursor: pointer; background: #e5e7eb; border-radius: 2px;
-        }
-        .dark input[type=range]::-webkit-slider-runnable-track { background: #374151; }
-
-        /* 提取的组件类 (需要 Tailwind CDN 处理) */
+        /* 输入框组件 */
         .form-input, .form-textarea {
-            @apply w-full px-4 py-2 rounded-lg border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-900 focus:ring-2 focus:ring-blue-500 outline-none text-sm transition-colors;
+            width: 100%; padding: 0.6rem 1rem; border-radius: 0.5rem;
+            border: 1px solid #e4e4e7; background-color: white;
+            font-size: 0.875rem; line-height: 1.25rem; outline: none; 
+            transition: all 0.15s; color: #18181b;
         }
+        .form-input:focus, .form-textarea:focus {
+            border-color: #3b82f6; box-shadow: 0 0 0 3px rgba(59, 130, 246, 0.15);
+        }
+        /* 输入框夜间模式修复：确保背景黑、文字白、边框灰 */
+        .dark .form-input, .dark .form-textarea {
+            border-color: #3f3f46; background-color: #18181b; color: #f4f4f5;
+        }
+        .dark .form-input::placeholder, .dark .form-textarea::placeholder {
+            color: #71717a;
+        }
+
+        /* 卡片悬停效果 */
+        .hover-card { transition: transform 0.2s, box-shadow 0.2s; }
+        .hover-card:hover { transform: translateY(-2px); box-shadow: 0 10px 15px -3px rgba(0, 0, 0, 0.1); }
     </style>
 
-    <!-- 4. 应用逻辑 (前置加载，解决 app is not defined 问题) -->
+    <!-- 5. 应用逻辑 -->
     <script>
-        // 通用工具函数
-        const arrayToText = (arr) => (arr || []).join('\n');
-        const textToArray = (text) => text.split('\n').map(s => s.trim()).filter(Boolean);
-
         function app() {
             return {
                 authenticated: false,
@@ -90,25 +107,31 @@
                 stats: {},
                 settings: { dedup_retention_days: 30 },
                 rules: { sources: [], distribution_rules: [] },
-                blacklist: { substring: '', word: '' },
                 
-                // 临时表单数据
+                // 编辑器数据
+                blacklist: { substring: '', word: '', file: '', regex: '' },
+                whitelist: { keywords: '' },
+                
                 newSource: '',
                 newRule: { name: '', target: '', topic: '', keywords: '', files: '' },
-                
-                // Toast 系统
                 toasts: [],
                 
-                // Tab 定义
                 tabs: [
-                    { id: 'status', name: '状态概览' },
-                    { id: 'sources', name: '监控源' },
-                    { id: 'rules', name: '转发规则' },
-                    { id: 'blacklist', name: '过滤黑名单' }
+                    { id: 'status', name: '📊 状态概览' },
+                    { id: 'sources', name: '📡 监控源' },
+                    { id: 'rules', name: '🔀 转发规则' },
+                    { id: 'blacklist', name: '⛔ 黑名单' },
+                    { id: 'whitelist', name: '✅ 白名单' }
                 ],
 
+                // 工具函数
+                arrayToText(arr) { return (arr || []).join('\n'); },
+                textToArray(text) {
+                    if (!text) return [];
+                    return text.split('\n').map(s => s.trim()).filter(Boolean);
+                },
+
                 async initApp() {
-                    // 尝试自动登录
                     const savedPwd = localStorage.getItem('tgf_pwd');
                     if (savedPwd) {
                         this.password = savedPwd;
@@ -121,16 +144,20 @@
                     try {
                         const headers = { 'Authorization': 'Basic ' + btoa('admin:' + this.password) };
                         const res = await fetch('/api/rules', { headers });
-                        if (!res.ok) throw new Error('认证失败');
+                        
+                        if (res.status === 401) throw new Error('密码错误');
+                        if (!res.ok) throw new Error(`连接失败 (${res.status})`);
                         
                         this.authenticated = true;
                         localStorage.setItem('tgf_pwd', this.password);
                         await this.fetchAllData();
-                        this.showToast('Welcome', '登录成功', 'success');
+                        this.showToast('欢迎回来', '登录成功', 'success');
                     } catch (e) {
-                        this.password = '';
-                        localStorage.removeItem('tgf_pwd');
-                        this.showToast('Error', '密码错误', 'error');
+                        if (e.message === '密码错误') {
+                            this.password = '';
+                            localStorage.removeItem('tgf_pwd');
+                        }
+                        this.showToast('登录失败', e.message, 'error');
                     } finally {
                         this.loading = false;
                     }
@@ -144,43 +171,59 @@
                     const opts = { method, headers };
                     if (body) opts.body = JSON.stringify(body);
                     
-                    const res = await fetch(url, opts);
-                    if (!res.ok) {
-                        const err = await res.json();
-                        throw new Error(err.detail || '请求失败');
+                    try {
+                        const res = await fetch(url, opts);
+                        if (!res.ok) {
+                            let errorMsg = `请求失败 (${res.status})`;
+                            try {
+                                const err = await res.json();
+                                errorMsg = err.detail || errorMsg;
+                            } catch (e) {}
+                            throw new Error(errorMsg);
+                        }
+                        return await res.json();
+                    } catch (e) {
+                        console.error("API Error:", e);
+                        throw e;
                     }
-                    return res.json();
                 },
 
                 async fetchAllData() {
                     this.loadingData = true;
                     try {
-                        const [rules, stats, settings] = await Promise.all([
+                        const [rules, stats, settings, blacklist, whitelist] = await Promise.all([
                             this.api('/api/rules'),
                             this.api('/api/stats'),
-                            this.api('/api/settings/dedup')
+                            this.api('/api/settings/dedup'),
+                            this.api('/api/blacklist'), // 单独获取以确保完整
+                            this.api('/api/whitelist')
                         ]);
                         this.rules = rules;
                         this.stats = stats;
                         this.settings = settings;
                         
-                        // 映射黑名单数据
-                        this.blacklist.substring = arrayToText(rules.ad_filter?.keywords_substring);
-                        this.blacklist.word = arrayToText(rules.ad_filter?.keywords_word);
+                        // 映射黑名单
+                        this.blacklist.substring = this.arrayToText(blacklist.keywords_substring);
+                        this.blacklist.word = this.arrayToText(blacklist.keywords_word);
+                        this.blacklist.file = this.arrayToText(blacklist.file_name_keywords);
+                        this.blacklist.regex = this.arrayToText(blacklist.patterns);
+                        
+                        // 映射白名单
+                        this.whitelist.keywords = this.arrayToText(whitelist.keywords);
+
                     } catch (e) {
-                        this.showToast('API Error', e.message, 'error');
+                        this.showToast('数据加载失败', e.message, 'error');
                     } finally {
                         this.loadingData = false;
                     }
                 },
 
-                // --- Actions ---
-                
+                // Actions
                 async saveSettings() {
                     try {
                         await this.api('/api/settings/dedup', 'POST', { days: parseInt(this.settings.dedup_retention_days) });
-                        this.showToast('Saved', '设置已保存');
-                    } catch(e) { this.showToast('Error', e.message, 'error'); }
+                        this.showToast('已保存', '设置已更新');
+                    } catch(e) { this.showToast('错误', e.message, 'error'); }
                 },
 
                 async addSource() {
@@ -190,67 +233,75 @@
                         this.rules.sources.push({ identifier: this.newSource, resolved_id: null });
                         this.newSource = '';
                         this.needsReload = true;
-                        this.showToast('Success', '源已添加');
-                    } catch(e) { this.showToast('Error', e.message, 'error'); }
+                        this.showToast('成功', '监控源已添加');
+                    } catch(e) { this.showToast('错误', e.message, 'error'); }
                 },
 
                 async removeSource(id) {
-                    if (!confirm('确认删除?')) return;
+                    if (!confirm('确认删除该监控源吗?')) return;
                     try {
                         await this.api('/api/sources/remove', 'POST', { identifier: id });
                         this.rules.sources = this.rules.sources.filter(s => s.identifier !== id);
                         this.needsReload = true;
-                        this.showToast('Deleted', '源已删除');
-                    } catch(e) { this.showToast('Error', e.message, 'error'); }
+                        this.showToast('已删除', '源已移除');
+                    } catch(e) { this.showToast('错误', e.message, 'error'); }
                 },
 
                 async addRule() {
-                    if(!this.newRule.name || !this.newRule.target) return this.showToast('Warning', '名称和目标必填', 'error');
+                    if(!this.newRule.name || !this.newRule.target) return this.showToast('警告', '规则名称和目标ID必填', 'error');
                     const payload = {
                         name: this.newRule.name,
                         target_identifier: this.newRule.target,
                         topic_id: this.newRule.topic ? parseInt(this.newRule.topic) : null,
-                        all_keywords: textToArray(this.newRule.keywords),
-                        file_name_patterns: textToArray(this.newRule.files)
+                        all_keywords: this.textToArray(this.newRule.keywords),
+                        file_name_patterns: this.textToArray(this.newRule.files)
                     };
                     try {
                         await this.api('/api/rules/add', 'POST', payload);
                         this.rules.distribution_rules.push(payload);
-                        // Reset form
                         this.newRule = { name: '', target: '', topic: '', keywords: '', files: '' };
                         this.needsReload = true;
-                        this.showToast('Success', '规则已添加');
-                    } catch(e) { this.showToast('Error', e.message, 'error'); }
+                        this.showToast('成功', '转发规则已添加');
+                    } catch(e) { this.showToast('错误', e.message, 'error'); }
                 },
 
                 async removeRule(name) {
-                    if(!confirm('删除规则?')) return;
+                    if(!confirm('确认删除该规则吗?')) return;
                     try {
                         await this.api('/api/rules/remove', 'POST', { name });
                         this.rules.distribution_rules = this.rules.distribution_rules.filter(r => r.name !== name);
                         this.needsReload = true;
-                        this.showToast('Deleted', '规则已移除');
-                    } catch(e) { this.showToast('Error', e.message, 'error'); }
+                        this.showToast('已删除', '规则已移除');
+                    } catch(e) { this.showToast('错误', e.message, 'error'); }
                 },
 
                 async saveBlacklist() {
                     try {
                         const payload = {
                             enable: true,
-                            keywords_substring: textToArray(this.blacklist.substring),
-                            keywords_word: textToArray(this.blacklist.word),
-                            // 保留原有的其他字段
-                            file_name_keywords: this.rules.ad_filter?.file_name_keywords || [],
-                            patterns: this.rules.ad_filter?.patterns || []
+                            keywords_substring: this.textToArray(this.blacklist.substring),
+                            keywords_word: this.textToArray(this.blacklist.word),
+                            file_name_keywords: this.textToArray(this.blacklist.file),
+                            patterns: this.textToArray(this.blacklist.regex)
                         };
                         await this.api('/api/blacklist/update', 'POST', payload);
                         this.needsReload = true;
-                        this.showToast('Success', '黑名单已更新');
-                    } catch(e) { this.showToast('Error', e.message, 'error'); }
+                        this.showToast('成功', '黑名单配置已更新');
+                    } catch(e) { this.showToast('错误', e.message, 'error'); }
+                },
+                
+                async saveWhitelist() {
+                    try {
+                        const payload = {
+                            enable: true,
+                            keywords: this.textToArray(this.whitelist.keywords)
+                        };
+                        await this.api('/api/whitelist/update', 'POST', payload);
+                        this.needsReload = true;
+                        this.showToast('成功', '白名单配置已更新');
+                    } catch(e) { this.showToast('错误', e.message, 'error'); }
                 },
 
-                // --- Utilities ---
-                
                 toggleTheme() {
                     const modes = ['light', 'dark', 'system'];
                     const next = modes[(modes.indexOf(this.theme) + 1) % modes.length];
@@ -264,28 +315,24 @@
                     setTimeout(() => {
                         const t = this.toasts.find(t => t.id === id);
                         if(t) t.visible = false;
-                    }, 3000); // 3秒后消失
+                    }, 3000);
                 }
             }
         }
     </script>
 
-    <!-- 5. Alpine.js (defer 加载，确保在 app 定义之后运行) -->
-    <script src="https://cdn.jsdelivr.net/npm/alpinejs@3.13.5/dist/cdn.min.js"></script>
+    <!-- 6. Alpine.js (defer) -->
+    <script src="https://unpkg.com/alpinejs@3.13.5/dist/cdn.min.js" defer></script>
 </head>
 
-<!-- 
-    x-data: 全局状态管理 
-    Theme: 自动读取本地存储
--->
 <body 
     x-data="app()" 
     x-init="initApp()" 
-    class="bg-gray-50 text-gray-900 dark:bg-gray-950 dark:text-gray-100 transition-colors duration-300 min-h-screen flex flex-col"
+    class="bg-zinc-50 text-zinc-900 dark:bg-zinc-950 dark:text-zinc-100 transition-colors duration-300 min-h-screen flex flex-col font-sans"
     :class="{ 'dark': theme === 'dark' || (theme === 'system' && window.matchMedia('(prefers-color-scheme: dark)').matches) }"
 >
 
-    <!-- Toast 通知系统 (右上角) -->
+    <!-- Toast 通知 -->
     <div class="fixed top-4 right-4 z-50 space-y-2 pointer-events-none">
         <template x-for="toast in toasts" :key="toast.id">
             <div 
@@ -296,37 +343,36 @@
                 x-transition:leave="transition ease-in duration-200"
                 x-transition:leave-start="opacity-100 transform translate-x-0"
                 x-transition:leave-end="opacity-0 transform translate-x-8"
-                class="pointer-events-auto max-w-xs w-full bg-white dark:bg-gray-800 shadow-lg rounded-lg ring-1 ring-black ring-opacity-5 overflow-hidden"
+                class="pointer-events-auto max-w-xs w-full bg-white dark:bg-zinc-900 shadow-lg rounded-lg ring-1 ring-black ring-opacity-5 overflow-hidden border border-zinc-100 dark:border-zinc-800"
             >
                 <div class="p-4 flex items-start">
                     <div class="flex-shrink-0">
-                        <!-- Success Icon -->
-                        <svg x-show="toast.type === 'success'" class="h-6 w-6 text-green-400" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z" /></svg>
-                        <!-- Error Icon -->
-                        <svg x-show="toast.type === 'error'" class="h-6 w-6 text-red-400" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 8v4m0 4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" /></svg>
+                        <svg x-show="toast.type === 'success'" class="h-6 w-6 text-green-500" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z" /></svg>
+                        <svg x-show="toast.type === 'error'" class="h-6 w-6 text-red-500" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 8v4m0 4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" /></svg>
                     </div>
                     <div class="ml-3 w-0 flex-1 pt-0.5">
-                        <p class="text-sm font-medium text-gray-900 dark:text-gray-100" x-text="toast.title"></p>
-                        <p class="mt-1 text-xs text-gray-500 dark:text-gray-400" x-text="toast.message"></p>
+                        <p class="text-sm font-medium text-zinc-900 dark:text-zinc-100" x-text="toast.title"></p>
+                        <p class="mt-1 text-xs text-zinc-500 dark:text-zinc-400" x-text="toast.message"></p>
                     </div>
                 </div>
             </div>
         </template>
     </div>
 
-    <!-- 登录遮罩 (Glassmorphism) -->
-    <div x-show="!authenticated" x-transition.opacity class="fixed inset-0 z-50 flex items-center justify-center bg-black/50 backdrop-blur-sm">
-        <div class="bg-white dark:bg-gray-900 rounded-2xl shadow-2xl p-8 w-full max-w-sm border border-gray-200 dark:border-gray-800" @click.outside="$refs.pwd.focus()">
+    <!-- 登录遮罩 (完全汉化) -->
+    <div x-show="!authenticated" x-transition.opacity class="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm">
+        <div class="bg-white dark:bg-zinc-900 rounded-2xl shadow-2xl p-8 w-full max-w-sm border border-zinc-200 dark:border-zinc-800" @click.outside="$refs.pwd.focus()">
             <div class="text-center mb-8">
                 <div class="w-12 h-12 bg-blue-100 dark:bg-blue-900/30 rounded-xl flex items-center justify-center mx-auto mb-4 text-blue-600 dark:text-blue-400">
                     <svg class="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 15v2m-6 4h12a2 2 0 002-2v-6a2 2 0 00-2-2H6a2 2 0 00-2 2v6a2 2 0 002 2zm10-10V7a4 4 0 00-8 0v4h8z"></path></svg>
                 </div>
-                <h2 class="text-xl font-bold">Welcome Back</h2>
+                <h2 class="text-xl font-bold text-zinc-900 dark:text-zinc-100">安全验证</h2>
+                <p class="text-sm text-zinc-500 mt-2">请输入密码以管理转发器</p>
             </div>
             <form @submit.prevent="login">
-                <input x-ref="pwd" type="password" x-model="password" class="w-full px-4 py-3 rounded-xl bg-gray-50 dark:bg-gray-800 border border-gray-200 dark:border-gray-700 focus:ring-2 focus:ring-blue-500 outline-none transition-all" placeholder="Enter password..." required>
-                <button type="submit" :disabled="loading" class="mt-4 w-full py-3 rounded-xl bg-blue-600 hover:bg-blue-700 text-white font-medium transition-all active:scale-95 disabled:opacity-50 disabled:cursor-not-allowed flex justify-center items-center">
-                    <span x-show="!loading">Unlock</span>
+                <input x-ref="pwd" type="password" x-model="password" class="form-input mb-4" placeholder="请输入访问密码..." required>
+                <button type="submit" :disabled="loading" class="w-full py-3 rounded-xl bg-blue-600 hover:bg-blue-700 text-white font-medium transition-all active:scale-95 disabled:opacity-50 disabled:cursor-not-allowed flex justify-center items-center shadow-lg shadow-blue-600/20">
+                    <span x-show="!loading">解锁控制台</span>
                     <svg x-show="loading" class="animate-spin h-5 w-5 text-white" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24"><circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle><path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path></svg>
                 </button>
             </form>
@@ -337,20 +383,20 @@
     <div x-show="authenticated" x-cloak class="flex-grow flex flex-col">
         
         <!-- 顶部导航 -->
-        <nav class="sticky top-0 z-40 bg-white/80 dark:bg-gray-900/80 backdrop-blur-md border-b border-gray-200 dark:border-gray-800">
+        <nav class="sticky top-0 z-40 bg-white/80 dark:bg-zinc-900/80 backdrop-blur-md border-b border-zinc-200 dark:border-zinc-800">
             <div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
                 <div class="flex justify-between h-16 items-center">
                     <div class="flex items-center gap-3">
-                        <div class="w-8 h-8 bg-gradient-to-br from-blue-500 to-purple-600 rounded-lg flex items-center justify-center text-white font-bold shadow-lg shadow-blue-500/20">TG</div>
-                        <span class="font-bold text-lg tracking-tight">Forwarder</span>
+                        <div class="w-8 h-8 bg-gradient-to-br from-blue-500 to-purple-600 rounded-lg flex items-center justify-center text-white font-bold shadow-lg shadow-blue-500/20 text-sm">TG</div>
+                        <span class="font-bold text-lg tracking-tight text-zinc-800 dark:text-zinc-100">Forwarder</span>
                     </div>
                     
                     <!-- 桌面 Tab -->
-                    <div class="hidden md:flex space-x-1 bg-gray-100 dark:bg-gray-800 p-1 rounded-xl">
+                    <div class="hidden md:flex space-x-1 bg-zinc-100 dark:bg-zinc-800 p-1 rounded-xl">
                         <template x-for="tab in tabs" :key="tab.id">
                             <button 
                                 @click="currentTab = tab.id" 
-                                :class="currentTab === tab.id ? 'bg-white dark:bg-gray-700 shadow text-gray-900 dark:text-white' : 'text-gray-500 dark:text-gray-400 hover:text-gray-700 dark:hover:text-gray-200'"
+                                :class="currentTab === tab.id ? 'bg-white dark:bg-zinc-700 shadow text-zinc-900 dark:text-white' : 'text-zinc-500 dark:text-zinc-400 hover:text-zinc-700 dark:hover:text-zinc-200'"
                                 class="px-4 py-1.5 rounded-lg text-sm font-medium transition-all duration-200"
                                 x-text="tab.name"
                             ></button>
@@ -358,12 +404,10 @@
                     </div>
 
                     <div class="flex items-center gap-3">
-                        <!-- 重载按钮 -->
-                        <button x-show="needsReload" @click="showToast('Info', '请在 Telegram 中发送 /reload 以应用更改', 'success')" class="text-xs bg-yellow-100 dark:bg-yellow-900/30 text-yellow-700 dark:text-yellow-400 px-3 py-1 rounded-full font-medium animate-pulse">
-                            Config Changed
+                        <button x-show="needsReload" @click="showToast('提示', '请在 Telegram 中发送 /reload 以应用更改', 'success')" class="text-xs bg-amber-100 dark:bg-amber-900/30 text-amber-700 dark:text-amber-400 px-3 py-1 rounded-full font-medium animate-pulse border border-amber-200 dark:border-amber-800">
+                            配置已变更
                         </button>
-                        <!-- 主题切换 -->
-                        <button @click="toggleTheme" class="p-2 rounded-full hover:bg-gray-100 dark:hover:bg-gray-800 transition-colors text-gray-500">
+                        <button @click="toggleTheme" class="p-2 rounded-full hover:bg-zinc-100 dark:hover:bg-zinc-800 transition-colors text-zinc-500">
                             <span x-show="theme === 'light'">☀️</span>
                             <span x-show="theme === 'dark'">🌙</span>
                             <span x-show="theme === 'system'">💻</span>
@@ -372,10 +416,10 @@
                 </div>
             </div>
             <!-- 移动端 Tab -->
-            <div class="md:hidden border-t border-gray-200 dark:border-gray-800 overflow-x-auto scrollbar-hide">
+            <div class="md:hidden border-t border-zinc-200 dark:border-zinc-800 overflow-x-auto scrollbar-hide">
                 <div class="flex px-4 py-2 space-x-4">
                     <template x-for="tab in tabs" :key="tab.id">
-                        <button @click="currentTab = tab.id" :class="currentTab === tab.id ? 'text-blue-600 dark:text-blue-400 font-semibold' : 'text-gray-500'" class="whitespace-nowrap text-sm py-2" x-text="tab.name"></button>
+                        <button @click="currentTab = tab.id" :class="currentTab === tab.id ? 'text-blue-600 dark:text-blue-400 font-semibold' : 'text-zinc-500'" class="whitespace-nowrap text-sm py-2" x-text="tab.name"></button>
                     </template>
                 </div>
             </div>
@@ -384,131 +428,196 @@
         <!-- 内容区域 -->
         <main class="flex-grow max-w-7xl mx-auto w-full px-4 sm:px-6 lg:px-8 py-8">
             
-            <!-- Loading State -->
+            <!-- Loading 骨架屏 -->
             <div x-show="loadingData" class="grid grid-cols-1 md:grid-cols-3 gap-6 animate-pulse">
-                <div class="h-32 bg-gray-200 dark:bg-gray-800 rounded-xl"></div>
-                <div class="h-32 bg-gray-200 dark:bg-gray-800 rounded-xl"></div>
-                <div class="h-32 bg-gray-200 dark:bg-gray-800 rounded-xl"></div>
+                <div class="h-32 bg-zinc-200 dark:bg-zinc-800 rounded-xl"></div>
+                <div class="h-32 bg-zinc-200 dark:bg-zinc-800 rounded-xl"></div>
+                <div class="h-32 bg-zinc-200 dark:bg-zinc-800 rounded-xl"></div>
             </div>
 
-            <!-- Tab: Status & Settings -->
-            <div x-show="currentTab === 'status' && !loadingData" x-transition:enter="transition ease-out duration-300" x-transition:enter-start="opacity-0 translate-y-4" x-transition:enter-end="opacity-100 translate-y-0" class="space-y-6">
-                <div class="grid grid-cols-1 md:grid-cols-3 gap-6">
-                    <div class="bg-white dark:bg-gray-900 p-6 rounded-2xl border border-gray-100 dark:border-gray-800 shadow-sm hover:shadow-md transition-shadow">
-                        <dt class="text-sm font-medium text-gray-500">去重哈希 (Dedup)</dt>
-                        <dd class="mt-2 text-3xl font-bold text-gray-900 dark:text-white" x-text="stats.dedup_hashes || 0"></dd>
+            <!-- Tab: 状态概览 (补全6个指标) -->
+            <div x-show="currentTab === 'status' && !loadingData" x-transition.opacity class="space-y-6">
+                <div class="grid grid-cols-2 md:grid-cols-3 gap-4 md:gap-6">
+                    <!-- 卡片 1 -->
+                    <div class="bg-white dark:bg-zinc-900 p-6 rounded-2xl border border-zinc-200 dark:border-zinc-800 hover-card">
+                        <dt class="text-xs font-medium text-zinc-500 uppercase tracking-wider">数据库去重记录</dt>
+                        <dd class="mt-2 text-3xl font-bold text-zinc-900 dark:text-white" x-text="stats.dedup_hashes || 0"></dd>
                     </div>
-                    <div class="bg-white dark:bg-gray-900 p-6 rounded-2xl border border-gray-100 dark:border-gray-800 shadow-sm hover:shadow-md transition-shadow">
-                        <dt class="text-sm font-medium text-gray-500">活跃监控源</dt>
-                        <dd class="mt-2 text-3xl font-bold text-gray-900 dark:text-white" x-text="stats.sources || 0"></dd>
+                    <!-- 卡片 2 -->
+                    <div class="bg-white dark:bg-zinc-900 p-6 rounded-2xl border border-zinc-200 dark:border-zinc-800 hover-card">
+                        <dt class="text-xs font-medium text-zinc-500 uppercase tracking-wider">活跃监控源</dt>
+                        <dd class="mt-2 text-3xl font-bold text-blue-600 dark:text-blue-400" x-text="stats.sources || 0"></dd>
                     </div>
-                    <div class="bg-white dark:bg-gray-900 p-6 rounded-2xl border border-gray-100 dark:border-gray-800 shadow-sm hover:shadow-md transition-shadow">
-                        <dt class="text-sm font-medium text-gray-500">分发规则</dt>
-                        <dd class="mt-2 text-3xl font-bold text-gray-900 dark:text-white" x-text="stats.distribution_rules || 0"></dd>
+                    <!-- 卡片 3 -->
+                    <div class="bg-white dark:bg-zinc-900 p-6 rounded-2xl border border-zinc-200 dark:border-zinc-800 hover-card">
+                        <dt class="text-xs font-medium text-zinc-500 uppercase tracking-wider">分发规则数</dt>
+                        <dd class="mt-2 text-3xl font-bold text-purple-600 dark:text-purple-400" x-text="stats.distribution_rules || 0"></dd>
+                    </div>
+                    <!-- 卡片 4 -->
+                    <div class="bg-white dark:bg-zinc-900 p-6 rounded-2xl border border-zinc-200 dark:border-zinc-800 hover-card">
+                        <dt class="text-xs font-medium text-zinc-500 uppercase tracking-wider">黑名单关键词</dt>
+                        <dd class="mt-2 text-3xl font-bold text-red-500" x-text="(stats.blacklist_substring || 0) + (stats.blacklist_word || 0)"></dd>
+                    </div>
+                    <!-- 卡片 5 -->
+                    <div class="bg-white dark:bg-zinc-900 p-6 rounded-2xl border border-zinc-200 dark:border-zinc-800 hover-card">
+                        <dt class="text-xs font-medium text-zinc-500 uppercase tracking-wider">白名单关键词</dt>
+                        <dd class="mt-2 text-3xl font-bold text-green-500" x-text="stats.whitelist_keywords || 0"></dd>
+                    </div>
+                    <!-- 卡片 6 -->
+                    <div class="bg-white dark:bg-zinc-900 p-6 rounded-2xl border border-zinc-200 dark:border-zinc-800 hover-card">
+                        <dt class="text-xs font-medium text-zinc-500 uppercase tracking-wider">失效链接发现</dt>
+                        <dd class="mt-2 text-3xl font-bold text-amber-500" x-text="stats.invalid_links || 0"></dd>
                     </div>
                 </div>
 
-                <div class="bg-white dark:bg-gray-900 p-8 rounded-2xl border border-gray-100 dark:border-gray-800 shadow-sm">
-                    <h3 class="text-lg font-bold mb-6">系统设置</h3>
+                <div class="bg-white dark:bg-zinc-900 p-8 rounded-2xl border border-zinc-200 dark:border-zinc-800 shadow-sm">
+                    <h3 class="text-lg font-bold mb-6 text-zinc-900 dark:text-white">系统维护设置</h3>
                     <div class="max-w-xl">
                         <div class="flex justify-between mb-2">
-                            <label class="text-sm font-medium text-gray-600 dark:text-gray-400">哈希保留天数</label>
-                            <span class="font-mono font-bold text-blue-600" x-text="settings.dedup_retention_days + ' Days'"></span>
+                            <label class="text-sm font-medium text-zinc-600 dark:text-zinc-400">去重记录保留天数</label>
+                            <span class="font-mono font-bold text-blue-600" x-text="settings.dedup_retention_days + ' 天'"></span>
                         </div>
                         <input type="range" min="1" max="30" x-model="settings.dedup_retention_days" @change="saveSettings" class="w-full">
-                        <p class="mt-2 text-xs text-gray-400">减少天数可优化数据库体积。将在下次维护任务生效。</p>
+                        <p class="mt-2 text-xs text-zinc-400">减少天数可缩小数据库体积。修改将在下一次每日维护任务时生效。</p>
                     </div>
                 </div>
             </div>
 
-            <!-- Tab: Sources -->
+            <!-- Tab: 监控源 (网格布局优化) -->
             <div x-show="currentTab === 'sources' && !loadingData" class="space-y-6">
-                <div class="bg-white dark:bg-gray-900 rounded-2xl border border-gray-100 dark:border-gray-800 shadow-sm overflow-hidden">
-                    <div class="p-6 border-b border-gray-100 dark:border-gray-800 flex flex-col md:flex-row gap-4 justify-between items-center bg-gray-50/50 dark:bg-gray-800/50">
-                        <h3 class="text-lg font-bold">监控源管理</h3>
+                <div class="bg-white dark:bg-zinc-900 rounded-2xl border border-zinc-200 dark:border-zinc-800 shadow-sm overflow-hidden">
+                    <div class="p-6 border-b border-zinc-100 dark:border-zinc-800 flex flex-col md:flex-row gap-4 justify-between items-center bg-zinc-50/50 dark:bg-zinc-900/50">
+                        <h3 class="text-lg font-bold text-zinc-900 dark:text-white">监控源管理</h3>
                         <div class="flex w-full md:w-auto gap-2">
-                            <input x-model="newSource" @keyup.enter="addSource" type="text" placeholder="@channel or ID" class="flex-1 md:w-64 px-4 py-2 rounded-lg border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-900 focus:ring-2 focus:ring-blue-500 outline-none text-sm">
-                            <button @click="addSource" class="bg-blue-600 hover:bg-blue-700 text-white px-4 py-2 rounded-lg text-sm font-medium transition-colors">添加</button>
+                            <input x-model="newSource" @keyup.enter="addSource" type="text" placeholder="@频道名 或 -100..." class="form-input md:w-64">
+                            <button @click="addSource" class="bg-blue-600 hover:bg-blue-700 text-white px-4 py-2 rounded-lg text-sm font-medium transition-colors shadow-lg shadow-blue-600/20">添加源</button>
                         </div>
                     </div>
-                    <div class="divide-y divide-gray-100 dark:divide-gray-800">
+                    
+                    <!-- 响应式网格布局 -->
+                    <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4 p-4">
                         <template x-for="source in rules.sources" :key="source.identifier">
-                            <div class="p-4 flex justify-between items-center hover:bg-gray-50 dark:hover:bg-gray-800/50 transition-colors group">
-                                <div>
+                            <div class="p-4 rounded-xl bg-zinc-50 dark:bg-zinc-800/50 border border-zinc-200 dark:border-zinc-700/50 flex justify-between items-start group hover:border-blue-500 dark:hover:border-blue-500 transition-colors">
+                                <div class="overflow-hidden">
                                     <div class="flex items-center gap-2">
-                                        <span class="font-mono font-medium text-gray-900 dark:text-gray-100" x-text="source.identifier"></span>
-                                        <span x-show="source.resolved_id" class="text-[10px] px-1.5 py-0.5 bg-green-100 dark:bg-green-900/30 text-green-700 dark:text-green-400 rounded font-bold">ACTIVE</span>
-                                        <span x-show="!source.resolved_id" class="text-[10px] px-1.5 py-0.5 bg-yellow-100 dark:bg-yellow-900/30 text-yellow-700 dark:text-yellow-400 rounded font-bold">PENDING</span>
+                                        <span class="font-mono font-bold text-sm text-zinc-800 dark:text-zinc-200 truncate" x-text="source.identifier"></span>
                                     </div>
-                                    <div class="text-xs text-gray-400 font-mono mt-1" x-text="'ID: ' + (source.resolved_id || 'Waiting for reload...')"></div>
+                                    <div class="flex items-center gap-2 mt-2">
+                                        <span x-show="source.resolved_id" class="text-[10px] px-1.5 py-0.5 bg-green-100 dark:bg-green-900/30 text-green-700 dark:text-green-400 rounded font-bold">活跃</span>
+                                        <span x-show="!source.resolved_id" class="text-[10px] px-1.5 py-0.5 bg-amber-100 dark:bg-amber-900/30 text-amber-700 dark:text-amber-400 rounded font-bold">待解析</span>
+                                        <span class="text-xs text-zinc-400 font-mono truncate" x-text="source.resolved_id || 'Waiting...'"></span>
+                                    </div>
                                 </div>
-                                <button @click="removeSource(source.identifier)" class="text-gray-300 hover:text-red-500 p-2 transition-colors opacity-0 group-hover:opacity-100">
-                                    <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16"></path></svg>
+                                <button @click="removeSource(source.identifier)" class="text-zinc-300 hover:text-red-500 p-1 transition-colors">
+                                    <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"></path></svg>
                                 </button>
                             </div>
                         </template>
-                        <div x-show="rules.sources.length === 0" class="p-8 text-center text-gray-500">暂无监控源</div>
+                        <div x-show="rules.sources.length === 0" class="col-span-full p-8 text-center text-zinc-500">暂无监控源</div>
                     </div>
                 </div>
             </div>
 
-            <!-- Tab: Rules (Forwarding) -->
+            <!-- Tab: 转发规则 (增强卡片信息) -->
             <div x-show="currentTab === 'rules' && !loadingData" class="space-y-6">
-                <!-- Add Rule Card -->
-                <div class="bg-white dark:bg-gray-900 rounded-2xl border border-gray-100 dark:border-gray-800 shadow-sm p-6">
-                    <h3 class="text-lg font-bold mb-4">添加转发规则</h3>
+                <!-- 添加规则卡片 -->
+                <div class="bg-white dark:bg-zinc-900 rounded-2xl border border-zinc-200 dark:border-zinc-800 shadow-sm p-6">
+                    <h3 class="text-lg font-bold mb-4 text-zinc-900 dark:text-white">添加分发规则</h3>
                     <div class="grid grid-cols-1 md:grid-cols-3 gap-4 mb-4">
                         <input x-model="newRule.name" type="text" placeholder="规则名称 (如: 搬运视频)" class="form-input">
                         <input x-model="newRule.target" type="text" placeholder="目标 ID (-100...)" class="form-input">
-                        <input x-model="newRule.topic" type="number" placeholder="Topic ID (可选)" class="form-input">
+                        <input x-model="newRule.topic" type="number" placeholder="话题 ID (可选)" class="form-input">
                     </div>
                     <div class="grid grid-cols-1 md:grid-cols-2 gap-4 mb-4">
-                        <textarea x-model="newRule.keywords" rows="3" placeholder="包含关键词 (每行一个)" class="form-textarea"></textarea>
-                        <textarea x-model="newRule.files" rows="3" placeholder="文件名正则 (如 *.apk)" class="form-textarea"></textarea>
+                        <textarea x-model="newRule.keywords" rows="3" placeholder="包含关键词 (每行一个，满足所有)" class="form-textarea"></textarea>
+                        <textarea x-model="newRule.files" rows="3" placeholder="文件名正则 (如 *.apk，满足任一)" class="form-textarea"></textarea>
                     </div>
                     <div class="flex justify-end">
-                        <button @click="addRule" class="bg-black dark:bg-white text-white dark:text-black px-6 py-2 rounded-lg font-bold text-sm hover:opacity-80 transition-opacity">保存规则</button>
+                        <button @click="addRule" class="bg-zinc-900 dark:bg-white text-white dark:text-black px-6 py-2 rounded-lg font-bold text-sm hover:opacity-90 transition-opacity shadow-lg">保存规则</button>
                     </div>
                 </div>
 
-                <!-- Rules List -->
-                <div class="grid grid-cols-1 gap-4">
+                <!-- 规则列表 (网格布局) -->
+                <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
                     <template x-for="rule in rules.distribution_rules" :key="rule.name">
-                        <div class="bg-white dark:bg-gray-900 p-5 rounded-xl border border-gray-100 dark:border-gray-800 shadow-sm flex justify-between items-start group">
+                        <div class="bg-white dark:bg-zinc-900 p-5 rounded-xl border border-zinc-200 dark:border-zinc-800 shadow-sm flex flex-col justify-between group hover:border-purple-500 dark:hover:border-purple-500 transition-colors relative overflow-hidden">
                             <div>
-                                <h4 class="font-bold text-gray-900 dark:text-gray-100" x-text="rule.name"></h4>
-                                <div class="flex items-center gap-2 mt-2 text-xs text-gray-500">
-                                    <span class="bg-gray-100 dark:bg-gray-800 px-2 py-1 rounded" x-text="'To: ' + rule.target_identifier"></span>
-                                    <span x-show="rule.topic_id" class="bg-gray-100 dark:bg-gray-800 px-2 py-1 rounded" x-text="'Topic: ' + rule.topic_id"></span>
+                                <div class="flex justify-between items-start">
+                                    <h4 class="font-bold text-zinc-900 dark:text-zinc-100 text-lg" x-text="rule.name"></h4>
+                                    <button @click="removeRule(rule.name)" class="text-xs text-red-500 bg-red-50 dark:bg-red-900/20 px-2 py-1 rounded hover:bg-red-100 transition-colors">删除</button>
+                                </div>
+                                
+                                <div class="flex flex-wrap gap-2 mt-3">
+                                    <span class="bg-zinc-100 dark:bg-zinc-800 px-2 py-1 rounded text-xs font-mono text-zinc-600 dark:text-zinc-300" x-text="'To: ' + rule.target_identifier"></span>
+                                    <span x-show="rule.topic_id" class="bg-purple-50 dark:bg-purple-900/20 px-2 py-1 rounded text-xs font-mono text-purple-600 dark:text-purple-300" x-text="'Topic: ' + rule.topic_id"></span>
+                                </div>
+
+                                <!-- 规则详情摘要 -->
+                                <div class="mt-4 space-y-2">
+                                    <div x-show="rule.all_keywords && rule.all_keywords.length" class="text-xs">
+                                        <span class="text-zinc-400">关键词:</span>
+                                        <span class="text-zinc-700 dark:text-zinc-300 ml-1" x-text="rule.all_keywords.join(', ')"></span>
+                                    </div>
+                                    <div x-show="rule.file_name_patterns && rule.file_name_patterns.length" class="text-xs">
+                                        <span class="text-zinc-400">文件:</span>
+                                        <span class="text-zinc-700 dark:text-zinc-300 ml-1" x-text="rule.file_name_patterns.join(', ')"></span>
+                                    </div>
                                 </div>
                             </div>
-                            <button @click="removeRule(rule.name)" class="text-xs text-red-500 hover:bg-red-50 dark:hover:bg-red-900/20 px-3 py-1 rounded border border-red-200 dark:border-red-900/50 transition-colors">
-                                删除
-                            </button>
                         </div>
                     </template>
                 </div>
             </div>
             
-            <!-- Tab: Blacklist -->
+            <!-- Tab: 黑名单 (完整功能) -->
             <div x-show="currentTab === 'blacklist' && !loadingData">
-                 <div class="bg-white dark:bg-gray-900 rounded-2xl border border-gray-100 dark:border-gray-800 shadow-sm p-6">
-                    <div class="flex justify-between items-center mb-6">
-                        <h3 class="text-lg font-bold">广告过滤 (Blacklist)</h3>
-                        <button @click="saveBlacklist" class="text-blue-600 text-sm font-bold hover:underline">保存更改</button>
-                    </div>
-                    <div class="grid grid-cols-1 md:grid-cols-2 gap-6">
+                 <div class="bg-white dark:bg-zinc-900 rounded-2xl border border-zinc-200 dark:border-zinc-800 shadow-sm p-6">
+                    <div class="flex justify-between items-center mb-6 border-b border-zinc-100 dark:border-zinc-800 pb-4">
                         <div>
-                            <label class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">关键词 (中文/子串)</label>
-                            <textarea x-model="blacklist.substring" rows="6" class="form-textarea font-mono text-sm"></textarea>
+                            <h3 class="text-lg font-bold text-zinc-900 dark:text-white">广告过滤 (黑名单)</h3>
+                            <p class="text-sm text-zinc-500">命中任意条件的广告将被丢弃。</p>
                         </div>
-                         <div>
-                            <label class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">关键词 (英文/全词)</label>
-                            <textarea x-model="blacklist.word" rows="6" class="form-textarea font-mono text-sm"></textarea>
+                        <button @click="saveBlacklist" class="bg-blue-600 hover:bg-blue-700 text-white px-4 py-2 rounded-lg text-sm font-bold shadow-lg shadow-blue-600/20">保存所有更改</button>
+                    </div>
+                    
+                    <div class="grid grid-cols-1 md:grid-cols-2 gap-6">
+                        <div class="space-y-2">
+                            <label class="block text-sm font-medium text-zinc-700 dark:text-zinc-300">🚫 关键词 (中文/部分匹配)</label>
+                            <textarea x-model="blacklist.substring" rows="5" class="form-textarea font-mono text-xs" placeholder="例如：发财娱乐&#10;荷官"></textarea>
+                        </div>
+                        <div class="space-y-2">
+                            <label class="block text-sm font-medium text-zinc-700 dark:text-zinc-300">🔤 关键词 (英文/全词匹配)</label>
+                            <textarea x-model="blacklist.word" rows="5" class="form-textarea font-mono text-xs" placeholder="例如：ad&#10;promo (不会匹配 admin)"></textarea>
+                        </div>
+                        <div class="space-y-2">
+                            <label class="block text-sm font-medium text-zinc-700 dark:text-zinc-300">📁 文件名过滤</label>
+                            <textarea x-model="blacklist.file" rows="5" class="form-textarea font-mono text-xs" placeholder="例如：芒果VPN&#10;含羞草.apk"></textarea>
+                        </div>
+                        <div class="space-y-2">
+                            <label class="block text-sm font-medium text-zinc-700 dark:text-zinc-300">🧩 正则表达式 (高级)</label>
+                            <textarea x-model="blacklist.regex" rows="5" class="form-textarea font-mono text-xs" placeholder="例如：group[0-9]{5,}"></textarea>
                         </div>
                     </div>
                  </div>
             </div>
+
+            <!-- Tab: 白名单 (功能回归) -->
+            <div x-show="currentTab === 'whitelist' && !loadingData">
+                <div class="bg-white dark:bg-zinc-900 rounded-2xl border border-zinc-200 dark:border-zinc-800 shadow-sm p-6 border-l-4 border-l-green-500">
+                   <div class="flex justify-between items-center mb-6 border-b border-zinc-100 dark:border-zinc-800 pb-4">
+                       <div>
+                           <h3 class="text-lg font-bold text-zinc-900 dark:text-white">必发白名单 (最高优先级)</h3>
+                           <p class="text-sm text-zinc-500">只要消息包含以下任一关键词，即使触发黑名单也会被强制转发。</p>
+                       </div>
+                       <button @click="saveWhitelist" class="bg-green-600 hover:bg-green-700 text-white px-4 py-2 rounded-lg text-sm font-bold shadow-lg shadow-green-600/20">保存白名单</button>
+                   </div>
+                   
+                   <div class="space-y-2">
+                       <label class="block text-sm font-medium text-zinc-700 dark:text-zinc-300">✅ 关键词列表 (每行一个)</label>
+                       <textarea x-model="whitelist.keywords" rows="8" class="form-textarea font-mono text-sm" placeholder="例如：重要通知&#10;老板&#10;#MustRead"></textarea>
+                   </div>
+                </div>
+           </div>
 
         </main>
     </div>
