@@ -98,21 +98,25 @@ async def save_rules_to_db():
     async with db_lock:
         await _save_rules_to_db_internal() 
 
-# --- 统计 API (修复：增加内容过滤统计) ---
+# --- 统计 API (细化返回数据) ---
 @app.get("/api/stats")
 async def get_stats(auth: bool = Depends(get_current_user)):
     try:
         db_stats = await database.get_db_stats()
         async with db_lock:
+            # 计算黑名单总数
+            bl = rules_db.ad_filter
+            bl_count = len(bl.keywords_substring or []) + len(bl.keywords_word or []) + len(bl.file_name_keywords or []) + len(bl.patterns or [])
+            
             rule_stats = {
                 "sources": len(rules_db.sources),
                 "distribution_rules": len(rules_db.distribution_rules),
-                "whitelist_keywords": len(rules_db.whitelist.keywords or []),
-                "blacklist_substring": len(rules_db.ad_filter.keywords_substring or []),
-                "blacklist_word": len(rules_db.ad_filter.keywords_word or []),
-                "replacements_count": len(rules_db.replacements or {}),
-                # 新增：统计无意义词汇数量
-                "content_filter_count": len(rules_db.content_filter.meaningless_words if rules_db.content_filter else [])
+                
+                # 拆分统计
+                "whitelist_count": len(rules_db.whitelist.keywords or []),
+                "blacklist_count": bl_count,
+                "content_filter_count": len(rules_db.content_filter.meaningless_words if rules_db.content_filter else []),
+                "replacements_count": len(rules_db.replacements or {})
             }
         return {**db_stats, **rule_stats}
     except Exception as e:
