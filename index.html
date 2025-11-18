@@ -5,6 +5,12 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>TG Forwarder 配置面板</title>
     <script src="https://cdn.tailwindcss.com"></script>
+    <script>
+        // (新) v8.3：Tailwind 暗黑模式配置
+        tailwind.config = {
+            darkMode: 'class' // 启用 'class' 模式 (dark:...)
+        }
+    </script>
     <style>
         /* 简单的加载动画 */
         @keyframes spin {
@@ -18,30 +24,39 @@
             height: 1.25rem;
             animation: spin 1s linear infinite;
         }
+        .dark .loader {
+            border-left-color: #60a5fa;
+        }
+        
         /* 隐藏滚动条 (Tailwind) */
         .no-scrollbar::-webkit-scrollbar { display: none; }
         .no-scrollbar { -ms-overflow-style: none; scrollbar-width: none; }
+        
+        /* (新) v8.3：用于切换主题的平滑过渡 */
+        body {
+            transition: background-color 0.3s ease, color 0.3s ease;
+        }
+        .nav-link {
+             transition: color 0.2s ease, border-color 0.2s ease;
+        }
+        .panel {
+            transition: background-color 0.3s ease;
+        }
     </style>
 </head>
-<body class="bg-gray-100 text-gray-800 font-sans antialiased">
-
-    <!-- 
-    (新) v8.2：这是我们的单页应用 (SPA) 
-    它首先会显示一个登录遮罩，
-    成功后，再显示主应用 (#app-shell)。
-    -->
+<body class="bg-gray-100 text-gray-800 dark:bg-gray-900 dark:text-gray-200 font-sans antialiased">
 
     <!-- 登录遮罩 -->
-    <div id="login-modal" class="fixed inset-0 z-50 flex items-center justify-center bg-black bg-opacity-50 transition-opacity duration-300">
-        <div class="bg-white rounded-lg shadow-xl p-6 w-full max-w-sm mx-4">
-            <h2 class="text-2xl font-bold text-center text-gray-900 mb-4">登录</h2>
-            <p class="text-sm text-gray-600 text-center mb-4">
+    <div id="login-modal" class="fixed inset-0 z-50 flex items-center justify-center bg-black bg-opacity-50 transition-opacity duration-300 opacity-0 pointer-events-none">
+        <div class="bg-white dark:bg-gray-800 rounded-lg shadow-xl p-6 w-full max-w-sm mx-4">
+            <h2 class="text-2xl font-bold text-center text-gray-900 dark:text-gray-100 mb-4">登录</h2>
+            <p class="text-sm text-gray-600 dark:text-gray-400 text-center mb-4">
                 请输入你在 <code>config.yaml</code> 中设置的 <code>web_ui.password</code>。
             </p>
             <div class="space-y-4">
                 <div>
-                    <label for="password-input" class="block text-sm font-medium text-gray-700">密码</label>
-                    <input type="password" id="password-input" class="mt-1 block w-full px-3 py-2 border border-gray-300 rounded-md shadow-sm placeholder-gray-400 focus:outline-none focus:ring-blue-500 focus:border-blue-500" placeholder="你的密码">
+                    <label for="password-input" class="block text-sm font-medium text-gray-700 dark:text-gray-300">密码</label>
+                    <input type="password" id="password-input" class="mt-1 block w-full px-3 py-2 border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-700 text-gray-900 dark:text-gray-100 rounded-md shadow-sm placeholder-gray-400 focus:outline-none focus:ring-blue-500 focus:border-blue-500" placeholder="你的密码">
                 </div>
                 <div id="login-error" class="text-red-500 text-sm font-medium hidden">
                     密码错误。
@@ -58,17 +73,34 @@
     <div id="app-shell" class="hidden min-h-screen">
         
         <!-- 顶部导航栏 -->
-        <nav class="bg-white shadow-md sticky top-0 z-40">
+        <nav class="bg-white dark:bg-gray-800 shadow-md sticky top-0 z-40">
             <div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
                 <div class="flex justify-between items-center h-16">
                     <div class="flex-shrink-0 flex items-center">
-                        <span class="text-2xl font-bold text-blue-600">TG Forwarder</span>
+                        <span class="text-2xl font-bold text-blue-600 dark:text-blue-500">TG Forwarder</span>
                     </div>
-                    <div class="hidden sm:ml-6 sm:flex sm:space-x-8" id="main-nav">
+                    
+                    <!-- 桌面端导航 -->
+                    <div class="hidden sm:ml-6 sm:flex sm:items-center sm:space-x-8" id="main-nav">
                         <!-- 导航标签将由 JS 动态插入 -->
                     </div>
-                    <div class="sm:hidden flex items-center">
-                        <!-- 移动端菜单按钮 (暂不实现，简化) -->
+                    
+                    <!-- (新) v8.3：主题切换器 -->
+                    <div class="ml-auto flex items-center">
+                        <div class="relative">
+                            <button id="theme-toggle-button" type="button" class="p-2 rounded-full text-gray-500 dark:text-gray-400 hover:bg-gray-100 dark:hover:bg-gray-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-blue-500">
+                                <span class="sr-only">切换主题</span>
+                                <span id="theme-icon-light" class="hidden">☀️</span>
+                                <span id="theme-icon-dark" class="hidden">🌙</span>
+                                <span id="theme-icon-system" class="hidden">💻</span>
+                            </button>
+                            <!-- 下拉菜单 -->
+                            <div id="theme-menu" class="origin-top-right absolute right-0 mt-2 w-32 rounded-md shadow-lg py-1 bg-white dark:bg-gray-700 ring-1 ring-black ring-opacity-5 focus:outline-none hidden transition ease-out duration-100 opacity-0 scale-95" role="menu">
+                                <a href="#" class="theme-menu-item block px-4 py-2 text-sm text-gray-700 dark:text-gray-200 hover:bg-gray-100 dark:hover:bg-gray-600" data-theme="light" role="menuitem">☀️ 亮色</a>
+                                <a href="#" class="theme-menu-item block px-4 py-2 text-sm text-gray-700 dark:text-gray-200 hover:bg-gray-100 dark:hover:bg-gray-600" data-theme="dark" role="menuitem">🌙 暗色</a>
+                                <a href="#" class="theme-menu-item block px-4 py-2 text-sm text-gray-700 dark:text-gray-200 hover:bg-gray-100 dark:hover:bg-gray-600" data-theme="system" role="menuitem">💻 跟随系统</a>
+                            </div>
+                        </div>
                     </div>
                 </div>
             </div>
@@ -101,67 +133,45 @@
 
     <!-- JS 逻辑 -->
     <script>
-        // --- (新) v8.2：全局状态和 API 帮助程序 ---
+        // --- (新) v8.3：全局状态和 API 帮助程序 ---
         
-        // 我们将使用 "admin" 作为所有 API 调用的硬编码用户名
         const API_USERNAME = "admin";
         let API_PASSWORD = "";
         let AUTH_HEADER = "";
 
-        /**
-         * API 请求的包装器 (Wrapper)
-         * 它会自动添加认证并处理 401 (未授权)
-         */
         async function apiFetch(url, options = {}) {
             if (!AUTH_HEADER) {
                 console.error("API 认证未设置。");
-                showLoginModal(); // 如果认证丢失，强制重新登录
+                showLoginModal();
                 throw new Error("未认证");
             }
-
             const defaultHeaders = {
                 'Authorization': AUTH_HEADER,
                 'Content-Type': 'application/json'
             };
-
-            const config = {
-                ...options,
-                headers: {
-                    ...defaultHeaders,
-                    ...options.headers,
-                }
-            };
-            
-            if (options.body) {
-                config.body = JSON.stringify(options.body);
-            }
-
+            const config = { ...options, headers: { ...defaultHeaders, ...options.headers } };
+            if (options.body) { config.body = JSON.stringify(options.body); }
             try {
                 const response = await fetch(url, config);
-                
                 if (response.status === 401) {
-                    // 密码错误或会话已过期
                     console.error("API 认证失败 (401)");
+                    localStorage.removeItem('tgf_password'); // (新) v8.3：清除错误的密码
                     showLoginModal("密码错误或会话已过期。");
                     throw new Error("认证失败");
                 }
-                
                 if (!response.ok) {
                     const errorData = await response.json();
                     throw new Error(errorData.detail || `HTTP 错误 ${response.status}`);
                 }
-                
-                // 检查响应是否为空
                 const text = await response.text();
-                return text ? JSON.parse(text) : {}; // 如果为空则返回空对象
-
+                return text ? JSON.parse(text) : {};
             } catch (error) {
                 console.error(`API 请求 ${url} 失败:`, error);
                 throw error;
             }
         }
 
-        // --- 登录逻辑 ---
+        // --- 登录逻辑 (v8.3 升级) ---
         
         const loginModal = document.getElementById('login-modal');
         const loginButton = document.getElementById('login-button');
@@ -202,44 +212,107 @@
              }
         }
 
-        async function handleLogin() {
+        async function handleLogin(password) {
             setLoading(true);
             loginError.classList.add('hidden');
 
-            const password = passwordInput.value;
             if (!password) {
                 showLoginModal("请输入密码。");
                 setLoading(false);
                 return;
             }
 
-            // 1. 设置全局认证
             API_PASSWORD = password;
             AUTH_HEADER = 'Basic ' + btoa(API_USERNAME + ':' + API_PASSWORD);
 
             try {
-                // 2. 发送一个测试请求
                 await apiFetch('/api/rules');
-                
-                // 3. 成功
                 setLoading(false);
                 hideLoginModal();
+                localStorage.setItem('tgf_password', password); // (新) v8.3：保存密码
                 initializeApp(); // 启动主应用
-                
             } catch (error) {
-                // 4. 失败 (apiFetch 内部已处理 401)
                 setLoading(false);
-                AUTH_HEADER = ""; // 清除错误的认证
+                AUTH_HEADER = ""; 
+                localStorage.removeItem('tgf_password'); // (新) v8.3：清除错误密码
                 loginError.textContent = "密码错误。请重试。";
                 loginError.classList.remove('hidden');
             }
         }
         
-        loginButton.addEventListener('click', handleLogin);
+        loginButton.addEventListener('click', () => handleLogin(passwordInput.value));
         passwordInput.addEventListener('keypress', (e) => {
-            if (e.key === 'Enter') {
-                handleLogin();
+            if (e.key === 'Enter') handleLogin(passwordInput.value);
+        });
+        
+        // (新) v8.3：检查持久化登录
+        async function checkSavedAuth() {
+            const savedPassword = localStorage.getItem('tgf_password');
+            if (savedPassword) {
+                passwordInput.value = savedPassword; // 预填充
+                await handleLogin(savedPassword);
+            } else {
+                showLoginModal(); // 没有保存的密码，显示登录框
             }
+        }
+
+        // --- (新) v8.3：主题切换逻辑 ---
+        const themeToggleButton = document.getElementById('theme-toggle-button');
+        const themeMenu = document.getElementById('theme-menu');
+        const themeIcons = {
+            light: document.getElementById('theme-icon-light'),
+            dark: document.getElementById('theme-icon-dark'),
+            system: document.getElementById('theme-icon-system'),
+        };
+
+        function applyTheme(theme) {
+            themeIcons.light.classList.add('hidden');
+            themeIcons.dark.classList.add('hidden');
+            themeIcons.system.classList.add('hidden');
+            
+            if (theme === 'dark') {
+                document.documentElement.classList.add('dark');
+                themeIcons.dark.classList.remove('hidden');
+            } else if (theme === 'light') {
+                document.documentElement.classList.remove('dark');
+                themeIcons.light.classList.remove('hidden');
+            } else { // system
+                if (window.matchMedia('(prefers-color-scheme: dark)').matches) {
+                    document.documentElement.classList.add('dark');
+                } else {
+                    document.documentElement.classList.remove('dark');
+                }
+                themeIcons.system.classList.remove('hidden');
+            }
+        }
+
+        function setTheme(theme) {
+            localStorage.setItem('theme', theme);
+            applyTheme(theme);
+            themeMenu.classList.add('hidden', 'opacity-0', 'scale-95');
+        }
+
+        themeToggleButton.addEventListener('click', () => {
+            themeMenu.classList.toggle('hidden');
+            setTimeout(() => { // 确保 transition 生效
+                themeMenu.classList.toggle('opacity-0');
+                themeMenu.classList.toggle('scale-95');
+                themeMenu.classList.toggle('opacity-100');
+                themeMenu.classList.toggle('scale-100');
+            }, 10);
+        });
+        
+        document.addEventListener('click', (e) => {
+            if (!themeToggleButton.contains(e.target) && !themeMenu.contains(e.target)) {
+                 themeMenu.classList.add('hidden', 'opacity-0', 'scale-95');
+            }
+        });
+
+        document.querySelectorAll('.theme-menu-item').forEach(item => {
+            item.addEventListener('click', (e) => {
+                e.preventDefault();
+                setTheme(e.target.dataset.theme);
+            });
         });
 
         // --- 主应用逻辑 ---
@@ -248,12 +321,8 @@
         const contentPanels = document.getElementById('content-panels');
         const reloadNotice = document.getElementById('reload-notice');
         
-        // 应用程序的状态
-        let state = {
-            rules: {}
-        };
+        let state = {}; // 全局状态
         
-        // 导航定义
         const TABS = {
             'rules': "转发规则",
             'sources': "监控源",
@@ -264,83 +333,174 @@
         function showReloadNotice() {
             reloadNotice.classList.remove('hidden');
         }
+        
+        // (新) v8.3：将数组转为换行符分隔的文本
+        function arrayToText(arr) {
+            if (!arr || arr.length === 0) return "";
+            return arr.join('\n');
+        }
+        
+        // (新) v8.3：将换行符分隔的文本转为数组
+        function textToArray(text) {
+            if (!text) return [];
+            return text.split('\n')
+                       .map(s => s.trim())
+                       .filter(Boolean); // 过滤掉空行
+        }
 
-        // (占位符) 在下一步，我们将填充这些函数
-        function renderRulesPanel() {
+        // (占位符) 
+        function renderRulesPanel(data) {
             return `
-                <div class="bg-white p-6 rounded-lg shadow">
-                    <h2 class="text-2xl font-semibold mb-4">转发规则 (Distribution Rules)</h2>
-                    <p class="text-gray-600">
-                        (下一步：v8.3) 这里将显示一个用于添加、查看和删除转发规则的完整表单。
+                <div class="panel bg-white dark:bg-gray-800 p-6 rounded-lg shadow">
+                    <h2 class="text-2xl font-semibold mb-4 text-gray-900 dark:text-gray-100">转发规则 (Distribution Rules)</h2>
+                    <p class="text-gray-600 dark:text-gray-400">
+                        (下一步：v8.4) 这里将显示一个用于添加、查看和删除转发规则的完整表单。
                     </p>
                 </div>
             `;
         }
         
-        function renderSourcesPanel() {
+        // (占位符) 
+        function renderSourcesPanel(data) {
             return `
-                <div class="bg-white p-6 rounded-lg shadow">
-                    <h2 class="text-2xl font-semibold mb-4">监控源 (Sources)</h2>
-                    <p class="text-gray-600">
-                        (下一步：v8.3) 这里将显示一个用于添加和删除源频道的表单。
+                <div class="panel bg-white dark:bg-gray-800 p-6 rounded-lg shadow">
+                    <h2 class="text-2xl font-semibold mb-4 text-gray-900 dark:text-gray-100">监控源 (Sources)</h2>
+                    <p class="text-gray-600 dark:text-gray-400">
+                        (下一步：v8.4) 这里将显示一个用于添加和删除源频道的表单。
                     </p>
                 </div>
             `;
         }
         
-        function renderBlacklistPanel() {
+        // (新) v8.3：实现黑名单面板
+        function renderBlacklistPanel(data) {
+            const { keywords_substring, keywords_word, file_name_keywords, patterns } = data;
+            
             return `
-                <div class="bg-white p-6 rounded-lg shadow">
-                    <h2 class="text-2xl font-semibold mb-4">黑名单 (Ad Filter)</h2>
-                    <p class="text-gray-600">
-                        (下一步：v8.3) 这里将显示一个用于管理黑名单 (子字符串, 全词, 文件名, 正则) 的表单。
-                    </p>
+                <div class="panel bg-white dark:bg-gray-800 p-6 rounded-lg shadow">
+                    <h2 class="text-2xl font-semibold mb-4 text-gray-900 dark:text-gray-100">黑名单 (Ad Filter)</h2>
+                    <div class="space-y-6">
+                        <p class="text-sm text-gray-600 dark:text-gray-400">
+                            添加关键词（每行一个）以过滤消息。更改将自动保存，但你需要 <strong>/reload</strong> 才能在机器人上生效。
+                        </p>
+                        
+                        <div class="grid grid-cols-1 md:grid-cols-2 gap-6">
+                            <div>
+                                <label for="bl-sub" class="block text-sm font-medium text-gray-700 dark:text-gray-300">子字符串 (用于中文, 如 "发财娱乐")</label>
+                                <textarea id="bl-sub" rows="5" class="mt-1 block w-full shadow-sm sm:text-sm border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-700 text-gray-900 dark:text-gray-100 rounded-md focus:ring-blue-500 focus:border-blue-500">${arrayToText(keywords_substring)}</textarea>
+                            </div>
+                            <div>
+                                <label for="bl-word" class="block text-sm font-medium text-gray-700 dark:text-gray-300">全词 (用于英文, 如 "ad")</label>
+                                <textarea id="bl-word" rows="5" class="mt-1 block w-full shadow-sm sm:text-sm border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-700 text-gray-900 dark:text-gray-100 rounded-md focus:ring-blue-500 focus:border-blue-500">${arrayToText(keywords_word)}</textarea>
+                            </div>
+                            <div>
+                                <label for="bl-file" class="block text-sm font-medium text-gray-700 dark:text-gray-300">文件名 (子字符串, 如 "VPN")</label>
+                                <textarea id="bl-file" rows="5" class="mt-1 block w-full shadow-sm sm:text-sm border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-700 text-gray-900 dark:text-gray-100 rounded-md focus:ring-blue-500 focus:border-blue-500">${arrayToText(file_name_keywords)}</textarea>
+                            </div>
+                            <div>
+                                <label for="bl-regex" class="block text-sm font-medium text-gray-700 dark:text-gray-300">正则表达式 (高级)</label>
+                                <textarea id="bl-regex" rows="5" class="mt-1 block w-full shadow-sm sm:text-sm border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-700 text-gray-900 dark:text-gray-100 rounded-md focus:ring-blue-500 focus:border-blue-500">${arrayToText(patterns)}</textarea>
+                            </div>
+                        </div>
+                        
+                        <div class="flex justify-end">
+                            <button id="save-blacklist" class="flex justify-center py-2 px-4 border border-transparent rounded-md shadow-sm text-sm font-medium text-white bg-blue-600 hover:bg-blue-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-blue-500">
+                                <span id="save-blacklist-text">保存黑名单</span>
+                                <div id="save-blacklist-loader" class="loader hidden"></div>
+                            </button>
+                        </div>
+                    </div>
                 </div>
             `;
         }
 
-        function renderWhitelistPanel() {
+        // (占位符)
+        function renderWhitelistPanel(data) {
              return `
-                <div class="bg-white p-6 rounded-lg shadow">
-                    <h2 class="text-2xl font-semibold mb-4">白名单 (Whitelist)</h2>
-                    <p class="text-gray-600">
-                        (下一步：v8.3) 这里将显示一个用于管理白名单的表单。
+                <div class="panel bg-white dark:bg-gray-800 p-6 rounded-lg shadow">
+                    <h2 class="text-2xl font-semibold mb-4 text-gray-900 dark:text-gray-100">白名单 (Whitelist)</h2>
+                    <p class="text-gray-600 dark:text-gray-400">
+                        (下一步：v8.4) 这里将显示一个用于管理白名单的表单。
                     </p>
                 </div>
             `;
         }
         
         function navigateToTab(tabId) {
-             // 1. 更新导航栏 UI
              Array.from(mainNav.children).forEach(el => {
                 if (el.dataset.tab === tabId) {
-                    el.classList.add('border-blue-500', 'text-gray-900');
-                    el.classList.remove('border-transparent', 'text-gray-500', 'hover:border-gray-300', 'hover:text-gray-700');
+                    el.classList.add('border-blue-500', 'text-gray-900', 'dark:text-gray-100');
+                    el.classList.remove('border-transparent', 'text-gray-500', 'dark:text-gray-400', 'hover:border-gray-300', 'hover:text-gray-700');
                 } else {
-                    el.classList.remove('border-blue-500', 'text-gray-900');
-                    el.classList.add('border-transparent', 'text-gray-500', 'hover:border-gray-300', 'hover:text-gray-700');
+                    el.classList.remove('border-blue-500', 'text-gray-900', 'dark:text-gray-100');
+                    el.classList.add('border-transparent', 'text-gray-500', 'dark:text-gray-400', 'hover:border-gray-300', 'hover:text-gray-700');
                 }
              });
-             
-             // 2. 显示对应的内容面板
              Array.from(contentPanels.children).forEach(el => {
-                if (el.id === `panel-${tabId}`) {
-                    el.classList.remove('hidden');
-                } else {
-                    el.classList.add('hidden');
-                }
+                el.classList.toggle('hidden', el.id !== `panel-${tabId}`);
              });
         }
         
-        /**
-         * 初始化应用程序 (登录成功后调用)
-         */
+        // (新) v8.3：黑名单保存逻辑
+        async function handleSaveBlacklist() {
+            const btn = document.getElementById('save-blacklist');
+            const btnText = document.getElementById('save-blacklist-text');
+            const btnLoader = document.getElementById('save-blacklist-loader');
+            
+            btnText.classList.add('hidden');
+            btnLoader.classList.remove('hidden');
+            btn.disabled = true;
+            
+            try {
+                const payload = {
+                    enable: state.rules.ad_filter.enable, // 保留 enable 状态
+                    keywords_substring: textToArray(document.getElementById('bl-sub').value),
+                    keywords_word: textToArray(document.getElementById('bl-word').value),
+                    file_name_keywords: textToArray(document.getElementById('bl-file').value),
+                    patterns: textToArray(document.getElementById('bl-regex').value),
+                };
+                
+                const updatedConfig = await apiFetch('/api/blacklist/update', {
+                    method: 'POST',
+                    body: payload
+                });
+                
+                // 更新本地状态
+                state.rules.ad_filter = payload;
+                showReloadNotice();
+
+            } catch (error) {
+                console.error("保存黑名单失败:", error);
+                alert(`保存失败: ${error.message}`);
+            } finally {
+                btnText.classList.remove('hidden');
+                btnLoader.classList.add('hidden');
+                btn.disabled = false;
+            }
+        }
+        
+        // (新) v8.3：加载并渲染黑名单
+        async function loadAndRenderBlacklist() {
+            try {
+                const data = await apiFetch('/api/blacklist');
+                state.rules.ad_filter = data;
+                document.getElementById('panel-blacklist').innerHTML = renderBlacklistPanel(data);
+                
+                // 渲染后绑定事件
+                document.getElementById('save-blacklist').addEventListener('click', handleSaveBlacklist);
+                
+            } catch (error) {
+                console.error("加载黑名单失败:", error);
+                document.getElementById('panel-blacklist').innerHTML = `<p class="text-red-500">加载黑名单失败: ${error.message}</p>`;
+            }
+        }
+        
         async function initializeApp() {
             // 1. 渲染导航栏
             mainNav.innerHTML = Object.entries(TABS).map(([id, name], index) => `
                 <a href="#" 
                    data-tab="${id}" 
-                   class="${index === 0 ? 'border-blue-500 text-gray-900' : 'border-transparent text-gray-500 hover:border-gray-300 hover:text-gray-700'} 
+                   class="nav-link ${index === 0 ? 'border-blue-500 text-gray-900 dark:text-gray-100' : 'border-transparent text-gray-500 dark:text-gray-400 hover:border-gray-300 hover:text-gray-700'} 
                           inline-flex items-center px-1 pt-1 border-b-2 text-sm font-medium">
                     ${name}
                 </a>
@@ -350,34 +510,36 @@
             contentPanels.innerHTML = `
                 <div id="panel-rules">${renderRulesPanel()}</div>
                 <div id="panel-sources" class="hidden">${renderSourcesPanel()}</div>
-                <div id="panel-blacklist" class="hidden">${renderBlacklistPanel()}</div>
+                <div id="panel-blacklist" class="hidden">
+                    <div class="flex justify-center items-center p-10"><div class="loader"></div></div>
+                </div>
                 <div id="panel-whitelist" class="hidden">${renderWhitelistPanel()}</div>
             `;
             
             // 3. 绑定导航点击事件
             mainNav.addEventListener('click', (e) => {
-                if (e.target.dataset.tab) {
+                if (e.target.closest('a')?.dataset.tab) {
                     e.preventDefault();
-                    navigateToTab(e.target.dataset.tab);
+                    navigateToTab(e.target.closest('a').dataset.tab);
                 }
             });
             
-            // 4. 加载真实数据 (我们将在 v8.3 中实现)
-            // loadAllRules();
+            // 4. 加载真实数据
+            // (我们先只加载黑名单，其他的稍后添加)
+            loadAndRenderBlacklist();
+            // loadAndRenderWhitelist();
+            // loadAndRenderSources();
+            // loadAndRenderRules();
         }
         
-        // (占位符)
-        async function loadAllRules() {
-            try {
-                const data = await apiFetch('/api/rules');
-                state.rules = data;
-                console.log("已加载规则:", state.rules);
-                // (下一步: 在这里调用 render...() 函数来填充表单)
-            } catch (error) {
-                console.error("加载规则失败:", error);
-                // apiFetch 内部已处理 401
-            }
-        }
+        // --- 启动 ---
+        
+        // 1. 应用保存的主题
+        const savedTheme = localStorage.getItem('theme') || 'system';
+        setTheme(savedTheme);
+        
+        // 2. 检查登录
+        document.addEventListener('DOMContentLoaded', checkSavedAuth);
 
     </script>
 

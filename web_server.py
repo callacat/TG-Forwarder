@@ -6,7 +6,7 @@ import asyncio
 import secrets 
 from fastapi import FastAPI, HTTPException, Request, Depends 
 from fastapi.security import HTTPBasic, HTTPBasicCredentials 
-from fastapi.responses import HTMLResponse, JSONResponse, FileResponse # (新) v8.2：导入 FileResponse
+from fastapi.responses import HTMLResponse, JSONResponse, FileResponse
 from pydantic import BaseModel, Field
 from typing import List, Optional, Dict, Any
 
@@ -30,10 +30,13 @@ RULES_DB_PATH = "/app/data/rules_db.json"
 rules_db: RulesDatabase = RulesDatabase() 
 db_lock = asyncio.Lock() 
 
+# (新) v8.3：禁用 /docs 和 /redoc API 文档页面
 app = FastAPI(
     title="TG Forwarder Web UI",
     description="一个用于动态管理 TG-Forwarder 规则的 Web 面板。",
-    version="8.1"
+    version="8.3",
+    docs_url=None, # 禁用 /docs
+    redoc_url=None # 禁用 /redoc
 )
 
 # (新) v8.1：安全配置
@@ -48,7 +51,6 @@ def set_web_ui_password(password: str):
 
 def get_current_user(credentials: HTTPBasicCredentials = Depends(security)):
     """FastAPI 依赖项，用于检查密码"""
-    # 我们不关心用户名，只检查密码
     correct_password = secrets.compare_digest(credentials.password, WEB_UI_PASSWORD)
     if not correct_password:
         raise HTTPException(
@@ -61,7 +63,7 @@ def get_current_user(credentials: HTTPBasicCredentials = Depends(security)):
 # --- 数据库核心功能 ---
 
 async def _save_rules_to_db_internal():
-    """(新) 内部保存函数，不获取锁。假定调用方已持有锁。"""
+    """内部保存函数，不获取锁。假定调用方已持有锁。"""
     try:
         with open(RULES_DB_PATH, 'w', encoding='utf-8') as f:
             json.dump(rules_db.model_dump(), f, indent=2)
@@ -93,7 +95,6 @@ async def save_rules_to_db():
         await _save_rules_to_db_internal() 
 
 # --- API 路由 (Endpoints) ---
-# (新) v8.1：为所有 API 路由添加 'auth: bool = Depends(get_current_user)'
 
 @app.get("/api/rules", response_model=RulesDatabase)
 async def get_all_rules(auth: bool = Depends(get_current_user)):
@@ -180,8 +181,8 @@ async def update_whitelist(config: WhitelistConfig, auth: bool = Depends(get_cur
     await save_rules_to_db()
     return {"status": "success", "message": "白名单已更新。"}
 
+
 # --- Web UI 前端 ---
-# (新) v8.2：修改 / 路由
 @app.get("/", response_class=HTMLResponse)
 async def get_web_ui():
     """
@@ -190,7 +191,6 @@ async def get_web_ui():
     """
     ui_path = "/app/index.html"
     if not os.path.exists(ui_path):
-        # 这是一个备用占位符，以防 index.html 丢失
         return HTMLResponse(content="""
         <html><body>
             <h1>错误：未找到 <code>index.html</code>。</h1>
@@ -198,5 +198,4 @@ async def get_web_ui():
         </body></html>
         """, status_code=404)
         
-    # 从磁盘读取并返回 index.html
     return FileResponse(ui_path)
