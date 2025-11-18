@@ -7,9 +7,8 @@ from datetime import datetime, timedelta
 logger = logging.getLogger(__name__)
 
 DB_PATH = "/app/data/forwarder.sqlite"
-db_lock = asyncio.Lock() # 确保数据库初始化只运行一次
-
-_db_conn = None # 全局连接池（简化版）
+db_lock = asyncio.Lock() 
+_db_conn = None 
 
 async def get_db():
     """获取一个数据库连接"""
@@ -21,24 +20,18 @@ async def get_db():
 async def init_db():
     """
     初始化数据库连接和表结构。
-    这是 v9.0 蓝图的核心。
     """
     global _db_conn
     async with db_lock:
         if _db_conn:
-            return # 已经初始化
+            return 
 
         try:
-            # 1. 创建连接
             _db_conn = await aiosqlite.connect(DB_PATH)
-            # 开启 WAL 模式 (Write-Ahead Logging)，大幅提高并发读写性能
             await _db_conn.execute("PRAGMA journal_mode=WAL;")
             
             logger.info(f"✅ 数据库连接已建立: {DB_PATH}")
 
-            # 2. 创建表 (如果不存在)
-            
-            # (v9.0) 替换 dedup_db.json
             await _db_conn.execute("""
             CREATE TABLE IF NOT EXISTS dedup_hashes (
               hash TEXT PRIMARY KEY,
@@ -46,7 +39,6 @@ async def init_db():
             )
             """)
             
-            # (v9.0) 替换 forwarder_progress.json
             await _db_conn.execute("""
             CREATE TABLE IF NOT EXISTS forward_progress (
               channel_id INTEGER PRIMARY KEY,
@@ -54,7 +46,6 @@ async def init_db():
             )
             """)
             
-            # (v9.0) 替换 link_checker_db.json
             await _db_conn.execute("""
             CREATE TABLE IF NOT EXISTS link_checker (
               url TEXT PRIMARY KEY,
@@ -82,7 +73,7 @@ async def check_hash(hash_str: str) -> bool:
             return await cursor.fetchone() is not None
     except Exception as e:
         logger.error(f"检查哈希失败: {e}")
-        return True # 安全起见，发生错误时假定为重复
+        return True 
 
 async def add_hash(hash_str: str):
     """添加一个新哈希 (替换 _mark_as_processed)"""
@@ -97,7 +88,7 @@ async def add_hash(hash_str: str):
         logger.error(f"添加哈希失败: {e}")
 
 async def prune_old_hashes(days: int = 30):
-    """(v9.0 蓝图) 清理旧的哈希记录"""
+    """清理旧的哈希记录"""
     try:
         cutoff_date = datetime.now() - timedelta(days=days)
         db = await get_db()
@@ -124,7 +115,6 @@ async def set_progress(channel_id: int, message_id: int):
     """设置频道进度 (替换 _set_channel_progress)"""
     try:
         db = await get_db()
-        # INSERT OR REPLACE (UPSERT) 确保了原子性
         await db.execute(
             "INSERT OR REPLACE INTO forward_progress (channel_id, message_id) VALUES (?, ?)", 
             (channel_id, message_id)
@@ -133,7 +123,30 @@ async def set_progress(channel_id: int, message_id: int):
     except Exception as e:
         logger.error(f"设置进度失败: {e}")
 
-# --- 链接检测 (Link Checker) API (v9.0 蓝图) ---
+# --- (新) v8.4：统计 API ---
+
+async def get_db_stats() -> dict:
+    """获取 SQLite 数据库的统计信息"""
+    try:
+        db = await get_db()
+        
+        # 并发执行 COUNT 查询
+        async with db.execute("SELECT COUNT(*) FROM dedup_hashes") as cursor:
+            dedup_count = (await cursor.fetchone() or [0])[0]
+            
+        async with db.execute("SELECT COUNT(*) FROM forward_progress") as cursor:
+            progress_count = (await cursor.fetchone() or [0])[0]
+            
+        return {
+            "dedup_hashes": dedup_count,
+            "forward_progress": progress_count
+        }
+    except Exception as e:
+        logger.error(f"获取数据库统计失败: {e}")
+        return { "dedup_hashes": "错误", "forward_progress": "错误" }
+
+
+# --- 链接检测 (Link Checker) API ---
 
 async def get_link_checker_progress() -> int:
     """获取 link_checker 扫描到的最后 message_id"""
@@ -162,7 +175,6 @@ async def add_pending_link(url: str, message_id: int):
     """添加一个新的待检测链接"""
     try:
         db = await get_db()
-        # 仅在链接不存在时插入
         await db.execute(
             "INSERT OR IGNORE INTO link_checker (url, message_id, status) VALUES (?, ?, ?)",
             (url, message_id, "pending")

@@ -5,9 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>TG Forwarder 配置面板</title>
     <script src="https://cdn.tailwindcss.com"></script>
-    <!-- (新) v8.3.2 修复：移除了导致 "tailwind is not defined" 错误的 'tailwind.config' 脚本块 -->
     <style>
-        /* 简单的加载动画 */
         @keyframes spin {
             to { transform: rotate(360deg); }
         }
@@ -22,11 +20,8 @@
         .dark .loader {
             border-left-color: #60a5fa;
         }
-        
-        /* 隐藏滚动条 (Tailwind) */
         .no-scrollbar::-webkit-scrollbar { display: none; }
         .no-scrollbar { -ms-overflow-style: none; scrollbar-width: none; }
-        
         body {
             transition: background-color 0.3s ease, color 0.3s ease;
         }
@@ -284,29 +279,6 @@
             themeMenu.classList.add('hidden', 'opacity-0', 'scale-95');
         }
 
-        themeToggleButton.addEventListener('click', () => {
-            themeMenu.classList.toggle('hidden');
-            setTimeout(() => { // 确保 transition 生效
-                themeMenu.classList.toggle('opacity-0');
-                themeMenu.classList.toggle('scale-95');
-                themeMenu.classList.toggle('opacity-100');
-                themeMenu.classList.toggle('scale-100');
-            }, 10);
-        });
-        
-        document.addEventListener('click', (e) => {
-            if (!themeToggleButton.contains(e.target) && !themeMenu.contains(e.target)) {
-                 themeMenu.classList.add('hidden', 'opacity-0', 'scale-95');
-            }
-        });
-
-        document.querySelectorAll('.theme-menu-item').forEach(item => {
-            item.addEventListener('click', (e) => {
-                e.preventDefault();
-                setTheme(e.target.dataset.theme);
-            });
-        });
-
         // --- 主应用逻辑 ---
         
         const mainNav = document.getElementById('main-nav');
@@ -388,6 +360,7 @@
                             <div>
                                 <label for="bl-file" class="block text-sm font-medium text-gray-700 dark:text-gray-300">文件名 (子字符串, 如 "VPN")</label>
                                 <textarea id="bl-file" rows="5" class="mt-1 block w-full shadow-sm sm:text-sm border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-700 text-gray-900 dark:text-gray-100 rounded-md focus:ring-blue-500 focus:border-blue-500">${arrayToText(file_name_keywords)}</textarea>
+
                             </div>
                             <div>
                                 <label for="bl-regex" class="block text-sm font-medium text-gray-700 dark:text-gray-300">正则表达式 (高级)</label>
@@ -515,7 +488,31 @@
                 }
             });
             
-            // 4. 加载真实数据
+            // 4. (新) v8.4：绑定主题切换器事件
+            themeToggleButton.addEventListener('click', () => {
+                themeMenu.classList.toggle('hidden');
+                setTimeout(() => { 
+                    themeMenu.classList.toggle('opacity-0');
+                    themeMenu.classList.toggle('scale-95');
+                    themeMenu.classList.toggle('opacity-100');
+                    themeMenu.classList.toggle('scale-100');
+                }, 10);
+            });
+            
+            document.addEventListener('click', (e) => {
+                if (!themeToggleButton.contains(e.target) && !themeMenu.contains(e.target)) {
+                    themeMenu.classList.add('hidden', 'opacity-0', 'scale-95');
+                }
+            });
+
+            document.querySelectorAll('.theme-menu-item').forEach(item => {
+                item.addEventListener('click', (e) => {
+                    e.preventDefault();
+                    setTheme(e.target.dataset.theme);
+                });
+            });
+            
+            // 5. 加载真实数据
             loadAndRenderBlacklist();
             // loadAndRenderWhitelist();
             // loadAndRenderSources();
@@ -529,7 +526,6 @@
         setTheme(savedTheme);
         
         // 2. 检查登录
-        // (新) v8.3.1 修复：在 body 末尾直接调用，不再使用 DOMContentLoaded
         checkSavedAuth();
 
     </script>

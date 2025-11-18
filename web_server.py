@@ -11,6 +11,7 @@ from pydantic import BaseModel, Field
 from typing import List, Optional, Dict, Any
 
 from forwarder_core import (
+    Config, # (新) v8.4：导入主 Config
     SourceConfig, 
     TargetDistributionRule, 
     AdFilterConfig, 
@@ -30,18 +31,17 @@ RULES_DB_PATH = "/app/data/rules_db.json"
 rules_db: RulesDatabase = RulesDatabase() 
 db_lock = asyncio.Lock() 
 
-# (新) v8.3：禁用 /docs 和 /redoc API 文档页面
 app = FastAPI(
     title="TG Forwarder Web UI",
     description="一个用于动态管理 TG-Forwarder 规则的 Web 面板。",
-    version="8.3",
+    version="8.4",
     docs_url=None, # 禁用 /docs
     redoc_url=None # 禁用 /redoc
 )
 
-# (新) v8.1：安全配置
+# --- 安全配置 ---
 security = HTTPBasic()
-WEB_UI_PASSWORD = "default_password_please_change" # 将由 ultimate_forwarder.py 覆盖
+WEB_UI_PASSWORD = "default_password_please_change" 
 
 def set_web_ui_password(password: str):
     """由 ultimate_forwarder.py 在启动时调用以注入密码"""
@@ -58,7 +58,7 @@ def get_current_user(credentials: HTTPBasicCredentials = Depends(security)):
             detail="凭据不正确",
             headers={"WWW-Authenticate": "Basic"},
         )
-    return True # 验证成功
+    return True 
 
 # --- 数据库核心功能 ---
 
@@ -71,15 +71,33 @@ async def _save_rules_to_db_internal():
     except Exception as e:
         logger.error(f"❌ 保存 rules_db.json 失败: {e}")
 
-async def load_rules_from_db():
-    """从 JSON 文件加载规则到内存"""
+async def load_rules_from_db(config: Optional[Config] = None): # (新) v8.4：接收 config
+    """从 JSON 文件加载规则到内存，如果文件不存在，则从 config.yaml 迁移"""
     global rules_db
     async with db_lock:
         if not os.path.exists(RULES_DB_PATH):
-            logger.warning(f"未找到规则数据库 {RULES_DB_PATH}，将创建新的。")
-            rules_db = RulesDatabase() 
-            await _save_rules_to_db_internal() 
+            logger.warning(f"未找到规则数据库 {RULES_DB_PATH}，将尝试从 config.yaml 迁移...")
+            
+            if config:
+                # (新) v8.4：执行一次性迁移
+                try:
+                    rules_db = RulesDatabase(
+                        sources=config.sources,
+                        distribution_rules=config.targets.distribution_rules,
+                        ad_filter=config.ad_filter,
+                        whitelist=config.whitelist
+                    )
+                    logger.info("✅ 成功从 config.yaml 提取旧规则。")
+                except Exception as e:
+                    logger.error(f"❌ 迁移旧规则失败: {e}。将创建空数据库。")
+                    rules_db = RulesDatabase()
+            else:
+                logger.warning("未提供 config 对象，将创建空数据库。")
+                rules_db = RulesDatabase()
+            
+            await _save_rules_to_db_internal() # 保存迁移后的/新的空数据库
         else:
+            # 数据库已存在，正常加载
             try:
                 with open(RULES_DB_PATH, 'r', encoding='utf-8') as f:
                     data = json.load(f)
@@ -103,6 +121,11 @@ async def get_all_rules(auth: bool = Depends(get_current_user)):
         return rules_db
 
 # --- 源 (Sources) API ---
+# (新) v8.4：我们现在也需要一个 API 来获取*当前*的源（用于 v9.1 状态页面）
+@app.get("/api/sources", response_model=List[SourceConfig])
+async def get_sources(auth: bool = Depends(get_current_user)):
+    """获取所有监控源规则"""
+    return rules_db.sources
 
 @app.post("/api/sources/add")
 async def add_source(source: SourceConfig, auth: bool = Depends(get_current_user)):
@@ -131,6 +154,11 @@ async def remove_source(data: Dict[str, Any], auth: bool = Depends(get_current_u
     return {"status": "success", "message": f"源 {identifier} 已移除。"}
 
 # --- 转发规则 (Distribution Rules) API ---
+# (新) v8.4：获取规则
+@app.get("/api/rules/list", response_model=List[TargetDistributionRule])
+async def get_distribution_rules(auth: bool = Depends(get_current_user)):
+    """获取所有转发规则"""
+    return rules_db.distribution_rules
 
 @app.post("/api/rules/add", response_model=TargetDistributionRule)
 async def add_distribution_rule(rule: TargetDistributionRule, auth: bool = Depends(get_current_user)):
@@ -187,7 +215,6 @@ async def update_whitelist(config: WhitelistConfig, auth: bool = Depends(get_cur
 async def get_web_ui():
     """
     (新) v8.2：提供 index.html 
-    这个 HTML 文件是我们的单页应用 (SPA) 前端。
     """
     ui_path = "/app/index.html"
     if not os.path.exists(ui_path):

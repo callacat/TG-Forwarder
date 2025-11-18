@@ -9,27 +9,20 @@ from telethon.tl.types import PeerUser, PeerChat, PeerChannel, Message
 from telethon.tl.types import Channel, Chat 
 from typing import List, Dict 
 
-# (新) v8.0：导入 uvicorn
 import uvicorn
-
-# (新) v9.0：导入 database
 import database
 
-# (新) 导入定时任务
 from apscheduler.schedulers.asyncio import AsyncIOScheduler 
 from apscheduler.triggers.cron import CronTrigger
 
-# 假设 forwarder_core 和 link_checker 在同一目录下
 from forwarder_core import UltimateForwarder, Config, AccountConfig
 from link_checker import LinkChecker
 from bot_service import BotService 
-# (新) v8.0：导入 web_server
 import web_server
 
-# --- (新) v5.9：日志配置现在由 main() 中的 config 驱动 ---
 logging.basicConfig(
     format='%(asctime)s - [%(levelname)s] - %(message)s',
-    level="INFO", # 临时级别
+    level="INFO", 
     handlers=[
         logging.StreamHandler(sys.stdout)
     ]
@@ -47,7 +40,6 @@ DOCKER_CONTAINER_NAME = "tgf"
 CONFIG_PATH = "/app/config.yaml" 
 
 def setup_logging(app_level: str = "INFO", telethon_level: str = "WARNING"):
-    """(新) v5.9：根据配置设置日志级别"""
     app_level = app_level.upper()
     telethon_level = telethon_level.upper()
     
@@ -88,13 +80,6 @@ def load_config(path):
         
     except FileNotFoundError:
         logger.critical(f"❌ 致命错误: 配置文件 '{path}' 未找到。")
-        logger.critical("---")
-        logger.critical("如果你是第一次运行，请：")
-        logger.critical("1. 将 'config_template.yaml' 复制为 'config.yaml'。")
-        logger.critical("2. 填写 'config.yaml' 中的 API 密钥和频道 ID。")
-        logger.critical("3. (如果你使用 Docker) 确保你使用了 '-v' 来挂载配置文件:")
-        logger.critical(f"   docker run ... -v /path/to/your/config.yaml:{path} ...")
-        logger.critical("---")
         sys.exit(1)
     except Exception as e:
         logger.critical(f"❌ 致命错误: 加载或解析配置文件 {path} 失败: {e}")
@@ -236,13 +221,19 @@ async def run_forwarder(config: Config):
     
     main_client = clients[0] 
     
+    # (新) v8.4：在 v9.0 中，`forwarder_core` 不再依赖 `config.sources`
+    # 它将从 `rules_db.json` 读取。
+    # `resolve_identifiers` 仍然用于（旧的）`config.sources` 以支持
+    # (1) 历史记录 (2) 监听器（如果 rules_db 为空）
+    # 在 v10.0 中，我们将把这个逻辑也移到 `rules_db`
     resolved_source_ids = await resolve_identifiers(main_client, config) 
     
     if not resolved_source_ids:
-        logger.critical("❌ 无法解析任何源频道，请检查配置或确保账号已加入。")
-        return
+        logger.warning("⚠️ 无法从 config.yaml 解析任何源频道。")
+        # (新) v8.4：我们不再退出，因为规则可能在 rules_db.json 中
+        # return
         
-    logger.info(f"✅ 成功解析 {len(resolved_source_ids)} 个源。")
+    logger.info(f"✅ 成功解析 {len(resolved_source_ids)} 个源 (来自 config.yaml)。")
     
     forwarder = UltimateForwarder(config, clients)
     
@@ -250,7 +241,9 @@ async def run_forwarder(config: Config):
     
     # 1. 注册新消息处理器 (用于非相册消息)
     logger.info("注册新消息 (NewMessage) 事件处理器...")
-    @main_client.on(events.NewMessage(chats=resolved_source_ids))
+    # (新) v8.4：我们必须监听*所有*会话中的频道，因为
+    # 我们无法预知 rules_db.json 中将添加哪些频道。
+    @main_client.on(events.NewMessage())
     async def handle_new_message(event):
         
         if event.message.grouped_id:
@@ -264,11 +257,11 @@ async def run_forwarder(config: Config):
             except Exception as e:
                 logger.debug(f"将 {event.chat_id} 标记为已读失败: {e}")
         
-    logger.info("✅ NewMessage 事件处理器已注册。")
+    logger.info("✅ NewMessage 事件处理器已注册 (监听所有)。")
 
     # 2. 注册相册 (Album) 处理器
     logger.info("注册相册 (Album) 事件处理器...")
-    @main_client.on(events.Album(chats=resolved_source_ids))
+    @main_client.on(events.Album())
     async def handle_album(event):
         
         logger.info(f"处理相册 {event.grouped_id} (共 {len(event.messages)} 条消息)...")
@@ -289,7 +282,7 @@ async def run_forwarder(config: Config):
             except Exception as e:
                 logger.debug(f"将相册 {event.grouped_id} 标记为已读失败: {e}")
 
-    logger.info("✅ Album 事件处理器已注册。")
+    logger.info("✅ Album 事件处理器已注册 (监听所有)。")
 
     # 3. 启动 Bot 服务
     logger.info("正在启动 Bot 服务...")
@@ -308,7 +301,6 @@ async def run_forwarder(config: Config):
             logger.info(f"✅ 链接检测器定时任务已启动 (Cron: {config.link_checker.schedule} UTC)。")
 
             # (新) v9.0：任务 2: 数据库清理
-            # 每天凌晨 4:05 运行
             prune_trigger = CronTrigger.from_crontab("5 4 * * *")
             scheduler.add_job(database.prune_old_hashes, prune_trigger, name="prune_db_job", args=[30])
             logger.info(f"✅ 数据库清理定时任务已启动 (Cron: 5 4 * * *)。")
@@ -333,16 +325,16 @@ async def run_forwarder(config: Config):
     uvicorn_config = uvicorn.Config(web_server.app, host="0.0.0.0", port=8080, log_level="info")
     server = uvicorn.Server(uvicorn_config)
     
-    # (新) v8.0：从 rules_db.json 加载规则
-    await web_server.load_rules_from_db()
+    # (新) v8.4：传入 config 以触发迁移
+    await web_server.load_rules_from_db(config)
 
     # 6. 运行并等待
-    logger.info(f"🚀 终极转发器已启动。正在监听 {len(resolved_source_ids)} 个源。")
-    logger.info(f"🚀 Web UI (v8.0) 正在 http://0.0.0.0:8080 上启动。")
+    logger.info(f"🚀 终极转发器已启动。正在监听所有频道...")
+    logger.info(f"🚀 Web UI (v8.4) 正在 http://0.0.0.0:8080 上启动。")
     
     tasks_to_run = [
         main_client.run_until_disconnected(),
-        server.serve() # (新) v8.0：运行 Web 服务器
+        server.serve() 
     ]
     
     if bot_client:
@@ -358,9 +350,7 @@ async def run_link_checker(config: Config):
         logger.warning("LinkChecker 未在 config.yaml 中启用，退出。")
         return
         
-    # (新) v9.0：运行任务前必须初始化数据库
     await database.init_db()
-
     logger.info("启动失效链接检测器...")
     await initialize_clients(config) 
     
@@ -378,7 +368,7 @@ async def export_dialogs(config: Config):
     try:
         dialogs = await main_client.get_dialogs()
         output = "--- 频道/群组/用户列表 (标识符 / 名称) ---\n"
-        output += "--- (可直接复制 标识符 到 config.yaml) ---\n"
+        output += "--- (可直接复制 标识符 到 Web UI) ---\n"
         topics_output = "\n--- 群组话题列表 (群组ID / 话题ID / 话题名称) ---\n"
 
         for dialog in dialogs:
@@ -418,9 +408,9 @@ async def export_dialogs(config: Config):
         
         logger.info("---")
         logger.info("如何使用:")
-        logger.info("1. 在 'sources' 配置中，复制 '标识符' 列 (例如 @username 或 -100123456789)。")
-        logger.info("2. 在 'targets' 配置中，也使用 '标识符'。")
-        logger.info("3. 在 'targets.distribution_rules' 中，使用 '群组ID' 和 '话题ID'。")
+        logger.info("1. 在 '监控源' (Web UI) 配置中，复制 '标识符' 列 (例如 @username 或 -100123456789)。")
+        logger.info("2. 在 '转发规则' (Web UI) 配置中，也使用 '标识符'。")
+        logger.info("3. 在 '转发规则' (Web UI) 中，使用 '群组ID' 和 '话题ID'。")
         
     except Exception as e:
         logger.error(f"导出对话失败: {e}")
@@ -437,13 +427,13 @@ async def reload_config_func():
         if new_config.logging_level:
             setup_logging(new_config.logging_level.app, new_config.logging_level.telethon)
         
-        # (新) v8.0：同时重载 Web UI 的规则
-        await web_server.load_rules_from_db()
+        # (新) v8.4：同时重载 Web UI 的规则 (并传入 config 以防万一)
+        await web_server.load_rules_from_db(new_config)
         
-        # (旧)
-        await resolve_identifiers(clients[0], new_config)
-
+        # (新) v8.4：重载转发器
         if forwarder:
+            # `forwarder` 在 v9.0 中不再需要 `new_config`
+            # 它会从 `web_server.rules_db` 内存中获取新规则
             await forwarder.reload(new_config) 
 
         if link_checker:
@@ -484,20 +474,20 @@ async def main():
     if config.logging_level:
         setup_logging(config.logging_level.app, config.logging_level.telethon)
     else:
-        setup_logging() # 使用默认值 (INFO, WARNING)
+        setup_logging() 
+
     # (新) v8.1：将密码注入 Web 服务器
-    if config.web_ui and config.web_ui.password != "password":
+    if config.web_ui and config.web_ui.password != "default_password_please_change":
         web_server.set_web_ui_password(config.web_ui.password)
     else:
         logger.warning("!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!")
         logger.warning("!!! 警告：你没有在 config.yaml 中设置 'web_ui.password'。")
         logger.warning("!!! Web UI (8080 端口) 现在是*不安全*的，任何人都可以访问。")
         logger.warning("!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!")
-        # 我们仍然设置一个默认值，以防万一
-        web_server.set_web_ui_password("password")
+        web_server.set_web_ui_password("default_password_please_change")
+
 
     try:
-        # (新) v9.0：在任何操作之前初始化数据库
         if args.mode in ['run', 'checklinks']:
             await database.init_db()
             
@@ -513,7 +503,6 @@ async def main():
     except Exception as e:
         logger.critical(f"❌ 出现未捕获的致命错误: {e}", exc_info=True)
     finally:
-        # (新) v9.0：安全关闭数据库连接
         if database._db_conn:
              await database._db_conn.close()
              logger.info("数据库连接已关闭。")
