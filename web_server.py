@@ -8,7 +8,7 @@ from fastapi import FastAPI, HTTPException, Request, Depends
 from fastapi.security import HTTPBasic, HTTPBasicCredentials 
 from fastapi.responses import HTMLResponse, FileResponse
 from typing import List, Optional, Dict, Any
-from pydantic import BaseModel # 修复：确保导入 BaseModel
+from pydantic import BaseModel 
 
 from models import (
     Config, 
@@ -52,14 +52,12 @@ async def _save_rules_to_db_internal():
         logger.error(f"❌ 保存 rules_db.json 失败: {e}")
 
 async def load_rules_from_db(config: Optional[Config] = None): 
-    """加载规则，并负责将 config.yaml 中的设置迁移到 rules_db.json"""
     global rules_db
     async with db_lock:
         if not os.path.exists(RULES_DB_PATH):
             logger.warning(f"未找到数据库 {RULES_DB_PATH}，正在从 config.yaml 迁移...")
             if config:
                 try:
-                    # 迁移初始化
                     initial_settings = SystemSettings(
                         dedup_retention_days=30,
                         forwarding_mode=config.forwarding.mode,
@@ -100,7 +98,7 @@ async def save_rules_to_db():
     async with db_lock:
         await _save_rules_to_db_internal() 
 
-# --- 统计 API ---
+# --- 统计 API (修复：增加内容过滤统计) ---
 @app.get("/api/stats")
 async def get_stats(auth: bool = Depends(get_current_user)):
     try:
@@ -112,7 +110,9 @@ async def get_stats(auth: bool = Depends(get_current_user)):
                 "whitelist_keywords": len(rules_db.whitelist.keywords or []),
                 "blacklist_substring": len(rules_db.ad_filter.keywords_substring or []),
                 "blacklist_word": len(rules_db.ad_filter.keywords_word or []),
-                "replacements_count": len(rules_db.replacements or {})
+                "replacements_count": len(rules_db.replacements or {}),
+                # 新增：统计无意义词汇数量
+                "content_filter_count": len(rules_db.content_filter.meaningless_words if rules_db.content_filter else [])
             }
         return {**db_stats, **rule_stats}
     except Exception as e:
@@ -160,7 +160,6 @@ async def add_rule(rule: TargetDistributionRule, auth: bool = Depends(get_curren
     await save_rules_to_db()
     return rule
 
-# 更新单个规则 (用于编辑)
 @app.post("/api/rules/update_single")
 async def update_single_rule(rule: TargetDistributionRule, name_to_replace: str = "", auth: bool = Depends(get_current_user)):
     target_name = name_to_replace if name_to_replace else rule.name
@@ -175,25 +174,20 @@ async def update_single_rule(rule: TargetDistributionRule, name_to_replace: str 
     await save_rules_to_db()
     return {"status": "success", "message": "规则不存在，已作为新规则添加"}
 
-# 规则排序请求模型
 class ReorderRequest(BaseModel):
     names: List[str]
 
 @app.post("/api/rules/reorder")
 async def reorder_rules(data: ReorderRequest, auth: bool = Depends(get_current_user)):
-    """根据提供的名称列表顺序重新排列规则"""
     name_map = {r.name: r for r in rules_db.distribution_rules}
     new_list = []
-    
     for name in data.names:
         if name in name_map:
             new_list.append(name_map[name])
-            
     processed_names = set(data.names)
     for r in rules_db.distribution_rules:
         if r.name not in processed_names:
             new_list.append(r)
-            
     rules_db.distribution_rules = new_list
     await save_rules_to_db()
     return {"status": "success", "message": "规则顺序已保存"}
