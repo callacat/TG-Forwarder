@@ -21,7 +21,7 @@ from models import (
 # (新) v9.1：导入 database
 import database
 
-logger = logging.getLogger(__name__)
+from loguru import logger
 
 # --- 全局变量 ---
 RULES_DB_PATH = "/app/data/rules_db.json"

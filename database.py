@@ -5,7 +5,7 @@ import asyncio
 from datetime import datetime, timedelta
 from typing import List, Dict, Any, Union
 
-logger = logging.getLogger(__name__)
+from loguru import logger
 
 DB_PATH = "/app/data/forwarder.sqlite"
 db_lock = asyncio.Lock() 

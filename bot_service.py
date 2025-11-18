@@ -17,7 +17,7 @@ from telethon.tl.types import (
 # (新) v9.1：导入 database
 import database
 
-logger = logging.getLogger(__name__)
+from loguru import logger
 
 class BotService:
     def __init__(self, config: Config, bot_client: TelegramClient, forwarder: 'UltimateForwarder', link_checker: LinkChecker, reload_config_func: Callable[[], Awaitable[str]]):

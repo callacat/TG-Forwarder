@@ -24,7 +24,7 @@ from typing import List, Optional, Tuple, Dict, Set, Any, Union
 # (新) v8.5：从 models.py 导入
 from models import Config
 
-logger = logging.getLogger(__name__)
+from loguru import logger
 
 # --- 核心转发器类 ---
 

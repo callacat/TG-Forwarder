@@ -15,7 +15,7 @@ from datetime import datetime, timezone
 
 import database
 
-logger = logging.getLogger(__name__)
+from loguru import logger
 
 # 基于 TGNetDiskLinkChecker.py 优化
 

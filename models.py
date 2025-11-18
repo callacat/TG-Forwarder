@@ -7,7 +7,7 @@ import re
 from typing import List, Optional, Tuple, Dict, Set, Any, Union 
 from pydantic import BaseModel, Field, HttpUrl, field_validator, model_validator
 
-logger = logging.getLogger(__name__)
+from loguru import logger
 
 # --- 日志配置模型 ---
 class LoggingLevelConfig(BaseModel):

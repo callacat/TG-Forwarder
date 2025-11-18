@@ -1,35 +1,36 @@
-# 使用官方 Python 3.14 slim 镜像
-FROM python:3.14-slim
+# 使用更稳定的 Python 3.13 Slim (Bookworm)
+FROM python:3.13-slim-bookworm
 
-# 设置工作目录
+# 设置环境变量 (优化 Python 运行)
+ENV PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1 \
+    TZ=Asia/Shanghai
+
 WORKDIR /app
 
-# 复制依赖文件
-COPY requirements.txt ./
+# 安装系统基础依赖 (curl 用于健康检查或下载工具)
+RUN apt-get update && apt-get install -y --no-install-recommends curl && \
+    rm -rf /var/lib/apt/lists/*
 
-# (新) 修复：在安装依赖之前，先升级 pip 本身
-# 这是一个关键步骤，用于解决旧版 pip 无法正确解析新包版本的问题
-RUN pip install --no-cache-dir --upgrade pip
-
-# 安装依赖
-RUN pip install --no-cache-dir -r requirements.txt
-
-# 复制所有项目文件到工作目录
-COPY . .
-
-# 设置时区 (可选，但建议)
-ENV TZ=Asia/Shanghai
+# 设置时区
 RUN ln -snf /usr/share/zoneinfo/$TZ /etc/localtime && echo $TZ > /etc/timezone
 
-# (新) 确保 /app/data 目录存在并设置权限
-# 会话文件 (.session) 和数据库 (.json) 将存储在这里
-RUN mkdir -p /app/data && \
-    chmod -R 755 /app/data
+# 现代化：使用 'uv' 替代 pip (速度快 10-100 倍)
+# 这一步会下载 uv 二进制文件
+COPY --from=ghcr.io/astral-sh/uv:latest /uv /bin/uv
 
-# 设置数据卷 (用于持久化)
+# 复制依赖并安装
+COPY requirements.txt .
+# 使用 uv pip install 安装依赖到系统环境
+RUN uv pip install --system --no-cache -r requirements.txt
+
+# 复制项目文件
+COPY . .
+
+# 创建数据目录并赋权
+RUN mkdir -p /app/data && chmod -R 755 /app/data
+
 VOLUME /app/data
 
-# 默认启动命令
-# 容器启动时将运行 `python ultimate_forwarder.py run -c /app/config.yaml`
-# 确保你通过 -v 将 config.yaml 挂载到 /app/config.yaml
+# 启动命令
 CMD ["python", "ultimate_forwarder.py", "run", "-c", "/app/config.yaml"]
