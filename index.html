@@ -121,7 +121,7 @@
 
     <!-- JS 逻辑 -->
     <script>
-        // --- (新) v8.3：全局状态和 API 帮助程序 ---
+        // --- 全局状态和 API 帮助程序 ---
         
         const API_USERNAME = "admin";
         let API_PASSWORD = "";
@@ -159,7 +159,7 @@
             }
         }
 
-        // --- 登录逻辑 (v8.3 升级) ---
+        // --- 登录逻辑 ---
         
         const loginModal = document.getElementById('login-modal');
         const loginButton = document.getElementById('login-button');
@@ -243,7 +243,7 @@
             }
         }
 
-        // --- (新) v8.3：主题切换逻辑 ---
+        // --- 主题切换逻辑 ---
         const themeToggleButton = document.getElementById('theme-toggle-button');
         const themeMenu = document.getElementById('theme-menu');
         const themeIcons = {
@@ -285,7 +285,6 @@
         const contentPanels = document.getElementById('content-panels');
         const reloadNotice = document.getElementById('reload-notice');
         
-        // (新) v8.3.2 修复：初始化 state.rules
         let state = { rules: {} }; // 全局状态
         
         const TABS = {
@@ -337,7 +336,6 @@
         
         // (新) v8.3：实现黑名单面板
         function renderBlacklistPanel(data) {
-            // (新) v8.3.2 修复：安全地访问 data
             const { keywords_substring, keywords_word, file_name_keywords, patterns } = data || {};
             
             return `
@@ -416,7 +414,6 @@
             btn.disabled = true;
             
             try {
-                // (新) v8.3.2 修复：安全地访问 state.rules.ad_filter
                 const enableState = (state.rules && state.rules.ad_filter) ? state.rules.ad_filter.enable : true;
 
                 const payload = {
@@ -448,7 +445,7 @@
         async function loadAndRenderBlacklist() {
             try {
                 const data = await apiFetch('/api/blacklist');
-                state.rules.ad_filter = data; // (新) v8.3.2 修复：现在 state.rules 已经定义
+                state.rules.ad_filter = data; 
                 document.getElementById('panel-blacklist').innerHTML = renderBlacklistPanel(data);
                 
                 document.getElementById('save-blacklist').addEventListener('click', handleSaveBlacklist);
@@ -488,7 +485,7 @@
                 }
             });
             
-            // 4. (新) v8.4：绑定主题切换器事件
+            // 4. (新) v8.4.1：修复主题切换器
             themeToggleButton.addEventListener('click', () => {
                 themeMenu.classList.toggle('hidden');
                 setTimeout(() => { 
