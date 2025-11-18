@@ -8,6 +8,7 @@ from fastapi import FastAPI, HTTPException, Request, Depends
 from fastapi.security import HTTPBasic, HTTPBasicCredentials 
 from fastapi.responses import HTMLResponse, FileResponse
 from typing import List, Optional, Dict, Any
+from pydantic import BaseModel # 修复：确保导入 BaseModel
 
 from models import (
     Config, 
@@ -105,7 +106,6 @@ async def get_stats(auth: bool = Depends(get_current_user)):
     try:
         db_stats = await database.get_db_stats()
         async with db_lock:
-            # 确保所有字段都存在，防止 Key Error
             rule_stats = {
                 "sources": len(rules_db.sources),
                 "distribution_rules": len(rules_db.distribution_rules),
@@ -160,10 +160,9 @@ async def add_rule(rule: TargetDistributionRule, auth: bool = Depends(get_curren
     await save_rules_to_db()
     return rule
 
-# (新增) 更新单个规则 (用于编辑)
+# 更新单个规则 (用于编辑)
 @app.post("/api/rules/update_single")
 async def update_single_rule(rule: TargetDistributionRule, name_to_replace: str = "", auth: bool = Depends(get_current_user)):
-    # 这里的逻辑是：先找到旧规则的位置，替换它。如果没找到，就追加。
     target_name = name_to_replace if name_to_replace else rule.name
     
     for index, r in enumerate(rules_db.distribution_rules):
@@ -172,28 +171,24 @@ async def update_single_rule(rule: TargetDistributionRule, name_to_replace: str 
             await save_rules_to_db()
             return {"status": "success", "message": "规则已更新"}
     
-    # 如果没找到，作为新规则添加
     rules_db.distribution_rules.append(rule)
     await save_rules_to_db()
     return {"status": "success", "message": "规则不存在，已作为新规则添加"}
 
-# (新增) 规则排序
+# 规则排序请求模型
 class ReorderRequest(BaseModel):
     names: List[str]
 
-from pydantic import BaseModel # 确保导入
 @app.post("/api/rules/reorder")
 async def reorder_rules(data: ReorderRequest, auth: bool = Depends(get_current_user)):
     """根据提供的名称列表顺序重新排列规则"""
     name_map = {r.name: r for r in rules_db.distribution_rules}
     new_list = []
     
-    # 按新顺序重建列表
     for name in data.names:
         if name in name_map:
             new_list.append(name_map[name])
             
-    # 确保没有遗漏 (如果有规则名不在前端发来的列表中，追加到后面)
     processed_names = set(data.names)
     for r in rules_db.distribution_rules:
         if r.name not in processed_names:
