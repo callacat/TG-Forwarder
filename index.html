@@ -31,23 +31,9 @@
         .panel {
             transition: background-color 0.3s ease;
         }
-        /* (新) v9.1：滑块样式 */
-        input[type="range"]::-webkit-slider-thumb {
-            -webkit-appearance: none;
-            appearance: none;
-            width: 20px;
-            height: 20px;
-            background: #3b82f6;
-            border-radius: 50%;
-            cursor: pointer;
-            margin-top: -6px; /* 居中 */
-        }
-        input[type="range"]::-moz-range-thumb {
-            width: 20px;
-            height: 20px;
-            background: #3b82f6;
-            border-radius: 50%;
-            cursor: pointer;
+        /* (新) v9.2：用于列表项 */
+        .list-item {
+            transition: background-color 0.2s ease;
         }
     </style>
 </head>
@@ -119,7 +105,7 @@
                 <!-- "请 Reload" 的全局提示 -->
                 <div id="reload-notice" class="bg-yellow-100 border-l-4 border-yellow-500 text-yellow-700 p-4 rounded-md mb-6 shadow hidden" role="alert">
                     <div class="flex">
-                        <div class="py-1"><svg class="h-6 w-6 text-yellow-500 mr-4" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z"/></svg></div>
+                        <div class="py-1"><svg class="h-6 w-6 text-yellow-500 mr-4" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0.0.0.0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z"/></svg></div>
                         <div>
                             <p class="font-bold">规则已保存！</p>
                             <p class="text-sm">配置已成功保存到 <code>rules_db.json</code>。请在你的 Bot 聊天中发送 <code>/reload</code> 命令，以使更改在正在运行的程序中生效。</p>
@@ -303,12 +289,13 @@
         const contentPanels = document.getElementById('content-panels');
         const reloadNotice = document.getElementById('reload-notice');
         
-        let state = { rules: {}, stats: {} }; // (新) v9.1：添加 stats
+        let state = { rules: {}, stats: {} }; 
         
+        // (新) v9.2：重新排序，状态页优先
         const TABS = {
-            'status': "状态 & 设置", // (新) v9.1
-            'rules': "转发规则",
+            'status': "状态 & 设置", 
             'sources': "监控源",
+            'rules': "转发规则",
             'blacklist': "黑名单",
             'whitelist': "白名单"
         };
@@ -329,7 +316,7 @@
                        .filter(Boolean); 
         }
 
-        // --- (新) v9.1：状态 & 设置面板 ---
+        // --- v9.1：状态 & 设置面板 ---
         function renderStatsPanel(stats, settings) {
             const { 
                 dedup_hashes = 0, 
@@ -418,20 +405,51 @@
                 <div class="panel bg-white dark:bg-gray-800 p-6 rounded-lg shadow">
                     <h2 class="text-2xl font-semibold mb-4 text-gray-900 dark:text-gray-100">转发规则 (Distribution Rules)</h2>
                     <p class="text-gray-600 dark:text-gray-400">
-                        (下一步：v9.2) 这里将显示一个用于添加、查看和删除转发规则的完整表单。
+                        (下一步：v9.3) 这里将显示一个用于添加、查看和删除转发规则的完整表单。
                     </p>
                 </div>
             `;
         }
         
-        // (占位符) 
+        // (新) v9.2：实现监控源面板
         function renderSourcesPanel(data) {
+            const sources = data || [];
             return `
                 <div class="panel bg-white dark:bg-gray-800 p-6 rounded-lg shadow">
                     <h2 class="text-2xl font-semibold mb-4 text-gray-900 dark:text-gray-100">监控源 (Sources)</h2>
-                    <p class="text-gray-600 dark:text-gray-400">
-                        (下一步：v9.2) 这里将显示一个用于添加和删除源频道的表单。
-                    </p>
+                    
+                    <!-- 添加源表单 -->
+                    <div class="bg-gray-50 dark:bg-gray-700 p-4 rounded-lg mb-6">
+                        <h3 class="text-lg font-medium mb-2">添加新监控源</h3>
+                        <div class="flex flex-col sm:flex-row gap-2">
+                            <input type="text" id="new-source-id" class="flex-grow block w-full px-3 py-2 border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800 text-gray-900 dark:text-gray-100 rounded-md shadow-sm placeholder-gray-400 focus:outline-none focus:ring-blue-500 focus:border-blue-500" placeholder="频道/群组 ID, @username, 或 t.me/ 链接">
+                            <button id="add-source-button" class="flex justify-center py-2 px-4 border border-transparent rounded-md shadow-sm text-sm font-medium text-white bg-blue-600 hover:bg-blue-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-blue-500">
+                                <span id="add-source-text">添加源</span>
+                                <div id="add-source-loader" class="loader hidden"></div>
+                            </button>
+                        </div>
+                        <p class="text-xs text-gray-500 dark:text-gray-400 mt-2">
+                            添加后，请点击 <code>/reload</code> 使其在机器人上生效。
+                        </p>
+                    </div>
+
+                    <!-- 源列表 -->
+                    <div class="space-y-3" id="source-list">
+                        ${sources.length === 0 ? '<p class="text-gray-500 dark:text-gray-400">当前没有配置监控源。</p>' : ''}
+                        ${sources.map(s => `
+                            <div class="list-item flex items-center justify-between p-3 bg-gray-100 dark:bg-gray-700 rounded-md">
+                                <div class="truncate">
+                                    <p class="text-sm font-medium text-gray-900 dark:text-gray-100">${s.identifier}</p>
+                                    <p class="text-xs text-gray-500 dark:text-gray-400">
+                                        (解析后的 ID: ${s.resolved_id ? `<code>${s.resolved_id}</code>` : '<em>未解析, 请 /reload</em>'})
+                                    </p>
+                                </div>
+                                <button data-id="${s.identifier}" class="remove-source-btn ml-4 flex-shrink-0 p-1.5 rounded-full text-red-500 hover:bg-red-100 dark:hover:bg-red-800 focus:outline-none focus:ring-2 focus:ring-red-500">
+                                    <svg class="h-5 w-5" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0.0.0.0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" /></svg>
+                                </button>
+                            </div>
+                        `).join('')}
+                    </div>
                 </div>
             `;
         }
@@ -485,7 +503,7 @@
                 <div class="panel bg-white dark:bg-gray-800 p-6 rounded-lg shadow">
                     <h2 class="text-2xl font-semibold mb-4 text-gray-900 dark:text-gray-100">白名单 (Whitelist)</h2>
                     <p class="text-gray-600 dark:text-gray-400">
-                        (下一步：v9.2) 这里将显示一个用于管理白名单的表单。
+                        (下一步：v9.3) 这里将显示一个用于管理白名单的表单。
                     </p>
                 </div>
             `;
@@ -526,7 +544,7 @@
                     patterns: textToArray(document.getElementById('bl-regex').value),
                 };
                 
-                const updatedConfig = await apiFetch('/api/blacklist/update', {
+                await apiFetch('/api/blacklist/update', {
                     method: 'POST',
                     body: payload
                 });
@@ -544,7 +562,6 @@
             }
         }
 
-        // (新) v9.1：保存去重设置
         async function handleSaveDedupSettings() {
             const btn = document.getElementById('save-dedup');
             const btnText = document.getElementById('save-dedup-text');
@@ -576,46 +593,143 @@
             }
         }
         
-        async function loadAndRenderStats() {
-            try {
-                const stats = await apiFetch('/api/stats');
-                const settings = await apiFetch('/api/settings/dedup');
-                
-                state.stats = stats;
-                state.settings = settings;
+        // (新) v9.2：添加/删除源的函数
+        async function handleAddSource() {
+            const btn = document.getElementById('add-source-button');
+            const btnText = document.getElementById('add-source-text');
+            const btnLoader = document.getElementById('add-source-loader');
+            const input = document.getElementById('new-source-id');
+            const identifier = input.value.trim();
 
-                document.getElementById('panel-status').innerHTML = renderStatsPanel(stats, settings);
-                
-                // 绑定滑块事件
-                const slider = document.getElementById('dedup-slider');
-                const label = document.getElementById('dedup-days-label');
-                slider.addEventListener('input', (e) => {
-                    label.textContent = e.target.value;
+            if (!identifier) {
+                alert("请输入源 ID、用户名或链接。");
+                return;
+            }
+
+            btnText.classList.add('hidden');
+            btnLoader.classList.remove('hidden');
+            btn.disabled = true;
+
+            try {
+                const payload = { identifier: identifier };
+                await apiFetch('/api/sources/add', {
+                    method: 'POST',
+                    body: payload
                 });
                 
-                // 绑定保存按钮事件
-                document.getElementById('save-dedup').addEventListener('click', handleSaveDedupSettings);
+                // (新) v9.2：本地更新 state 并重新渲染
+                state.rules.sources.push(payload);
+                renderAndAttachSources(state.rules.sources); // 重新渲染列表
                 
+                input.value = ""; // 清空输入框
+                showReloadNotice();
+
             } catch (error) {
-                console.error("加载统计失败:", error);
-                document.getElementById('panel-status').innerHTML = `<p class="text-red-500">加载统计失败: ${error.message}</p>`;
+                console.error("添加源失败:", error);
+                alert(`添加源失败: ${error.message}`);
+            } finally {
+                btnText.classList.remove('hidden');
+                btnLoader.classList.add('hidden');
+                btn.disabled = false;
             }
         }
-        
-        async function loadAndRenderBlacklist() {
+
+        async function handleRemoveSource(e) {
+            const button = e.currentTarget;
+            const identifier = button.dataset.id;
+            
+            if (!confirm(`确定要删除源 "${identifier}" 吗？`)) {
+                return;
+            }
+
+            button.disabled = true;
+            button.innerHTML = `<div classclass="loader" style="width: 1rem; height: 1rem;"></div>`;
+
             try {
-                const data = await apiFetch('/api/blacklist');
-                state.rules.ad_filter = data; 
-                document.getElementById('panel-blacklist').innerHTML = renderBlacklistPanel(data);
-                
-                document.getElementById('save-blacklist').addEventListener('click', handleSaveBlacklist);
-                
+                const payload = { identifier: identifier };
+                await apiFetch('/api/sources/remove', {
+                    method: 'POST',
+                    body: payload
+                });
+
+                // (新) v9.2：本地更新 state 并重新渲染
+                state.rules.sources = state.rules.sources.filter(s => String(s.identifier) !== String(identifier));
+                renderAndAttachSources(state.rules.sources); // 重新渲染列表
+                showReloadNotice();
+
             } catch (error) {
-                console.error("加载黑名单失败:", error);
-                document.getElementById('panel-blacklist').innerHTML = `<p class="text-red-500">加载黑名单失败: ${error.message}</p>`;
+                console.error("删除源失败:", error);
+                alert(`删除源失败: ${error.message}`);
+                button.disabled = false; // 恢复按钮
+                button.innerHTML = `<svg class="h-5 w-5" ...>`; // (简化)
             }
         }
+
+        // (新) v9.2：重构的渲染函数
         
+        function renderAndAttachStats(stats, settings) {
+             document.getElementById('panel-status').innerHTML = renderStatsPanel(stats, settings);
+             // 绑定事件
+             document.getElementById('dedup-slider').addEventListener('input', (e) => {
+                document.getElementById('dedup-days-label').textContent = e.target.value;
+             });
+             document.getElementById('save-dedup').addEventListener('click', handleSaveDedupSettings);
+        }
+        
+        function renderAndAttachSources(data) {
+            document.getElementById('panel-sources').innerHTML = renderSourcesPanel(data);
+            // 绑定事件
+            document.getElementById('add-source-button').addEventListener('click', handleAddSource);
+            document.querySelectorAll('.remove-source-btn').forEach(btn => {
+                btn.addEventListener('click', handleRemoveSource);
+            });
+        }
+
+        function renderAndAttachBlacklist(data) {
+            document.getElementById('panel-blacklist').innerHTML = renderBlacklistPanel(data);
+            // 绑定事件
+            document.getElementById('save-blacklist').addEventListener('click', handleSaveBlacklist);
+        }
+        
+        function renderAndAttachWhitelist(data) {
+            document.getElementById('panel-whitelist').innerHTML = renderWhitelistPanel(data);
+            // (下一步：绑定事件)
+        }
+        
+        function renderAndAttachRules(data) {
+            document.getElementById('panel-rules').innerHTML = renderRulesPanel(data);
+            // (下一步：绑定事件)
+        }
+        
+        // (新) v9.2：新的初始化函数
+        async function loadAllRulesAndRender() {
+            try {
+                // 1. 获取所有规则
+                const rulesPromise = apiFetch('/api/rules');
+                const statsPromise = apiFetch('/api/stats');
+                const settingsPromise = apiFetch('/api/settings/dedup');
+                
+                const [rulesData, statsData, settingsData] = await Promise.all([rulesPromise, statsPromise, settingsPromise]);
+                
+                state.rules = rulesData;
+                state.stats = statsData;
+                state.settings = settingsData;
+
+                // 2. 渲染所有面板
+                renderAndAttachStats(state.stats, state.settings);
+                renderAndAttachSources(state.rules.sources);
+                renderAndAttachBlacklist(state.rules.ad_filter);
+                renderAndAttachWhitelist(state.rules.whitelist);
+                renderAndAttachRules(state.rules.distribution_rules);
+                
+            } catch (error) {
+                 console.error("初始化应用失败:", error);
+                 if (error.message !== "认证失败") {
+                    contentPanels.innerHTML = `<p class="text-red-500 p-6">加载规则失败: ${error.message}。请刷新页面重试。</p>`;
+                 }
+            }
+        }
+
         async function initializeApp() {
             // 1. 渲染导航栏
             mainNav.innerHTML = Object.entries(TABS).map(([id, name], index) => `
@@ -629,15 +743,11 @@
             
             // 2. 渲染内容面板 (带占位符)
             contentPanels.innerHTML = `
-                <div id="panel-status" class="hidden">
-                    <div class="flex justify-center items-center p-10"><div class="loader"></div></div>
-                </div>
-                <div id="panel-rules">${renderRulesPanel()}</div>
-                <div id="panel-sources" class="hidden">${renderSourcesPanel()}</div>
-                <div id="panel-blacklist" class="hidden">
-                    <div class="flex justify-center items-center p-10"><div class="loader"></div></div>
-                </div>
-                <div id="panel-whitelist" class="hidden">${renderWhitelistPanel()}</div>
+                <div id="panel-status"><div class="flex justify-center p-10"><div class="loader"></div></div></div>
+                <div id="panel-sources" class="hidden"><div class="flex justify-center p-10"><div class="loader"></div></div></div>
+                <div id="panel-rules" class="hidden"><div class="flex justify-center p-10"><div class="loader"></div></div></div>
+                <div id="panel-blacklist" class="hidden"><div class="flex justify-center p-10"><div class="loader"></div></div></div>
+                <div id="panel-whitelist" class="hidden"><div class="flex justify-center p-10"><div class="loader"></div></div></div>
             `;
             
             // 3. 绑定导航点击事件
@@ -672,13 +782,11 @@
                 });
             });
             
-            // 5. 加载真实数据
-            navigateToTab('status'); // 默认显示状态页
-            loadAndRenderStats();
-            loadAndRenderBlacklist();
-            // loadAndRenderWhitelist();
-            // loadAndRenderSources();
-            // loadAndRenderRules();
+            // 5. (新) v9.2：加载所有真实数据
+            await loadAllRulesAndRender();
+            
+            // 6. 默认显示状态页
+            navigateToTab('status'); 
         }
         
         // --- 启动 ---
