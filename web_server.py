@@ -7,7 +7,7 @@ import secrets
 from fastapi import FastAPI, HTTPException, Request, Depends 
 from fastapi.security import HTTPBasic, HTTPBasicCredentials 
 from fastapi.responses import HTMLResponse, FileResponse
-from typing import List, Optional, Dict, Any
+from typing import List, Optional, Dict, Any, Callable, Awaitable
 from pydantic import BaseModel 
 
 from models import (
@@ -29,6 +29,14 @@ rules_db: RulesDatabase = RulesDatabase()
 db_lock = asyncio.Lock() 
 
 app = FastAPI(title="TG Forwarder Web UI")
+
+# --- 全局状态提供者钩子 (新) ---
+# 这允许 ultimate_forwarder.py 注入实时状态（如 Bot 状态、运行时间）
+_stats_provider: Optional[Callable[[], Awaitable[Dict[str, Any]]]] = None
+
+def set_stats_provider(func):
+    global _stats_provider
+    _stats_provider = func
 
 security = HTTPBasic()
 WEB_UI_PASSWORD = "default_password_please_change" 
@@ -98,27 +106,44 @@ async def save_rules_to_db():
     async with db_lock:
         await _save_rules_to_db_internal() 
 
-# --- 统计 API (细化返回数据) ---
+# --- 统计 API (集成运行时状态) ---
 @app.get("/api/stats")
 async def get_stats(auth: bool = Depends(get_current_user)):
     try:
         db_stats = await database.get_db_stats()
+        
+        # 获取运行时状态 (Uptime, Bot Status)
+        runtime_stats = {}
+        if _stats_provider:
+            try:
+                if asyncio.iscoroutinefunction(_stats_provider):
+                    runtime_stats = await _stats_provider()
+                else:
+                    runtime_stats = _stats_provider()
+            except Exception as e:
+                logger.error(f"获取运行时状态失败: {e}")
+
         async with db_lock:
-            # 计算黑名单总数
             bl = rules_db.ad_filter
             bl_count = len(bl.keywords_substring or []) + len(bl.keywords_word or []) + len(bl.file_name_keywords or []) + len(bl.patterns or [])
             
+            cf_count = 0
+            if rules_db.content_filter and rules_db.content_filter.meaningless_words:
+                cf_count = len(rules_db.content_filter.meaningless_words)
+
+            rep_count = len(rules_db.replacements or {})
+
             rule_stats = {
                 "sources": len(rules_db.sources),
                 "distribution_rules": len(rules_db.distribution_rules),
-                
-                # 拆分统计
                 "whitelist_count": len(rules_db.whitelist.keywords or []),
                 "blacklist_count": bl_count,
-                "content_filter_count": len(rules_db.content_filter.meaningless_words if rules_db.content_filter else []),
-                "replacements_count": len(rules_db.replacements or {})
+                "content_filter_count": cf_count,
+                "replacements_count": rep_count
             }
-        return {**db_stats, **rule_stats}
+            
+        # 合并所有统计数据
+        return {**db_stats, **rule_stats, **runtime_stats}
     except Exception as e:
         logger.error(f"获取统计失败: {e}")
         return {}

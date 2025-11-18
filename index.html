@@ -16,6 +16,8 @@
             --success-bg: #dcfce7; --success-text: #15803d;
             --warning-bg: #fef3c7; --warning-text: #b45309;
             --error-bg: #fee2e2; --error-text: #b91c1c;
+            
+            /* Badge Colors */
             --badge-blue-bg: #eff6ff; --badge-blue-text: #1d4ed8;
             --badge-purple-bg: #f3e8ff; --badge-purple-text: #7e22ce;
             --badge-yellow-bg: #fefce8; --badge-yellow-text: #a16207;
@@ -29,6 +31,7 @@
             --success-bg: #14532d; --success-text: #4ade80;
             --warning-bg: #451a03; --warning-text: #fbbf24;
             --error-bg: #7f1d1d; --error-text: #f87171;
+            
             --badge-blue-bg: #172554; --badge-blue-text: #93c5fd;
             --badge-purple-bg: #3b0764; --badge-purple-text: #d8b4fe;
             --badge-yellow-bg: #422006; --badge-yellow-text: #facc15;
@@ -37,6 +40,7 @@
         }
         [x-cloak] { display: none !important; }
         body { background-color: var(--bg-body); color: var(--text-primary); font-family: 'Inter', sans-serif; transition: 0.3s; }
+        
         .app-card { background-color: var(--bg-card); border: 1px solid var(--border-color); border-radius: 0.75rem; box-shadow: 0 1px 3px rgba(0,0,0,0.1); transition: border-color 0.2s; }
         .app-input, .form-textarea { width: 100%; padding: 0.6rem 1rem; border-radius: 0.5rem; border: 1px solid var(--border-color); background-color: var(--bg-input); color: var(--text-primary); outline: none; transition: 0.2s; }
         .app-input:focus { border-color: var(--accent-color); box-shadow: 0 0 0 3px rgba(59, 130, 246, 0.15); }
@@ -53,9 +57,11 @@
         .badge-gray { background-color: var(--badge-gray-bg); color: var(--badge-gray-text); }
         
         .label-text { font-size: 0.75rem; font-weight: 600; color: var(--text-muted); text-transform: uppercase; margin-bottom: 0.25rem; display: block; }
+
         ::-webkit-scrollbar { width: 6px; height: 6px; }
         ::-webkit-scrollbar-track { background: transparent; }
         ::-webkit-scrollbar-thumb { background: var(--border-color); border-radius: 3px; }
+        
         .dark .bg-white { background-color: var(--bg-card) !important; }
         .dark .text-gray-500 { color: var(--text-secondary) !important; }
         .dark .text-gray-900 { color: var(--text-primary) !important; }
@@ -63,6 +69,7 @@
         .bg-blue-600 { background-color: var(--accent-color) !important; }
         .text-blue-600 { color: var(--accent-color) !important; }
         .login-overlay, .modal-overlay { background-color: rgba(0,0,0,0.75); backdrop-filter: blur(4px); }
+
         .draggable-source { cursor: move; } .dragging { opacity: 0.5; border: 2px dashed var(--accent-color); }
     </style>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/alpinejs/3.13.5/cdn.min.js" defer></script>
@@ -147,6 +154,7 @@
                     const payload = this.buildRulePayload(this.editRuleData);
                     try { const url = `/api/rules/update_single?name_to_replace=${encodeURIComponent(this.editRuleData.original_name)}`; await this.api(url, 'POST', payload); this.showEditModal = false; this.promptReload('规则已更新'); } catch(e) { this.showToast('更新失败', e.message, 'error'); }
                 },
+                
                 buildRulePayload(data) { return { name: data.name, target_identifier: data.target, topic_id: data.topic ? parseInt(data.topic) : null, all_keywords: this.textToArray(data.all_kw), any_keywords: this.textToArray(data.any_kw), file_name_patterns: this.textToArray(data.files) }; },
                 openEditModal(rule) { this.editRuleData = { name: rule.name, original_name: rule.name, target: rule.target_identifier, topic: rule.topic_id, all_kw: this.arrayToText(rule.all_keywords), any_kw: this.arrayToText(rule.any_keywords), files: this.arrayToText(rule.file_name_patterns) }; this.showEditModal = true; },
                 async removeRule(name) { if(!confirm('删除?')) return; try { await this.api('/api/rules/remove', 'POST', { name }); this.promptReload('已删除'); } catch(e) {} },
@@ -167,15 +175,12 @@
                 showToast(t, m='', type='success') { const id = Date.now(); this.toasts.push({id, title:t, message:m, type, visible:true}); setTimeout(()=>this.toasts.find(x=>x.id===id).visible=false, 3000); },
                 
                 getAvatar(source) {
-                    // 使用 cached_title 或 identifier
                     const name = source.cached_title || source.identifier || '?';
                     const initials = name.substring(0, 2).toUpperCase();
-                    
                     let hash = 0; for (let i = 0; i < initials.length; i++) hash = initials.charCodeAt(i) + ((hash << 5) - hash);
                     const colors = ['bg-blue-100 text-blue-600', 'bg-green-100 text-green-600', 'bg-purple-100 text-purple-600', 'bg-pink-100 text-pink-600', 'bg-yellow-100 text-yellow-600'];
                     const colorClass = colors[Math.abs(hash) % colors.length];
                     
-                    // 尝试构建头像 URL (仅当是用户名时)
                     let imgUrl = null;
                     let username = '';
                     const idStr = String(source.identifier);
@@ -224,18 +229,33 @@
         <div class="md:hidden border-b overflow-x-auto flex px-4 gap-4" style="border-color: var(--border-color);"><template x-for="tab in tabs" :key="tab.id"><button @click="currentTab=tab.id" :class="currentTab===tab.id?'border-b-2 border-blue-500 text-blue-500':'text-secondary'" class="whitespace-nowrap text-sm py-3 font-medium" x-text="tab.name"></button></template></div>
 
         <main class="flex-grow max-w-7xl mx-auto w-full px-4 py-8 space-y-6">
-            <!-- 状态 -->
+            <!-- 状态 (全部分离) -->
             <div x-show="currentTab==='status'&&!loadingData" class="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-4">
+                <!-- 基础统计 -->
                 <div class="app-card p-6"><dt class="text-xs font-bold text-secondary uppercase">数据库去重</dt><dd class="mt-2 text-3xl font-bold" x-text="stats.dedup_hashes||0"></dd></div>
                 <div class="app-card p-6"><dt class="text-xs font-bold text-secondary uppercase">活跃监控源</dt><dd class="mt-2 text-3xl font-bold text-blue-600" x-text="stats.sources||0"></dd></div>
                 <div class="app-card p-6"><dt class="text-xs font-bold text-secondary uppercase">分发规则</dt><dd class="mt-2 text-3xl font-bold text-purple-600" x-text="stats.distribution_rules||0"></dd></div>
-                <!-- 显示替换+过滤总数 -->
-                <div class="app-card p-6"><dt class="text-xs font-bold text-secondary uppercase">过滤/替换规则</dt><dd class="mt-2 text-3xl font-bold text-pink-500" x-text="(stats.replacements_count||0) + (stats.content_filter_count||0)"></dd></div>
-                <div class="app-card p-6"><dt class="text-xs font-bold text-secondary uppercase">黑/白名单词条</dt><dd class="mt-2 text-3xl font-bold text-secondary" x-text="(stats.blacklist_count||0)+(stats.whitelist_count||0)"></dd></div>
                 <div class="app-card p-6"><dt class="text-xs font-bold text-secondary uppercase">失效链接</dt><dd class="mt-2 text-3xl font-bold text-yellow-600" x-text="stats.invalid_links||0"></dd></div>
+                
+                <!-- 分离后的规则统计 -->
+                <div class="app-card p-6"><dt class="text-xs font-bold text-secondary uppercase">黑名单词条</dt><dd class="mt-2 text-3xl font-bold text-red-600" x-text="stats.blacklist_count||0"></dd></div>
+                <div class="app-card p-6"><dt class="text-xs font-bold text-secondary uppercase">白名单词条</dt><dd class="mt-2 text-3xl font-bold text-green-600" x-text="stats.whitelist_count||0"></dd></div>
+                <div class="app-card p-6"><dt class="text-xs font-bold text-secondary uppercase">内容过滤词</dt><dd class="mt-2 text-3xl font-bold text-indigo-500" x-text="stats.content_filter_count||0"></dd></div>
+                <div class="app-card p-6"><dt class="text-xs font-bold text-secondary uppercase">文本替换规则</dt><dd class="mt-2 text-3xl font-bold text-pink-500" x-text="stats.replacements_count||0"></dd></div>
+
+                <!-- 新增：程序状态 -->
+                <div class="app-card p-6 col-span-1 md:col-span-2 lg:col-span-1">
+                    <dt class="text-xs font-bold text-secondary uppercase">Bot 状态</dt>
+                    <dd class="mt-2 text-lg font-bold text-gray-800 dark:text-gray-200 truncate" x-text="stats.bot_status || '未启用'"></dd>
+                    <div class="text-xs text-muted mt-1" x-text="(stats.user_account_count||0) + ' 个用户账号在线'"></div>
+                </div>
+                <div class="app-card p-6 col-span-1 md:col-span-2 lg:col-span-1">
+                    <dt class="text-xs font-bold text-secondary uppercase">系统运行时间</dt>
+                    <dd class="mt-2 text-xl font-bold font-mono text-gray-800 dark:text-gray-200" x-text="stats.uptime || '0s'"></dd>
+                </div>
             </div>
 
-            <!-- 监控源 (智能标题+头像) -->
+            <!-- 监控源 (维持现状) -->
             <div x-show="currentTab==='sources'&&!loadingData">
                 <div class="app-card p-6 mb-6 flex gap-2"><input x-model="newSource" @keyup.enter="addSource" placeholder="@Channel 或 Link" class="app-input md:w-64"><button @click="addSource" class="btn-primary">添加源</button></div>
                 <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
@@ -248,8 +268,8 @@
                             <div class="overflow-hidden flex-1">
                                 <div class="font-bold text-sm truncate" x-text="getAvatar(s).displayName"></div>
                                 <div class="flex items-center gap-2 mt-1">
-                                    <!-- 显示原始ID -->
-                                    <div class="text-xs font-mono text-secondary truncate" x-text="s.resolved_id || 'Pending...'"></div>
+                                    <div class="text-xs font-mono text-secondary truncate" x-text="'ID: ' + (s.resolved_id || 'Pending...')"></div>
+                                    <span x-show="!s.resolved_id" class="w-2 h-2 rounded-full bg-yellow-500 animate-pulse"></span>
                                 </div>
                             </div>
                             <button @click="removeSource(s.identifier)" class="absolute top-2 right-2 opacity-0 group-hover:opacity-100 transition-opacity text-red-500 hover:bg-red-50 dark:hover:bg-red-900/20 p-1 rounded"><svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16"></path></svg></button>
@@ -302,5 +322,6 @@
             <div class="flex justify-end gap-2"><button @click="showEditModal = false" class="px-4 py-2 rounded border hover:bg-gray-100 dark:hover:bg-zinc-800" style="border-color: var(--border-color)">取消</button><button @click="saveEditedRule" class="btn-primary">保存修改</button></div>
         </div>
     </div>
+
 </body>
 </html>
