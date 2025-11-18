@@ -50,7 +50,8 @@
         }
         /* Range slider styling */
         input[type="range"] {
-            -webkit-appearance: none;
+            -webkit-appearance: none; /* 必须保留：用于 Chrome/Safari/Edge 移除默认样式 */
+            appearance: none;         /* 修复：添加标准属性，符合 CSS 规范 */
             background: transparent; 
         }
         input[type="range"]::-webkit-slider-thumb {
