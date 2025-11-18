@@ -1,11 +1,8 @@
 # models.py
-# (新) v8.5：这是一个新文件，用于解决循环导入 (Circular Import) 错误。
-# 它包含了所有 Pydantic 数据模型，并且不依赖于任何其他项目文件。
-
 import logging
 import re
-from typing import List, Optional, Tuple, Dict, Set, Any, Union 
-from pydantic import BaseModel, Field, HttpUrl, field_validator, model_validator
+from typing import List, Optional, Dict, Any, Union 
+from pydantic import BaseModel, Field, field_validator, model_validator
 
 from loguru import logger
 
@@ -44,7 +41,6 @@ class AccountConfig(BaseModel):
         if isinstance(data, dict):
             if not data.get('session_name'): 
                 raise ValueError("必须提供 session_name (会话文件)。")
-            
             if data.get('session_name'):
                 name = data['session_name']
                 if '/' in name or '\\' in name:
@@ -56,98 +52,94 @@ class SourceConfig(BaseModel):
     check_replies: bool = False
     replies_limit: int = 10
     forward_new_only: Optional[bool] = None
-    # (修复) v9.3：移除 exclude=True，允许 API 将解析后的 ID 发送给前端
     resolved_id: Optional[int] = None 
 
 class TargetDistributionRule(BaseModel):
     name: str 
-    all_keywords: List[str] = Field(default_factory=list)
-    any_keywords: List[str] = Field(default_factory=list)
-    file_types: List[str] = Field(default_factory=list) 
+    all_keywords: List[str] = Field(default_factory=list) # AND 关系
+    any_keywords: List[str] = Field(default_factory=list) # OR 关系
+    file_types: List[str] = Field(default_factory=list)   # MIME types
     file_name_patterns: List[str] = Field(default_factory=list) 
 
     target_identifier: Union[int, str]
     topic_id: Optional[int] = None 
     
-    # (修复) v9.3：移除 exclude=True，允许前端查看解析后的目标 ID
     resolved_target_id: Optional[int] = None
     
     def check(self, text: str, media: Any) -> bool:
-        # (新) v8.5：我们将 check 逻辑移到了模型内部，
-        # 因为它不依赖于 forwarder_core 的其他部分。
-        
         text_lower = text.lower() if text else ""
         
-        # 1. 检查 [AND] all_keywords
+        # 1. 检查 [AND] all_keywords (必须全部包含)
         if self.all_keywords:
             if not all(kw.lower() in text_lower for kw in self.all_keywords):
                 return False 
         
-        # 2. 检查 [OR] 条件组
-        or_group_matched = False
-        
+        # 2. 检查 [OR] 条件组 (满足任一即可)
+        # 如果没有 OR 条件，且通过了 AND 条件，则视为匹配
+        has_or_conditions = bool(self.any_keywords or self.file_types or self.file_name_patterns)
+        if not has_or_conditions:
+            return True
+
+        # 2.1 检查 any_keywords
         if self.any_keywords:
             if any(keyword.lower() in text_lower for keyword in self.any_keywords):
-                or_group_matched = True
+                return True
         
-        # (新) v8.5：我们需要导入 MessageMediaDocument
+        # 导入 Document 类型以检查文件
         try:
             from telethon.tl.types import MessageMediaDocument
         except ImportError:
             MessageMediaDocument = None
 
-        if MessageMediaDocument and not or_group_matched and media and isinstance(media, MessageMediaDocument):
+        if MessageMediaDocument and media and isinstance(media, MessageMediaDocument):
             doc = media.document
             if doc:
+                # 2.2 检查 file_types (MIME)
                 if self.file_types and doc.mime_type:
                     if any(ft.lower() in doc.mime_type.lower() for ft in self.file_types):
-                        or_group_matched = True
+                        return True
 
-                if not or_group_matched and self.file_name_patterns:
+                # 2.3 检查 file_name_patterns
+                if self.file_name_patterns:
                     file_name = next((attr.file_name for attr in doc.attributes if hasattr(attr, 'file_name')), None)
                     if file_name:
                         for pattern_str in self.file_name_patterns:
                             try:
                                 pattern = re.compile(re.escape(pattern_str).replace(r'\*', r'.*'), re.IGNORECASE)
                                 if re.search(pattern, file_name):
-                                    or_group_matched = True
-                                    break 
+                                    return True
                             except re.error:
                                 logger.warning(f"规则 '{self.name}' 中的文件名模式 '{pattern_str}' 无效")
         
-        # 3. 最终逻辑判断
-        has_all_keywords = bool(self.all_keywords)
-        has_or_group = bool(self.any_keywords or self.file_types or self.file_name_patterns)
-
-        if has_all_keywords and not has_or_group:
-            return True
-        elif not has_all_keywords and has_or_group:
-            return or_group_matched
-        elif has_all_keywords and has_or_group:
-            return or_group_matched
-        else:
-            return False
+        return False
 
 class TargetConfig(BaseModel):
     default_target: Union[int, str]
     default_topic_id: Optional[int] = None 
     distribution_rules: List[TargetDistributionRule] = Field(default_factory=list)
-    
-    # (修复) v9.3：移除 exclude=True
     resolved_default_target_id: Optional[int] = None
 
+# --- (新) 动态系统设置 ---
+class SystemSettings(BaseModel):
+    """可以从 Web UI 动态修改的系统设置"""
+    dedup_retention_days: int = 30
+    forwarding_mode: str = "copy"  # forward / copy
+    forward_new_only: bool = True
+    mark_as_read: bool = False         # 源频道已读
+    mark_target_as_read: bool = False  # 目标频道已读
+    
+    @field_validator('forwarding_mode')
+    def check_mode(cls, v):
+        if v not in ['forward', 'copy']:
+            raise ValueError("mode 必须是 'forward' 或 'copy'")
+        return v
 
+# --- 旧的静态配置模型 (用于读取 config.yaml) ---
 class ForwardingConfig(BaseModel):
     mode: str = "forward" 
     forward_new_only: bool = True 
     mark_as_read: bool = False
     mark_target_as_read: bool = False 
-    
-    @field_validator('mode')
-    def check_mode(cls, v):
-        if v not in ['forward', 'copy']:
-            raise ValueError("forwarding.mode 必须是 'forward' 或 'copy'")
-        return v
 
 class AdFilterConfig(BaseModel):
     enable: bool = True
@@ -167,9 +159,7 @@ class WhitelistConfig(BaseModel):
 
 class DeduplicationConfig(BaseModel):
     enable: bool = True
-    # (新) v9.0：这个 db_path 字段已不再使用，但为了
-    # 兼容从旧 config.yaml 迁移，我们暂时保留它
-    db_path: Optional[str] = "/app/data/dedup_db.json" 
+    db_path: Optional[str] = None
 
 class LinkExtractionConfig(BaseModel):
     check_hyperlinks: bool = True
@@ -179,31 +169,11 @@ class LinkCheckerConfig(BaseModel):
     enabled: bool = False
     mode: str = "log" 
     schedule: str = "0 3 * * *" 
-    
-    @field_validator('mode')
-    def check_mode(cls, v):
-        if v not in ['log', 'edit', 'delete']:
-            raise ValueError("link_checker.mode 必须是 'log', 'edit', 或 'delete'")
-        return v
 
 class BotServiceConfig(BaseModel):
     enabled: bool = False
     bot_token: str = "YOUR_BOT_TOKEN_HERE" 
-    admin_user_ids: List[int] 
-    
-    @field_validator('bot_token', mode='before')
-    def check_bot_token(cls, v, info: Any):
-        values = info.data
-        if values.get('enabled') and (not v or v == "YOUR_BOT_TOKEN_HERE"):
-            raise ValueError("Bot 服务已启用，但 bot_token 未设置。")
-        return v
-    
-    @field_validator('admin_user_ids', mode='before')
-    def check_admin_ids(cls, v, info: Any):
-        values = info.data
-        if values.get('enabled') and (not v):
-            raise ValueError("Bot 服务已启用，但 admin_user_ids 列表为空。")
-        return v
+    admin_user_ids: List[int] = Field(default_factory=list)
 
 class Config(BaseModel):
     docker_container_name: Optional[str] = "tg-forwarder"
@@ -213,8 +183,6 @@ class Config(BaseModel):
     proxy: Optional[ProxyConfig] = Field(default_factory=ProxyConfig)
     accounts: List[AccountConfig]
     
-    # (新) v8.4：这些规则仅在*第一次*启动时用于迁移
-    # 之后，它们将被 rules_db.json 覆盖
     sources: List[SourceConfig]
     targets: TargetConfig
     forwarding: ForwardingConfig = Field(default_factory=ForwardingConfig)
@@ -228,9 +196,11 @@ class Config(BaseModel):
     link_checker: Optional[LinkCheckerConfig] = Field(default_factory=LinkCheckerConfig)
     bot_service: Optional[BotServiceConfig] = Field(default_factory=BotServiceConfig) 
 
-# (新) v8.5：Web UI 数据库的模型
+# --- Web UI 数据库 ---
 class RulesDatabase(BaseModel):
     sources: List[SourceConfig] = Field(default_factory=list)
     distribution_rules: List[TargetDistributionRule] = Field(default_factory=list)
     ad_filter: AdFilterConfig = Field(default_factory=AdFilterConfig)
     whitelist: WhitelistConfig = Field(default_factory=WhitelistConfig)
+    # (新) 包含可动态修改的设置
+    settings: SystemSettings = Field(default_factory=SystemSettings)
