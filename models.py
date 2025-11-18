@@ -3,6 +3,7 @@
 # 它包含了所有 Pydantic 数据模型，并且不依赖于任何其他项目文件。
 
 import logging
+import re
 from typing import List, Optional, Tuple, Dict, Set, Any, Union 
 from pydantic import BaseModel, Field, HttpUrl, field_validator, model_validator
 
@@ -91,8 +92,6 @@ class TargetDistributionRule(BaseModel):
         try:
             from telethon.tl.types import MessageMediaDocument
         except ImportError:
-            # 在一个纯 Pydantic 的环境中，我们可能没有 telethon
-            # 我们可以安全地跳过这个检查
             MessageMediaDocument = None
 
         if MessageMediaDocument and not or_group_matched and media and isinstance(media, MessageMediaDocument):
@@ -105,8 +104,6 @@ class TargetDistributionRule(BaseModel):
                 if not or_group_matched and self.file_name_patterns:
                     file_name = next((attr.file_name for attr in doc.attributes if hasattr(attr, 'file_name')), None)
                     if file_name:
-                        # (新) v8.5：导入 re
-                        import re
                         for pattern_str in self.file_name_patterns:
                             try:
                                 pattern = re.compile(re.escape(pattern_str).replace(r'\*', r'.*'), re.IGNORECASE)
@@ -167,6 +164,8 @@ class WhitelistConfig(BaseModel):
 
 class DeduplicationConfig(BaseModel):
     enable: bool = True
+    # (新) v9.0：这个 db_path 字段已不再使用，但为了
+    # 兼容从旧 config.yaml 迁移，我们暂时保留它
     db_path: Optional[str] = "/app/data/dedup_db.json" 
 
 class LinkExtractionConfig(BaseModel):
@@ -211,6 +210,8 @@ class Config(BaseModel):
     proxy: Optional[ProxyConfig] = Field(default_factory=ProxyConfig)
     accounts: List[AccountConfig]
     
+    # (新) v8.4：这些规则仅在*第一次*启动时用于迁移
+    # 之后，它们将被 rules_db.json 覆盖
     sources: List[SourceConfig]
     targets: TargetConfig
     forwarding: ForwardingConfig = Field(default_factory=ForwardingConfig)
