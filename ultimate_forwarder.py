@@ -15,7 +15,7 @@ import database
 from apscheduler.schedulers.asyncio import AsyncIOScheduler 
 from apscheduler.triggers.cron import CronTrigger
 
-from models import Config, AccountConfig
+from models import Config, AccountConfig, SourceConfig
 from forwarder_core import UltimateForwarder
 from link_checker import LinkChecker
 from bot_service import BotService 
@@ -181,12 +181,12 @@ async def initialize_bot(config: Config):
         bot_client = None
 
 
-async def resolve_identifiers(client: TelegramClient, config: Config) -> List[int]:
-    """将频道用户名/链接列表解析为数字 ID 列表"""
+async def resolve_identifiers(client: TelegramClient, source_list: List[SourceConfig], config_desc: str) -> List[int]:
+    """(新) v9.2.1：将频道用户名/链接列表解析为数字 ID 列表"""
     resolved_ids = []
     
-    logger.info("正在解析所有源频道/群组...")
-    for s_config in config.sources:
+    logger.info(f"正在解析 {config_desc} 中的 {len(source_list)} 个源频道/群组...")
+    for s_config in source_list:
         identifier = s_config.identifier
         try:
             entity = await client.get_entity(identifier)
@@ -200,28 +200,18 @@ async def resolve_identifiers(client: TelegramClient, config: Config) -> List[in
                  if not str(resolved_id).startswith("-"):
                     resolved_id = int(f"-{resolved_id}")
             
-            logger.info(f"源 '{identifier}' -> 解析为 ID: {resolved_id}")
+            logger.info(f"源 '{identifier}' ({config_desc}) -> 解析为 ID: {resolved_id}")
             s_config.resolved_id = resolved_id 
             resolved_ids.append(resolved_id)
                 
         except ValueError:
-            logger.error(f"❌ 无法解析源: '{identifier}'。它似乎不是一个有效的频道/群组/用户。")
+            logger.error(f"❌ 无法解析源: '{identifier}' ({config_desc})。它似乎不是一个有效的频道/群组/用户。")
         except errors.ChannelPrivateError:
-            logger.error(f"❌ 无法访问源: '{identifier}'。你的账号未加入该私有频道。")
+            logger.error(f"❌ 无法访问源: '{identifier}' ({config_desc})。你的账号未加入该私有频道。")
         except Exception as e:
-            logger.error(f"❌ 解析源 '{identifier}' 时出错: {e}")
+            logger.error(f"❌ 解析源 '{identifier}' ({config_desc}) 时出错: {e}")
     
     return list(set(resolved_ids))
-
-# (新) v9.1：创建动态的清理任务
-async def run_db_prune_job():
-    """运行数据库清理任务，使用来自数据库的设置"""
-    try:
-        days = await database.get_dedup_retention()
-        logger.info(f"正在运行数据库清理任务 (保留 {days} 天)...")
-        await database.prune_old_hashes(days)
-    except Exception as e:
-        logger.error(f"数据库清理任务失败: {e}")
 
 
 async def run_forwarder(config: Config):
@@ -232,13 +222,22 @@ async def run_forwarder(config: Config):
     
     main_client = clients[0] 
     
-    resolved_source_ids = await resolve_identifiers(main_client, config) 
+    # (新) v9.2.1：在 v10.0 中，我们将把这个逻辑也移到 rules_db
+    # (旧) 1. 解析 config.yaml 中的源 (用于历史记录)
+    resolved_source_ids = await resolve_identifiers(main_client, config.sources, "config.yaml") 
     
     if not resolved_source_ids:
         logger.warning("⚠️ 无法从 config.yaml 解析任何源频道。")
         
     logger.info(f"✅ 成功解析 {len(resolved_source_ids)} 个源 (来自 config.yaml)。")
     
+    # (新) v8.4：加载 Web UI 规则 (并触发迁移)
+    await web_server.load_rules_from_db(config)
+    
+    # (新) v9.2.1：(Bug 修复) 2. 解析 rules_db.json 中的源
+    # 这是让 Web UI 显示“已解析”的关键
+    await resolve_identifiers(main_client, web_server.rules_db.sources, "rules_db.json")
+
     forwarder = UltimateForwarder(config, clients)
     
     await forwarder.resolve_targets()
@@ -300,9 +299,8 @@ async def run_forwarder(config: Config):
         except ValueError as e:
             logger.warning(f"⚠️ 链接检测器 cron 表达式 '{config.link_checker.schedule}' 无效，定时任务未启动: {e}")
         
-    # (新) v9.1：任务 2: 数据库清理
     try:
-        prune_trigger = CronTrigger.from_crontab("5 4 * * *") # 每天凌晨 4:05 运行
+        prune_trigger = CronTrigger.from_crontab("5 4 * * *") 
         scheduler.add_job(run_db_prune_job, prune_trigger, name="prune_db_job")
         logger.info(f"✅ 数据库清理定时任务已启动 (Cron: 5 4 * * *)。")
     except Exception as e:
@@ -321,10 +319,10 @@ async def run_forwarder(config: Config):
     uvicorn_config = uvicorn.Config(web_server.app, host="0.0.0.0", port=8080, log_level="info")
     server = uvicorn.Server(uvicorn_config)
     
-    await web_server.load_rules_from_db(config)
+    # (新) v8.4：`load_rules_from_db` 已在上面调用过
 
     logger.info(f"🚀 终极转发器已启动。正在监听所有频道...")
-    logger.info(f"🚀 Web UI (v9.1) 正在 http://0.0.0.0:8080 上启动。")
+    logger.info(f"🚀 Web UI (v9.2) 正在 http://0.0.0.0:8080 上启动。")
     
     tasks_to_run = [
         main_client.run_until_disconnected(),
@@ -422,6 +420,9 @@ async def reload_config_func():
             setup_logging(new_config.logging_level.app, new_config.logging_level.telethon)
         
         await web_server.load_rules_from_db(new_config)
+        
+        # (新) v9.2.1：(Bug 修复) 3. 重载时也必须解析 rules_db.json
+        await resolve_identifiers(clients[0], web_server.rules_db.sources, "rules_db.json")
         
         if forwarder:
             await forwarder.reload(new_config) 
