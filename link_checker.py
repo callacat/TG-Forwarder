@@ -9,10 +9,10 @@ from telethon.errors import RPCError
 from bs4 import BeautifulSoup
 import re
 from typing import List, Dict, Any
-from forwarder_core import Config # 复用配置模型
+# (新) v8.5：从 models.py 导入
+from models import Config
 from datetime import datetime, timezone 
 
-# (新) v9.0：导入 database
 import database
 
 logger = logging.getLogger(__name__)
@@ -37,11 +37,7 @@ class LinkChecker:
             '115.com', 'pan.baidu.com', 'cloud.189.cn', 'drive.uc.cn'
         ]
         
-        # (新) v9.0：移除 db_path 和 link_db
-        
         logger.info("链接检测器配置已重载。")
-
-    # (新) v9.0：移除 _save_db_data, _load_db, _save_db
     
     def _extract_links(self, message_text: str) -> List[str]:
         """从消息文本中提取网盘链接"""
@@ -93,7 +89,6 @@ class LinkChecker:
         logger.info(f"检测模式: {self.checker_config.mode}")
         logger.info(f"目标频道: {self.target_channel_identifier} (ID: {self.target_channel_id})")
         
-        # (新) v9.0：从数据库获取进度
         last_processed_id = await database.get_link_checker_progress()
         logger.info(f"从消息 ID {last_processed_id} 开始扫描频道...")
         
@@ -106,20 +101,17 @@ class LinkChecker:
                 links = self._extract_links(message.text)
                 if links:
                     for link in links:
-                        # (新) v9.0：将链接添加到数据库
                         await database.add_pending_link(link, message.id)
-                        new_links_found += 1 # (新) 修复：这里可能不准，但只是个日志
+                        new_links_found += 1 
                 
                 last_processed_id = max(last_processed_id, message.id)
 
-            # (新) v9.0：保存进度到数据库
             await database.set_link_checker_progress(last_processed_id)
             logger.info(f"频道扫描完成，发现 {new_links_found} 个新链接（或已存在）。")
 
         except Exception as e:
             logger.error(f"扫描频道 {self.target_channel_id} 失败: {e}")
 
-        # (新) v9.0：从数据库获取待检测链接
         links_to_check = await database.get_links_to_check()
         logger.info(f"总共有 {len(links_to_check)} 个链接需要检测...")
 
@@ -129,10 +121,8 @@ class LinkChecker:
             is_valid = await self._check_link_validity(link)
             
             if is_valid:
-                # (新) v9.0：更新数据库
                 await database.update_link_status(link, 'valid')
             else:
-                # (新) v9.0：更新数据库
                 await database.update_link_status(link, 'invalid')
                 logger.warning(f"检测到失效链接: {link} (Message ID: {msg_id})")
                 
@@ -173,5 +163,4 @@ class LinkChecker:
             except RPCError as e:
                 logger.error(f"批量删除消息失败: {e}")
 
-        # (新) v9.0：移除 _save_db()
         logger.info("--- 失效链接检测器运行完毕 ---")

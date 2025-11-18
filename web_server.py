@@ -10,21 +10,17 @@ from fastapi.responses import HTMLResponse, JSONResponse, FileResponse
 from pydantic import BaseModel, Field
 from typing import List, Optional, Dict, Any
 
-from forwarder_core import (
-    Config, # (新) v8.4：导入主 Config
+# (新) v8.5：从 models.py 导入，解决循环引用
+from models import (
+    Config, 
     SourceConfig, 
     TargetDistributionRule, 
     AdFilterConfig, 
-    WhitelistConfig
+    WhitelistConfig,
+    RulesDatabase
 )
 
 logger = logging.getLogger(__name__)
-
-class RulesDatabase(BaseModel):
-    sources: List[SourceConfig] = Field(default_factory=list)
-    distribution_rules: List[TargetDistributionRule] = Field(default_factory=list)
-    ad_filter: AdFilterConfig = Field(default_factory=AdFilterConfig)
-    whitelist: WhitelistConfig = Field(default_factory=WhitelistConfig)
 
 # --- 全局变量 ---
 RULES_DB_PATH = "/app/data/rules_db.json"
@@ -34,7 +30,7 @@ db_lock = asyncio.Lock()
 app = FastAPI(
     title="TG Forwarder Web UI",
     description="一个用于动态管理 TG-Forwarder 规则的 Web 面板。",
-    version="8.4",
+    version="8.5",
     docs_url=None, # 禁用 /docs
     redoc_url=None # 禁用 /redoc
 )
@@ -121,7 +117,6 @@ async def get_all_rules(auth: bool = Depends(get_current_user)):
         return rules_db
 
 # --- 源 (Sources) API ---
-# (新) v8.4：我们现在也需要一个 API 来获取*当前*的源（用于 v9.1 状态页面）
 @app.get("/api/sources", response_model=List[SourceConfig])
 async def get_sources(auth: bool = Depends(get_current_user)):
     """获取所有监控源规则"""
@@ -154,7 +149,6 @@ async def remove_source(data: Dict[str, Any], auth: bool = Depends(get_current_u
     return {"status": "success", "message": f"源 {identifier} 已移除。"}
 
 # --- 转发规则 (Distribution Rules) API ---
-# (新) v8.4：获取规则
 @app.get("/api/rules/list", response_model=List[TargetDistributionRule])
 async def get_distribution_rules(auth: bool = Depends(get_current_user)):
     """获取所有转发规则"""

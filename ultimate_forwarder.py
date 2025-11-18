@@ -15,7 +15,9 @@ import database
 from apscheduler.schedulers.asyncio import AsyncIOScheduler 
 from apscheduler.triggers.cron import CronTrigger
 
-from forwarder_core import UltimateForwarder, Config, AccountConfig
+# (新) v8.5：从 models.py 导入
+from models import Config, AccountConfig
+from forwarder_core import UltimateForwarder
 from link_checker import LinkChecker
 from bot_service import BotService 
 import web_server
@@ -221,17 +223,10 @@ async def run_forwarder(config: Config):
     
     main_client = clients[0] 
     
-    # (新) v8.4：在 v9.0 中，`forwarder_core` 不再依赖 `config.sources`
-    # 它将从 `rules_db.json` 读取。
-    # `resolve_identifiers` 仍然用于（旧的）`config.sources` 以支持
-    # (1) 历史记录 (2) 监听器（如果 rules_db 为空）
-    # 在 v10.0 中，我们将把这个逻辑也移到 `rules_db`
     resolved_source_ids = await resolve_identifiers(main_client, config) 
     
     if not resolved_source_ids:
         logger.warning("⚠️ 无法从 config.yaml 解析任何源频道。")
-        # (新) v8.4：我们不再退出，因为规则可能在 rules_db.json 中
-        # return
         
     logger.info(f"✅ 成功解析 {len(resolved_source_ids)} 个源 (来自 config.yaml)。")
     
@@ -239,10 +234,7 @@ async def run_forwarder(config: Config):
     
     await forwarder.resolve_targets()
     
-    # 1. 注册新消息处理器 (用于非相册消息)
     logger.info("注册新消息 (NewMessage) 事件处理器...")
-    # (新) v8.4：我们必须监听*所有*会话中的频道，因为
-    # 我们无法预知 rules_db.json 中将添加哪些频道。
     @main_client.on(events.NewMessage())
     async def handle_new_message(event):
         
@@ -259,7 +251,6 @@ async def run_forwarder(config: Config):
         
     logger.info("✅ NewMessage 事件处理器已注册 (监听所有)。")
 
-    # 2. 注册相册 (Album) 处理器
     logger.info("注册相册 (Album) 事件处理器...")
     @main_client.on(events.Album())
     async def handle_album(event):
@@ -284,23 +275,19 @@ async def run_forwarder(config: Config):
 
     logger.info("✅ Album 事件处理器已注册 (监听所有)。")
 
-    # 3. 启动 Bot 服务
     logger.info("正在启动 Bot 服务...")
     await initialize_bot(config)
 
-    # 4. 启动定时任务 (Link Checker & v9.0 DB Prune)
     if config.link_checker and config.link_checker.enabled:
         if not link_checker: 
              link_checker = LinkChecker(config, main_client)
         
         try:
             scheduler = AsyncIOScheduler(timezone="UTC")
-            # 任务 1: 链接检测
             trigger = CronTrigger.from_crontab(config.link_checker.schedule)
             scheduler.add_job(link_checker.run, trigger, name="run_link_checker_job")
             logger.info(f"✅ 链接检测器定时任务已启动 (Cron: {config.link_checker.schedule} UTC)。")
 
-            # (新) v9.0：任务 2: 数据库清理
             prune_trigger = CronTrigger.from_crontab("5 4 * * *")
             scheduler.add_job(database.prune_old_hashes, prune_trigger, name="prune_db_job", args=[30])
             logger.info(f"✅ 数据库清理定时任务已启动 (Cron: 5 4 * * *)。")
@@ -313,7 +300,6 @@ async def run_forwarder(config: Config):
             logger.error(f"❌ 链接检测器启动失败: {e_v4}")
 
 
-    # 5. (可选) 处理历史消息
     if not config.forwarding.forward_new_only:
         logger.info("配置了 `forward_new_only: false`，开始扫描历史消息 (这可能需要一些时间)...")
         await forwarder.process_history(resolved_source_ids)
@@ -321,16 +307,13 @@ async def run_forwarder(config: Config):
     else:
         logger.info("`forward_new_only: true`，跳过历史消息扫描。")
 
-    # (新) v8.0：准备 Web 服务器任务
     uvicorn_config = uvicorn.Config(web_server.app, host="0.0.0.0", port=8080, log_level="info")
     server = uvicorn.Server(uvicorn_config)
     
-    # (新) v8.4：传入 config 以触发迁移
     await web_server.load_rules_from_db(config)
 
-    # 6. 运行并等待
     logger.info(f"🚀 终极转发器已启动。正在监听所有频道...")
-    logger.info(f"🚀 Web UI (v8.4) 正在 http://0.0.0.0:8080 上启动。")
+    logger.info(f"🚀 Web UI (v8.5) 正在 http://0.0.0.0:8080 上启动。")
     
     tasks_to_run = [
         main_client.run_until_disconnected(),
@@ -427,13 +410,9 @@ async def reload_config_func():
         if new_config.logging_level:
             setup_logging(new_config.logging_level.app, new_config.logging_level.telethon)
         
-        # (新) v8.4：同时重载 Web UI 的规则 (并传入 config 以防万一)
         await web_server.load_rules_from_db(new_config)
         
-        # (新) v8.4：重载转发器
         if forwarder:
-            # `forwarder` 在 v9.0 中不再需要 `new_config`
-            # 它会从 `web_server.rules_db` 内存中获取新规则
             await forwarder.reload(new_config) 
 
         if link_checker:
@@ -476,7 +455,6 @@ async def main():
     else:
         setup_logging() 
 
-    # (新) v8.1：将密码注入 Web 服务器
     if config.web_ui and config.web_ui.password != "default_password_please_change":
         web_server.set_web_ui_password(config.web_ui.password)
     else:
