@@ -22,7 +22,8 @@ import web_server
 from typing import List, Optional, Tuple, Dict, Set, Any, Union 
 
 # (新) v8.5：从 models.py 导入
-from models import Config
+# 修复：添加 SourceConfig 导入，解决 NameError
+from models import Config, SourceConfig
 
 from loguru import logger
 
