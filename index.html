@@ -5,12 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>TG Forwarder 配置面板</title>
     <script src="https://cdn.tailwindcss.com"></script>
-    <script>
-        // (新) v8.3：Tailwind 暗黑模式配置
-        tailwind.config = {
-            darkMode: 'class' // 启用 'class' 模式 (dark:...)
-        }
-    </script>
+    <!-- (新) v8.3.1 修复：移除了导致 "tailwind is not defined" 错误的 'tailwind.config' 脚本块 -->
     <style>
         /* 简单的加载动画 */
         @keyframes spin {
@@ -539,7 +534,8 @@
         setTheme(savedTheme);
         
         // 2. 检查登录
-        document.addEventListener('DOMContentLoaded', checkSavedAuth);
+        // (新) v8.3.1 修复：因为脚本在 body 末尾，DOM 已加载，直接调用即可
+        checkSavedAuth();
 
     </script>
 
