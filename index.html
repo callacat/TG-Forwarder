@@ -31,6 +31,24 @@
         .panel {
             transition: background-color 0.3s ease;
         }
+        /* (新) v9.1：滑块样式 */
+        input[type="range"]::-webkit-slider-thumb {
+            -webkit-appearance: none;
+            appearance: none;
+            width: 20px;
+            height: 20px;
+            background: #3b82f6;
+            border-radius: 50%;
+            cursor: pointer;
+            margin-top: -6px; /* 居中 */
+        }
+        input[type="range"]::-moz-range-thumb {
+            width: 20px;
+            height: 20px;
+            background: #3b82f6;
+            border-radius: 50%;
+            cursor: pointer;
+        }
     </style>
 </head>
 <body class="bg-gray-100 text-gray-800 dark:bg-gray-900 dark:text-gray-200 font-sans antialiased">
@@ -218,7 +236,7 @@
                 setLoading(false);
                 hideLoginModal();
                 localStorage.setItem('tgf_password', password); 
-                initializeApp(); // 启动主应用
+                initializeApp(); 
             } catch (error) {
                 setLoading(false);
                 AUTH_HEADER = ""; 
@@ -236,10 +254,10 @@
         async function checkSavedAuth() {
             const savedPassword = localStorage.getItem('tgf_password');
             if (savedPassword) {
-                passwordInput.value = savedPassword; // 预填充
+                passwordInput.value = savedPassword; 
                 await handleLogin(savedPassword);
             } else {
-                showLoginModal(); // 没有保存的密码，显示登录框
+                showLoginModal(); 
             }
         }
 
@@ -285,9 +303,10 @@
         const contentPanels = document.getElementById('content-panels');
         const reloadNotice = document.getElementById('reload-notice');
         
-        let state = { rules: {} }; // 全局状态
+        let state = { rules: {}, stats: {} }; // (新) v9.1：添加 stats
         
         const TABS = {
+            'status': "状态 & 设置", // (新) v9.1
             'rules': "转发规则",
             'sources': "监控源",
             'blacklist': "黑名单",
@@ -307,16 +326,99 @@
             if (!text) return [];
             return text.split('\n')
                        .map(s => s.trim())
-                       .filter(Boolean); // 过滤掉空行
+                       .filter(Boolean); 
         }
 
+        // --- (新) v9.1：状态 & 设置面板 ---
+        function renderStatsPanel(stats, settings) {
+            const { 
+                dedup_hashes = 0, 
+                forward_progress_channels = 0,
+                invalid_links = 0,
+                sources = 0,
+                distribution_rules = 0,
+                whitelist_keywords = 0,
+                blacklist_substring = 0,
+                blacklist_word = 0,
+                blacklist_file = 0,
+                blacklist_regex = 0
+            } = stats || {};
+            
+            const { dedup_retention_days = 30 } = settings || {};
+            
+            const blacklist_total = blacklist_substring + blacklist_word + blacklist_file + blacklist_regex;
+
+            return `
+                <div class="panel bg-white dark:bg-gray-800 p-6 rounded-lg shadow space-y-8">
+                    
+                    <!-- 1. 统计概览 -->
+                    <div>
+                        <h2 class="text-2xl font-semibold mb-4 text-gray-900 dark:text-gray-100">统计概览 (SQLite)</h2>
+                        <div class="grid grid-cols-1 md:grid-cols-3 gap-4">
+                            <div class="bg-gray-50 dark:bg-gray-700 p-4 rounded-lg">
+                                <dt class="text-sm font-medium text-gray-500 dark:text-gray-400 truncate">去重哈希 (Dedup)</dt>
+                                <dd class="mt-1 text-3xl font-semibold text-blue-600 dark:text-blue-400">${dedup_hashes}</dd>
+                            </div>
+                            <div class="bg-gray-50 dark:bg-gray-700 p-4 rounded-lg">
+                                <dt class="text-sm font-medium text-gray-500 dark:text-gray-400 truncate">频道转发进度</dt>
+                                <dd class="mt-1 text-3xl font-semibold text-blue-600 dark:text-blue-400">${forward_progress_channels}</dd>
+                            </div>
+                            <div class="bg-gray-50 dark:bg-gray-700 p-4 rounded-lg">
+                                <dt class="text-sm font-medium text-gray-500 dark:text-gray-400 truncate">已发现的失效链接</dt>
+                                <dd class="mt-1 text-3xl font-semibold text-red-600 dark:text-red-400">${invalid_links}</dd>
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- 2. 规则统计 -->
+                    <div>
+                        <h2 class="text-2xl font-semibold mb-4 text-gray-900 dark:text-gray-100">规则概览 (rules_db.json)</h2>
+                        <div class="grid grid-cols-1 md:grid-cols-3 gap-4">
+                            <div class="bg-gray-50 dark:bg-gray-700 p-4 rounded-lg">
+                                <dt class="text-sm font-medium text-gray-500 dark:text-gray-400 truncate">监控源</dt>
+                                <dd class="mt-1 text-3xl font-semibold text-blue-600 dark:text-blue-400">${sources}</dd>
+                            </div>
+                            <div class="bg-gray-50 dark:bg-gray-700 p-4 rounded-lg">
+                                <dt class="text-sm font-medium text-gray-500 dark:text-gray-400 truncate">转发规则</dt>
+                                <dd class="mt-1 text-3xl font-semibold text-blue-600 dark:text-blue-400">${distribution_rules}</dd>
+                            </div>
+                            <div class="bg-gray-50 dark:bg-gray-700 p-4 rounded-lg">
+                                <dt class="text-sm font-medium text-gray-500 dark:text-gray-400 truncate">黑名单 / 白名单</dt>
+                                <dd class="mt-1 text-3xl font-semibold text-blue-600 dark:text-blue-400">${blacklist_total} / ${whitelist_keywords}</dd>
+                            </div>
+                        </div>
+                    </div>
+                    
+                    <!-- 3. 数据库设置 -->
+                    <div>
+                        <h2 class="text-2xl font-semibold mb-4 text-gray-900 dark:text-gray-100">数据库设置</h2>
+                        <div class="bg-gray-50 dark:bg-gray-700 p-6 rounded-lg">
+                            <div class="max-w-md">
+                                <label for="dedup-slider" class="block text-sm font-medium text-gray-700 dark:text-gray-300">
+                                    去重哈希保留天数: <span id="dedup-days-label" class="font-bold text-blue-600 dark:text-blue-400">${dedup_retention_days}</span> 天
+                                </label>
+                                <input id="dedup-slider" type="range" min="1" max="30" value="${dedup_retention_days}" class="w-full h-2 bg-gray-200 dark:bg-gray-600 rounded-lg appearance-none cursor-pointer mt-2">
+                                <p class="text-xs text-gray-500 dark:text-gray-400 mt-2">
+                                    设置哈希在数据库中保留的最长时间 (1-30天)。更短的时间可以节省空间。将在下次定时任务（每天 4:05 UTC）时生效。
+                                </p>
+                                <button id="save-dedup" class="mt-4 flex justify-center py-2 px-4 border border-transparent rounded-md shadow-sm text-sm font-medium text-white bg-blue-600 hover:bg-blue-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-blue-500">
+                                    <span id="save-dedup-text">保存设置</span>
+                                    <div id="save-dedup-loader" class="loader hidden"></div>
+                                </button>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            `;
+        }
+        
         // (占位符) 
         function renderRulesPanel(data) {
             return `
                 <div class="panel bg-white dark:bg-gray-800 p-6 rounded-lg shadow">
                     <h2 class="text-2xl font-semibold mb-4 text-gray-900 dark:text-gray-100">转发规则 (Distribution Rules)</h2>
                     <p class="text-gray-600 dark:text-gray-400">
-                        (下一步：v8.4) 这里将显示一个用于添加、查看和删除转发规则的完整表单。
+                        (下一步：v9.2) 这里将显示一个用于添加、查看和删除转发规则的完整表单。
                     </p>
                 </div>
             `;
@@ -328,13 +430,13 @@
                 <div class="panel bg-white dark:bg-gray-800 p-6 rounded-lg shadow">
                     <h2 class="text-2xl font-semibold mb-4 text-gray-900 dark:text-gray-100">监控源 (Sources)</h2>
                     <p class="text-gray-600 dark:text-gray-400">
-                        (下一步：v8.4) 这里将显示一个用于添加和删除源频道的表单。
+                        (下一步：v9.2) 这里将显示一个用于添加和删除源频道的表单。
                     </p>
                 </div>
             `;
         }
         
-        // (新) v8.3：实现黑名单面板
+        // v8.3：实现黑名单面板
         function renderBlacklistPanel(data) {
             const { keywords_substring, keywords_word, file_name_keywords, patterns } = data || {};
             
@@ -383,7 +485,7 @@
                 <div class="panel bg-white dark:bg-gray-800 p-6 rounded-lg shadow">
                     <h2 class="text-2xl font-semibold mb-4 text-gray-900 dark:text-gray-100">白名单 (Whitelist)</h2>
                     <p class="text-gray-600 dark:text-gray-400">
-                        (下一步：v8.4) 这里将显示一个用于管理白名单的表单。
+                        (下一步：v9.2) 这里将显示一个用于管理白名单的表单。
                     </p>
                 </div>
             `;
@@ -417,7 +519,7 @@
                 const enableState = (state.rules && state.rules.ad_filter) ? state.rules.ad_filter.enable : true;
 
                 const payload = {
-                    enable: enableState, // 保留 enable 状态
+                    enable: enableState, 
                     keywords_substring: textToArray(document.getElementById('bl-sub').value),
                     keywords_word: textToArray(document.getElementById('bl-word').value),
                     file_name_keywords: textToArray(document.getElementById('bl-file').value),
@@ -439,6 +541,64 @@
                 btnText.classList.remove('hidden');
                 btnLoader.classList.add('hidden');
                 btn.disabled = false;
+            }
+        }
+
+        // (新) v9.1：保存去重设置
+        async function handleSaveDedupSettings() {
+            const btn = document.getElementById('save-dedup');
+            const btnText = document.getElementById('save-dedup-text');
+            const btnLoader = document.getElementById('save-dedup-loader');
+            
+            btnText.classList.add('hidden');
+            btnLoader.classList.remove('hidden');
+            btn.disabled = true;
+            
+            try {
+                const days = parseInt(document.getElementById('dedup-slider').value, 10);
+                const payload = { days: days };
+                
+                await apiFetch('/api/settings/dedup', {
+                    method: 'POST',
+                    body: payload
+                });
+                
+                showReloadNotice(); // 严格来说不需要
+                alert("设置已保存！将在下次定时任务时生效。");
+
+            } catch (error) {
+                console.error("保存去重设置失败:", error);
+                alert(`保存失败: ${error.message}`);
+            } finally {
+                btnText.classList.remove('hidden');
+                btnLoader.classList.add('hidden');
+                btn.disabled = false;
+            }
+        }
+        
+        async function loadAndRenderStats() {
+            try {
+                const stats = await apiFetch('/api/stats');
+                const settings = await apiFetch('/api/settings/dedup');
+                
+                state.stats = stats;
+                state.settings = settings;
+
+                document.getElementById('panel-status').innerHTML = renderStatsPanel(stats, settings);
+                
+                // 绑定滑块事件
+                const slider = document.getElementById('dedup-slider');
+                const label = document.getElementById('dedup-days-label');
+                slider.addEventListener('input', (e) => {
+                    label.textContent = e.target.value;
+                });
+                
+                // 绑定保存按钮事件
+                document.getElementById('save-dedup').addEventListener('click', handleSaveDedupSettings);
+                
+            } catch (error) {
+                console.error("加载统计失败:", error);
+                document.getElementById('panel-status').innerHTML = `<p class="text-red-500">加载统计失败: ${error.message}</p>`;
             }
         }
         
@@ -469,6 +629,9 @@
             
             // 2. 渲染内容面板 (带占位符)
             contentPanels.innerHTML = `
+                <div id="panel-status" class="hidden">
+                    <div class="flex justify-center items-center p-10"><div class="loader"></div></div>
+                </div>
                 <div id="panel-rules">${renderRulesPanel()}</div>
                 <div id="panel-sources" class="hidden">${renderSourcesPanel()}</div>
                 <div id="panel-blacklist" class="hidden">
@@ -485,7 +648,7 @@
                 }
             });
             
-            // 4. (新) v8.4.1：修复主题切换器
+            // 4. (新) v9.1：修复主题切换器 Bug
             themeToggleButton.addEventListener('click', () => {
                 themeMenu.classList.toggle('hidden');
                 setTimeout(() => { 
@@ -510,6 +673,8 @@
             });
             
             // 5. 加载真实数据
+            navigateToTab('status'); // 默认显示状态页
+            loadAndRenderStats();
             loadAndRenderBlacklist();
             // loadAndRenderWhitelist();
             // loadAndRenderSources();

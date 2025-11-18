@@ -10,7 +10,6 @@ from fastapi.responses import HTMLResponse, JSONResponse, FileResponse
 from pydantic import BaseModel, Field
 from typing import List, Optional, Dict, Any
 
-# (新) v8.5：从 models.py 导入，解决循环引用
 from models import (
     Config, 
     SourceConfig, 
@@ -19,6 +18,8 @@ from models import (
     WhitelistConfig,
     RulesDatabase
 )
+# (新) v9.1：导入 database
+import database
 
 logger = logging.getLogger(__name__)
 
@@ -30,9 +31,9 @@ db_lock = asyncio.Lock()
 app = FastAPI(
     title="TG Forwarder Web UI",
     description="一个用于动态管理 TG-Forwarder 规则的 Web 面板。",
-    version="8.5",
-    docs_url=None, # 禁用 /docs
-    redoc_url=None # 禁用 /redoc
+    version="9.1",
+    docs_url=None, 
+    redoc_url=None 
 )
 
 # --- 安全配置 ---
@@ -67,7 +68,7 @@ async def _save_rules_to_db_internal():
     except Exception as e:
         logger.error(f"❌ 保存 rules_db.json 失败: {e}")
 
-async def load_rules_from_db(config: Optional[Config] = None): # (新) v8.4：接收 config
+async def load_rules_from_db(config: Optional[Config] = None): 
     """从 JSON 文件加载规则到内存，如果文件不存在，则从 config.yaml 迁移"""
     global rules_db
     async with db_lock:
@@ -75,7 +76,6 @@ async def load_rules_from_db(config: Optional[Config] = None): # (新) v8.4：�
             logger.warning(f"未找到规则数据库 {RULES_DB_PATH}，将尝试从 config.yaml 迁移...")
             
             if config:
-                # (新) v8.4：执行一次性迁移
                 try:
                     rules_db = RulesDatabase(
                         sources=config.sources,
@@ -93,7 +93,6 @@ async def load_rules_from_db(config: Optional[Config] = None): # (新) v8.4：�
             
             await _save_rules_to_db_internal() # 保存迁移后的/新的空数据库
         else:
-            # 数据库已存在，正常加载
             try:
                 with open(RULES_DB_PATH, 'r', encoding='utf-8') as f:
                     data = json.load(f)
@@ -107,6 +106,56 @@ async def save_rules_to_db():
     """将内存中的规则保存回 JSON 文件 (供 API 安全调用)"""
     async with db_lock:
         await _save_rules_to_db_internal() 
+
+# --- (新) v9.1：统计 & 设置 API ---
+
+@app.get("/api/stats")
+async def get_stats(auth: bool = Depends(get_current_user)):
+    """获取所有统计数据 (SQLite + JSON)"""
+    try:
+        # 1. 从 SQLite 获取统计
+        db_stats = await database.get_db_stats()
+        
+        # 2. 从内存 (rules_db) 获取规则统计
+        async with db_lock:
+            rule_stats = {
+                "sources": len(rules_db.sources),
+                "distribution_rules": len(rules_db.distribution_rules),
+                "whitelist_keywords": len(rules_db.whitelist.keywords or []),
+                "blacklist_substring": len(rules_db.ad_filter.keywords_substring or []),
+                "blacklist_word": len(rules_db.ad_filter.keywords_word or []),
+                "blacklist_file": len(rules_db.ad_filter.file_name_keywords or []),
+                "blacklist_regex": len(rules_db.ad_filter.patterns or []),
+            }
+            
+        # 3. 合并
+        full_stats = {**db_stats, **rule_stats}
+        return full_stats
+        
+    except Exception as e:
+        logger.error(f"获取 /api/stats 失败: {e}")
+        raise HTTPException(status_code=500, detail="获取统计数据失败")
+
+@app.get("/api/settings/dedup")
+async def get_dedup_setting(auth: bool = Depends(get_current_user)):
+    """获取去重保留天数"""
+    days = await database.get_dedup_retention()
+    return {"dedup_retention_days": days}
+
+class DedupSetting(BaseModel):
+    days: int
+
+@app.post("/api/settings/dedup")
+async def set_dedup_setting(setting: DedupSetting, auth: bool = Depends(get_current_user)):
+    """设置去重保留天数"""
+    try:
+        await database.set_dedup_retention(setting.days)
+        return {"status": "success", "message": f"去重保留天数已设置为 {setting.days} 天。"}
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"设置失败: {e}")
+
 
 # --- API 路由 (Endpoints) ---
 
@@ -208,7 +257,7 @@ async def update_whitelist(config: WhitelistConfig, auth: bool = Depends(get_cur
 @app.get("/", response_class=HTMLResponse)
 async def get_web_ui():
     """
-    (新) v8.2：提供 index.html 
+    提供 index.html 
     """
     ui_path = "/app/index.html"
     if not os.path.exists(ui_path):

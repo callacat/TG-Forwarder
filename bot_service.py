@@ -6,7 +6,6 @@ from telethon import TelegramClient, events
 from telethon.tl.types import Message
 from typing import Callable, Awaitable
 from datetime import datetime, timezone 
-# (新) v8.5：从 models.py 导入
 from models import Config 
 from link_checker import LinkChecker 
 from telethon.tl.functions.bots import SetBotCommandsRequest
@@ -14,6 +13,9 @@ from telethon.tl.types import (
     BotCommand, 
     BotCommandScopeDefault
 )
+
+# (新) v9.1：导入 database
+import database
 
 logger = logging.getLogger(__name__)
 
@@ -60,8 +62,8 @@ class BotService:
                 "**TG 终极转发器 Bot 已启动**\n\n"
                 "这是一个私有 Bot，用于控制转发服务。\n\n"
                 "**可用命令:**\n"
-                "`/status` - 查看服务运行状态。\n"
-                "`/reload` - 热重载 `config.yaml` 和 `rules_db.json`。\n" # (新) v8.5
+                "`/status` - (新) 查看服务和数据库统计。\n"
+                "`/reload` - 热重载 `config.yaml` 和 `rules_db.json`。\n" 
                 "`/run_checklinks` - 手动触发一次失效链接检测。\n"
                 "`/export_sources` - 导出 *config.yaml* 中的源频道 ID。"
             )
@@ -88,13 +90,26 @@ class BotService:
                     client_status = f"⚠️ {client_count} 个客户端运行中 ( {len(flood_clients)} 个正在 FloodWait: {', '.join(flood_clients)} )"
                 else:
                     client_status = f"✅ {client_count} 个客户端运行中 (全部正常)"
-
+            
+            # (新) v9.1：获取数据库统计
+            try:
+                db_stats = await database.get_db_stats()
+                stats_msg = (
+                    f"**数据库统计 (SQLite):**\n"
+                    f"  - 去重哈希: `{db_stats.get('dedup_hashes', 'N/A')}` 条\n"
+                    f"  - 频道进度: `{db_stats.get('forward_progress_channels', 'N/A')}` 个\n"
+                    f"  - 失效链接: `{db_stats.get('invalid_links', 'N/A')}` 条"
+                )
+            except Exception as e:
+                logger.error(f"获取 /status 统计失败: {e}")
+                stats_msg = "**数据库统计:** ❌ 获取失败"
 
             await event.reply(
                 "**TG 终极转发器状态**\n\n"
                 f"**服务状态:** ✅ 运行中\n"
                 f"**已运行时间:** {uptime_str}\n"
-                f"**用户账号:** {client_status}"
+                f"**用户账号:** {client_status}\n\n"
+                f"{stats_msg}"
             )
 
         # --- /reload ---
@@ -136,7 +151,7 @@ class BotService:
                 await event.reply("❌ 未找到 *config.yaml* 中已配置的源。")
                 return
             
-            output = "**✅ *config.yaml* 中的源频道**\n\n"
+            output = "**✅ *config.yaml* 中的源频道 (用于迁移)**\n\n"
             output += "`config.yaml` 中的标识符 | 解析后的数字 ID\n"
             output += "--------------------------------------\n"
             
@@ -157,7 +172,7 @@ class BotService:
             
             en_commands = [
                 BotCommand(command="start", description="Show welcome message and help"),
-                BotCommand(command="status", description="Check service running status"),
+                BotCommand(command="status", description="Check service and database status"),
                 BotCommand(command="reload", description="Reload the config.yaml and rules_db.json files"),
                 BotCommand(command="run_checklinks", description="Manually trigger a link check"),
                 BotCommand(command="export_sources", description="Export resolved source channel IDs (from config.yaml)")
@@ -165,7 +180,7 @@ class BotService:
             
             zh_commands = [
                 BotCommand(command="start", description="显示欢迎和帮助信息"),
-                BotCommand(command="status", description="查看服务运行状态"),
+                BotCommand(command="status", description="查看服务和数据库状态"),
                 BotCommand(command="reload", description="热重载 config.yaml 和 rules_db.json 配置文件"),
                 BotCommand(command="run_checklinks", description="手动触发一次失效链接检测"),
                 BotCommand(command="export_sources", description="导出已解析的源频道 ID (来自 config.yaml)")

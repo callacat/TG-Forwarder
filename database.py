@@ -3,6 +3,7 @@ import logging
 import aiosqlite
 import asyncio
 from datetime import datetime, timedelta
+from typing import List, Dict, Any, Union
 
 logger = logging.getLogger(__name__)
 
@@ -32,6 +33,7 @@ async def init_db():
             
             logger.info(f"✅ 数据库连接已建立: {DB_PATH}")
 
+            # --- v9.0 ---
             await _db_conn.execute("""
             CREATE TABLE IF NOT EXISTS dedup_hashes (
               hash TEXT PRIMARY KEY,
@@ -55,6 +57,20 @@ async def init_db():
             )
             """)
             
+            # (新) v9.1：设置表
+            await _db_conn.execute("""
+            CREATE TABLE IF NOT EXISTS settings (
+              key TEXT PRIMARY KEY,
+              value TEXT
+            )
+            """)
+            
+            # (新) v9.1：初始化默认去重天数
+            await _db_conn.execute(
+                "INSERT OR IGNORE INTO settings (key, value) VALUES (?, ?)",
+                ('dedup_retention_days', '30')
+            )
+            
             await _db_conn.commit()
             logger.info("✅ 所有数据库表均已初始化。")
 
@@ -66,7 +82,7 @@ async def init_db():
 # --- 去重 (Dedup) API ---
 
 async def check_hash(hash_str: str) -> bool:
-    """检查一个哈希是否存在 (替换 _is_duplicate)"""
+    """检查一个哈希是否存在"""
     try:
         db = await get_db()
         async with db.execute("SELECT 1 FROM dedup_hashes WHERE hash = ?", (hash_str,)) as cursor:
@@ -76,7 +92,7 @@ async def check_hash(hash_str: str) -> bool:
         return True 
 
 async def add_hash(hash_str: str):
-    """添加一个新哈希 (替换 _mark_as_processed)"""
+    """添加一个新哈希"""
     try:
         db = await get_db()
         await db.execute(
@@ -101,7 +117,7 @@ async def prune_old_hashes(days: int = 30):
 # --- 进度 (Progress) API ---
 
 async def get_progress(channel_id: int) -> int:
-    """获取频道进度 (替换 _get_channel_progress)"""
+    """获取频道进度"""
     try:
         db = await get_db()
         async with db.execute("SELECT message_id FROM forward_progress WHERE channel_id = ?", (channel_id,)) as cursor:
@@ -112,7 +128,7 @@ async def get_progress(channel_id: int) -> int:
         return 0
 
 async def set_progress(channel_id: int, message_id: int):
-    """设置频道进度 (替换 _set_channel_progress)"""
+    """设置频道进度"""
     try:
         db = await get_db()
         await db.execute(
@@ -123,28 +139,58 @@ async def set_progress(channel_id: int, message_id: int):
     except Exception as e:
         logger.error(f"设置进度失败: {e}")
 
-# --- (新) v8.4：统计 API ---
+# --- (新) v9.1：统计 API ---
 
 async def get_db_stats() -> dict:
     """获取 SQLite 数据库的统计信息"""
     try:
         db = await get_db()
         
-        # 并发执行 COUNT 查询
         async with db.execute("SELECT COUNT(*) FROM dedup_hashes") as cursor:
             dedup_count = (await cursor.fetchone() or [0])[0]
             
         async with db.execute("SELECT COUNT(*) FROM forward_progress") as cursor:
             progress_count = (await cursor.fetchone() or [0])[0]
             
+        async with db.execute("SELECT COUNT(*) FROM link_checker WHERE status = 'invalid'") as cursor:
+            invalid_links = (await cursor.fetchone() or [0])[0]
+            
         return {
             "dedup_hashes": dedup_count,
-            "forward_progress": progress_count
+            "forward_progress_channels": progress_count,
+            "invalid_links": invalid_links
         }
     except Exception as e:
         logger.error(f"获取数据库统计失败: {e}")
-        return { "dedup_hashes": "错误", "forward_progress": "错误" }
+        return { "dedup_hashes": "错误", "forward_progress_channels": "错误", "invalid_links": "错误" }
 
+# --- (新) v9.1：设置 API ---
+
+async def get_dedup_retention() -> int:
+    """获取去重记录保留天数"""
+    try:
+        db = await get_db()
+        async with db.execute("SELECT value FROM settings WHERE key = ?", ('dedup_retention_days',)) as cursor:
+            row = await cursor.fetchone()
+            return int(row[0]) if row else 30
+    except Exception as e:
+        logger.error(f"获取去重天数失败: {e}")
+        return 30
+
+async def set_dedup_retention(days: int):
+    """设置去重记录保留天数"""
+    if not (1 <= days <= 30):
+        raise ValueError("天数必须在 1 到 30 之间")
+    try:
+        db = await get_db()
+        await db.execute(
+            "UPDATE settings SET value = ? WHERE key = ?", 
+            (str(days), 'dedup_retention_days')
+        )
+        await db.commit()
+    except Exception as e:
+        logger.error(f"设置去重天数失败: {e}")
+        raise
 
 # --- 链接检测 (Link Checker) API ---
 

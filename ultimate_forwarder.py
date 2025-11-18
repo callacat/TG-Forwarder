@@ -15,7 +15,6 @@ import database
 from apscheduler.schedulers.asyncio import AsyncIOScheduler 
 from apscheduler.triggers.cron import CronTrigger
 
-# (新) v8.5：从 models.py 导入
 from models import Config, AccountConfig
 from forwarder_core import UltimateForwarder
 from link_checker import LinkChecker
@@ -214,6 +213,16 @@ async def resolve_identifiers(client: TelegramClient, config: Config) -> List[in
     
     return list(set(resolved_ids))
 
+# (新) v9.1：创建动态的清理任务
+async def run_db_prune_job():
+    """运行数据库清理任务，使用来自数据库的设置"""
+    try:
+        days = await database.get_dedup_retention()
+        logger.info(f"正在运行数据库清理任务 (保留 {days} 天)...")
+        await database.prune_old_hashes(days)
+    except Exception as e:
+        logger.error(f"数据库清理任务失败: {e}")
+
 
 async def run_forwarder(config: Config):
     """运行转发器主逻辑"""
@@ -278,26 +287,28 @@ async def run_forwarder(config: Config):
     logger.info("正在启动 Bot 服务...")
     await initialize_bot(config)
 
+    # (新) v9.1：初始化定时任务
+    scheduler = AsyncIOScheduler(timezone="UTC")
+    
     if config.link_checker and config.link_checker.enabled:
         if not link_checker: 
              link_checker = LinkChecker(config, main_client)
-        
         try:
-            scheduler = AsyncIOScheduler(timezone="UTC")
             trigger = CronTrigger.from_crontab(config.link_checker.schedule)
             scheduler.add_job(link_checker.run, trigger, name="run_link_checker_job")
             logger.info(f"✅ 链接检测器定时任务已启动 (Cron: {config.link_checker.schedule} UTC)。")
-
-            prune_trigger = CronTrigger.from_crontab("5 4 * * *")
-            scheduler.add_job(database.prune_old_hashes, prune_trigger, name="prune_db_job", args=[30])
-            logger.info(f"✅ 数据库清理定时任务已启动 (Cron: 5 4 * * *)。")
-            
-            scheduler.start()
-            
         except ValueError as e:
             logger.warning(f"⚠️ 链接检测器 cron 表达式 '{config.link_checker.schedule}' 无效，定时任务未启动: {e}")
-        except Exception as e_v4:
-            logger.error(f"❌ 链接检测器启动失败: {e_v4}")
+        
+    # (新) v9.1：任务 2: 数据库清理
+    try:
+        prune_trigger = CronTrigger.from_crontab("5 4 * * *") # 每天凌晨 4:05 运行
+        scheduler.add_job(run_db_prune_job, prune_trigger, name="prune_db_job")
+        logger.info(f"✅ 数据库清理定时任务已启动 (Cron: 5 4 * * *)。")
+    except Exception as e:
+        logger.error(f"❌ 数据库清理任务启动失败: {e}")
+        
+    scheduler.start()
 
 
     if not config.forwarding.forward_new_only:
@@ -313,7 +324,7 @@ async def run_forwarder(config: Config):
     await web_server.load_rules_from_db(config)
 
     logger.info(f"🚀 终极转发器已启动。正在监听所有频道...")
-    logger.info(f"🚀 Web UI (v8.5) 正在 http://0.0.0.0:8080 上启动。")
+    logger.info(f"🚀 Web UI (v9.1) 正在 http://0.0.0.0:8080 上启动。")
     
     tasks_to_run = [
         main_client.run_until_disconnected(),
