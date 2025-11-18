@@ -15,7 +15,7 @@ from models import (
     TargetDistributionRule, 
     AdFilterConfig, 
     WhitelistConfig,
-    ContentFilterConfig, # 新增导入
+    ContentFilterConfig,
     RulesDatabase,
     SystemSettings
 )
@@ -75,7 +75,6 @@ async def load_rules_from_db(config: Optional[Config] = None):
                         ad_filter=config.ad_filter,
                         whitelist=config.whitelist,
                         settings=initial_settings,
-                        # (新增) 迁移内容过滤和替换
                         content_filter=config.content_filter,
                         replacements=config.replacements or {}
                     )
@@ -106,17 +105,18 @@ async def get_stats(auth: bool = Depends(get_current_user)):
     try:
         db_stats = await database.get_db_stats()
         async with db_lock:
+            # 确保所有字段都存在，防止 Key Error
             rule_stats = {
                 "sources": len(rules_db.sources),
                 "distribution_rules": len(rules_db.distribution_rules),
                 "whitelist_keywords": len(rules_db.whitelist.keywords or []),
                 "blacklist_substring": len(rules_db.ad_filter.keywords_substring or []),
                 "blacklist_word": len(rules_db.ad_filter.keywords_word or []),
-                # (新增) 统计信息
-                "replacements_count": len(rules_db.replacements)
+                "replacements_count": len(rules_db.replacements or {})
             }
         return {**db_stats, **rule_stats}
-    except Exception:
+    except Exception as e:
+        logger.error(f"获取统计失败: {e}")
         return {}
 
 # --- 设置 API ---
@@ -160,6 +160,49 @@ async def add_rule(rule: TargetDistributionRule, auth: bool = Depends(get_curren
     await save_rules_to_db()
     return rule
 
+# (新增) 更新单个规则 (用于编辑)
+@app.post("/api/rules/update_single")
+async def update_single_rule(rule: TargetDistributionRule, name_to_replace: str = "", auth: bool = Depends(get_current_user)):
+    # 这里的逻辑是：先找到旧规则的位置，替换它。如果没找到，就追加。
+    target_name = name_to_replace if name_to_replace else rule.name
+    
+    for index, r in enumerate(rules_db.distribution_rules):
+        if r.name == target_name:
+            rules_db.distribution_rules[index] = rule
+            await save_rules_to_db()
+            return {"status": "success", "message": "规则已更新"}
+    
+    # 如果没找到，作为新规则添加
+    rules_db.distribution_rules.append(rule)
+    await save_rules_to_db()
+    return {"status": "success", "message": "规则不存在，已作为新规则添加"}
+
+# (新增) 规则排序
+class ReorderRequest(BaseModel):
+    names: List[str]
+
+from pydantic import BaseModel # 确保导入
+@app.post("/api/rules/reorder")
+async def reorder_rules(data: ReorderRequest, auth: bool = Depends(get_current_user)):
+    """根据提供的名称列表顺序重新排列规则"""
+    name_map = {r.name: r for r in rules_db.distribution_rules}
+    new_list = []
+    
+    # 按新顺序重建列表
+    for name in data.names:
+        if name in name_map:
+            new_list.append(name_map[name])
+            
+    # 确保没有遗漏 (如果有规则名不在前端发来的列表中，追加到后面)
+    processed_names = set(data.names)
+    for r in rules_db.distribution_rules:
+        if r.name not in processed_names:
+            new_list.append(r)
+            
+    rules_db.distribution_rules = new_list
+    await save_rules_to_db()
+    return {"status": "success", "message": "规则顺序已保存"}
+
 @app.post("/api/rules/remove")
 async def remove_rule(data: Dict[str, str], auth: bool = Depends(get_current_user)):
     rules_db.distribution_rules = [r for r in rules_db.distribution_rules if r.name != data.get('name')]
@@ -185,8 +228,6 @@ async def update_whitelist(config: WhitelistConfig, auth: bool = Depends(get_cur
     rules_db.whitelist = config
     await save_rules_to_db()
     return {"status": "success"}
-
-# --- (新增) 内容过滤与替换 API ---
 
 @app.get("/api/content_filter", response_model=ContentFilterConfig)
 async def get_content_filter(auth: bool = Depends(get_current_user)):
