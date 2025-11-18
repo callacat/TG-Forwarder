@@ -56,7 +56,8 @@ class SourceConfig(BaseModel):
     check_replies: bool = False
     replies_limit: int = 10
     forward_new_only: Optional[bool] = None
-    resolved_id: Optional[int] = Field(None, exclude=True) 
+    # (修复) v9.3：移除 exclude=True，允许 API 将解析后的 ID 发送给前端
+    resolved_id: Optional[int] = None 
 
 class TargetDistributionRule(BaseModel):
     name: str 
@@ -68,7 +69,8 @@ class TargetDistributionRule(BaseModel):
     target_identifier: Union[int, str]
     topic_id: Optional[int] = None 
     
-    resolved_target_id: Optional[int] = Field(None, exclude=True)
+    # (修复) v9.3：移除 exclude=True，允许前端查看解析后的目标 ID
+    resolved_target_id: Optional[int] = None
     
     def check(self, text: str, media: Any) -> bool:
         # (新) v8.5：我们将 check 逻辑移到了模型内部，
@@ -131,7 +133,8 @@ class TargetConfig(BaseModel):
     default_topic_id: Optional[int] = None 
     distribution_rules: List[TargetDistributionRule] = Field(default_factory=list)
     
-    resolved_default_target_id: Optional[int] = Field(None, exclude=True)
+    # (修复) v9.3：移除 exclude=True
+    resolved_default_target_id: Optional[int] = None
 
 
 class ForwardingConfig(BaseModel):
