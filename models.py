@@ -75,17 +75,14 @@ class TargetDistributionRule(BaseModel):
                 return False 
         
         # 2. 检查 [OR] 条件组 (满足任一即可)
-        # 如果没有 OR 条件，且通过了 AND 条件，则视为匹配
         has_or_conditions = bool(self.any_keywords or self.file_types or self.file_name_patterns)
         if not has_or_conditions:
             return True
 
-        # 2.1 检查 any_keywords
         if self.any_keywords:
             if any(keyword.lower() in text_lower for keyword in self.any_keywords):
                 return True
         
-        # 导入 Document 类型以检查文件
         try:
             from telethon.tl.types import MessageMediaDocument
         except ImportError:
@@ -94,12 +91,10 @@ class TargetDistributionRule(BaseModel):
         if MessageMediaDocument and media and isinstance(media, MessageMediaDocument):
             doc = media.document
             if doc:
-                # 2.2 检查 file_types (MIME)
                 if self.file_types and doc.mime_type:
                     if any(ft.lower() in doc.mime_type.lower() for ft in self.file_types):
                         return True
 
-                # 2.3 检查 file_name_patterns
                 if self.file_name_patterns:
                     file_name = next((attr.file_name for attr in doc.attributes if hasattr(attr, 'file_name')), None)
                     if file_name:
@@ -110,7 +105,6 @@ class TargetDistributionRule(BaseModel):
                                     return True
                             except re.error:
                                 logger.warning(f"规则 '{self.name}' 中的文件名模式 '{pattern_str}' 无效")
-        
         return False
 
 class TargetConfig(BaseModel):
@@ -119,7 +113,7 @@ class TargetConfig(BaseModel):
     distribution_rules: List[TargetDistributionRule] = Field(default_factory=list)
     resolved_default_target_id: Optional[int] = None
 
-# --- (新) 动态系统设置 ---
+# --- (修改) 动态系统设置 ---
 class SystemSettings(BaseModel):
     """可以从 Web UI 动态修改的系统设置"""
     dedup_retention_days: int = 30
@@ -128,13 +122,17 @@ class SystemSettings(BaseModel):
     mark_as_read: bool = False         # 源频道已读
     mark_target_as_read: bool = False  # 目标频道已读
     
+    # (新增) 默认目标设置
+    default_target: str = "" # 使用字符串以兼容 @username 或 -100ID
+    default_topic_id: Optional[int] = None
+    
     @field_validator('forwarding_mode')
     def check_mode(cls, v):
         if v not in ['forward', 'copy']:
             raise ValueError("mode 必须是 'forward' 或 'copy'")
         return v
 
-# --- 旧的静态配置模型 (用于读取 config.yaml) ---
+# --- 旧的静态配置模型 ---
 class ForwardingConfig(BaseModel):
     mode: str = "forward" 
     forward_new_only: bool = True 
@@ -202,5 +200,4 @@ class RulesDatabase(BaseModel):
     distribution_rules: List[TargetDistributionRule] = Field(default_factory=list)
     ad_filter: AdFilterConfig = Field(default_factory=AdFilterConfig)
     whitelist: WhitelistConfig = Field(default_factory=WhitelistConfig)
-    # (新) 包含可动态修改的设置
     settings: SystemSettings = Field(default_factory=SystemSettings)

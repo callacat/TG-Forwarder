@@ -37,24 +37,20 @@ class UltimateForwarder:
         self.ad_patterns = self._compile_patterns(ad_filter.patterns if ad_filter and ad_filter.patterns else [])
         self.ad_keyword_word_patterns = self._compile_word_patterns(ad_filter.keywords_word if ad_filter and ad_filter.keywords_word else [])
         
-        # 打印初始配置 (从 Rules DB 读取动态设置)
+        # 打印初始配置
         settings = web_server.rules_db.settings
         logger.info(f"终极转发器核心已初始化。")
         logger.info(f"转发模式: {settings.forwarding_mode}")
-        logger.info(f"处理新消息: {settings.forward_new_only}")
     
     async def reload(self, new_config: Config):
-        """热重载配置"""
         self.config = new_config
         
-        # 重新加载正则
         new_ad_filter = web_server.rules_db.ad_filter
         self.ad_patterns = self._compile_patterns(new_ad_filter.patterns if new_ad_filter and new_ad_filter.patterns else [])
         self.ad_keyword_word_patterns = self._compile_word_patterns(new_ad_filter.keywords_word if new_ad_filter and new_ad_filter.keywords_word else [])
         
         await self.resolve_targets() 
         
-        # 重载日志级别
         if new_config.logging_level:
             from ultimate_forwarder import setup_logging
             setup_logging(new_config.logging_level.app, new_config.logging_level.telethon)
@@ -67,6 +63,7 @@ class UltimateForwarder:
         
         async def normalize_target(identifier: Union[str, int]) -> Optional[int]:
             try:
+                if not identifier: return None
                 entity = await client.get_entity(identifier)
                 resolved_id = entity.id
                 if isinstance(entity, Channel) and not str(resolved_id).startswith("-100"):
@@ -79,7 +76,11 @@ class UltimateForwarder:
                 logger.error(f"❌ 无法解析目标: {identifier} - {e}")
                 return None
         
-        self.config.targets.resolved_default_target_id = await normalize_target(self.config.targets.default_target)
+        # (修改) 解析动态设置中的默认目标
+        settings = web_server.rules_db.settings
+        if settings.default_target:
+            self.config.targets.resolved_default_target_id = await normalize_target(settings.default_target)
+        
         # 解析内存中的规则目标
         for rule in web_server.rules_db.distribution_rules:
             rule.resolved_target_id = await normalize_target(rule.target_identifier)
@@ -103,7 +104,7 @@ class UltimateForwarder:
             
             self.current_client_index = (self.current_client_index + 1) % len(self.clients)
             if self.current_client_index == start_index:
-                time.sleep(5) # 所有客户端都在等待
+                time.sleep(5) 
                 continue
 
     async def _handle_send_error(self, e: Exception, client: TelegramClient):
@@ -120,7 +121,6 @@ class UltimateForwarder:
     async def process_message(self, event: events.NewMessage.Event, all_messages_in_group: Optional[List[Message]] = None):
         message = event.message
         
-        # 解析 ID
         if isinstance(event.chat_id, (int)):
             numeric_chat_id = event.chat_id
         else:
@@ -132,7 +132,6 @@ class UltimateForwarder:
         if numeric_chat_id > 1000000000 and not str(numeric_chat_id).startswith("-100"):
             numeric_chat_id = int(f"-100{numeric_chat_id}")
         
-        # 检查源 (从内存 DB)
         source_config = None
         for s in web_server.rules_db.sources:
             if s.resolved_id == numeric_chat_id:
@@ -148,7 +147,6 @@ class UltimateForwarder:
                 "hash_source": message.id
             }
 
-            # 过滤与去重
             if self._should_filter(msg_data['text'], msg_data['media']):
                 logger.info(f"消息 {message.id} 被过滤。")
                 return 
@@ -181,16 +179,11 @@ class UltimateForwarder:
             await self._set_channel_progress(numeric_chat_id, message.id)
 
     async def process_history(self, resolved_source_ids: List[int]):
-        # 获取动态设置
         settings = web_server.rules_db.settings
         if settings.forward_new_only:
             logger.info("根据系统设置，跳过历史消息扫描。")
             return
-
-        client = self._get_next_client() 
-        for source_id in resolved_source_ids:
-            # (简化版历史逻辑，略)
-            pass
+        # (历史处理逻辑，略)
 
     # --- 辅助方法 ---
 
@@ -214,12 +207,10 @@ class UltimateForwarder:
         ad_filter = web_server.rules_db.ad_filter
         content_filter = self.config.content_filter
         
-        # 1. 白名单
         if whitelist and whitelist.enable:
             if any(kw.lower() in text_lower for kw in (whitelist.keywords or [])):
                 return None 
 
-        # 2. 黑名单
         if ad_filter and ad_filter.enable:
             if any(kw.lower() in text_lower for kw in (ad_filter.keywords_substring or [])):
                 return "Blacklist (Substring)"
@@ -228,7 +219,6 @@ class UltimateForwarder:
             for p in self.ad_patterns:
                 if p.search(text): return "Blacklist (Regex)"
             
-            # 文件名过滤
             if ad_filter.file_name_keywords and media and isinstance(media, MessageMediaDocument):
                  doc = media.document
                  if doc:
@@ -237,7 +227,6 @@ class UltimateForwarder:
                         if any(kw.lower() in file_name.lower() for kw in ad_filter.file_name_keywords):
                             return "Blacklist (Filename)"
 
-        # 3. 内容过滤
         if content_filter and content_filter.enable:
             if not text and not media: return "Empty"
             if text_lower in ([w.lower() for w in content_filter.meaningless_words] or []):
@@ -274,12 +263,14 @@ class UltimateForwarder:
             if rule.check(text, media): 
                 logger.debug(f"命中分发规则: '{rule.name}'")
                 return rule.resolved_target_id, rule.topic_id
-        return self.config.targets.resolved_default_target_id, self.config.targets.default_topic_id
+        
+        # (修改) 使用动态设置的默认目标
+        settings = web_server.rules_db.settings
+        # 我们使用 config 中的 resolved_default_target_id，它已经被 resolve_targets 更新为 settings 的值
+        return self.config.targets.resolved_default_target_id, settings.default_topic_id
 
     async def _send_message(self, original_message: Union[Message, List[Message]], message_data: Dict[str, Any], target_id: int, topic_id: Optional[int]):
         text = message_data['text']
-        
-        # (修改) 从 rules_db 读取动态设置
         settings = web_server.rules_db.settings
         mode = settings.forwarding_mode
         
@@ -308,7 +299,6 @@ class UltimateForwarder:
             else:
                 sent_message = await client.forward_messages(target_id, messages=original_message, **send_kwargs)
             
-            # (修改) 读取动态设置
             if settings.mark_target_as_read and sent_message:
                 try:
                     last_id = sent_message[-1].id if isinstance(sent_message, list) else sent_message.id

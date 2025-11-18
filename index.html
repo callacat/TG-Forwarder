@@ -17,11 +17,12 @@
             --warning-bg: #fef3c7; --warning-text: #b45309;
             --error-bg: #fee2e2; --error-text: #b91c1c;
             
-            /* Badge Colors */
-            --badge-blue-bg: #dbeafe; --badge-blue-text: #1e40af;
-            --badge-purple-bg: #f3e8ff; --badge-purple-text: #6b21a8;
-            --badge-yellow-bg: #fef9c3; --badge-yellow-text: #854d0e;
-            --badge-pink-bg: #fce7f3; --badge-pink-text: #9d174d;
+            /* Badge Colors (Fixed high contrast for badges) */
+            --badge-blue-bg: #eff6ff; --badge-blue-text: #1d4ed8;
+            --badge-purple-bg: #f3e8ff; --badge-purple-text: #7e22ce;
+            --badge-yellow-bg: #fefce8; --badge-yellow-text: #a16207;
+            --badge-pink-bg: #fce7f3; --badge-pink-text: #be185d;
+            --badge-gray-bg: #f3f4f6; --badge-gray-text: #374151;
         }
         .dark {
             --bg-body: #09090b; --bg-card: #18181b; --bg-input: #18181b; --border-color: #27272a;
@@ -31,10 +32,12 @@
             --warning-bg: #451a03; --warning-text: #fbbf24;
             --error-bg: #7f1d1d; --error-text: #f87171;
             
-            --badge-blue-bg: #1e3a8a; --badge-blue-text: #93c5fd;
-            --badge-purple-bg: #581c87; --badge-purple-text: #d8b4fe;
-            --badge-yellow-bg: #422006; --badge-yellow-text: #fde047;
-            --badge-pink-bg: #831843; --badge-pink-text: #f9a8d4;
+            /* Dark Mode Badges */
+            --badge-blue-bg: #172554; --badge-blue-text: #60a5fa;
+            --badge-purple-bg: #3b0764; --badge-purple-text: #c084fc;
+            --badge-yellow-bg: #422006; --badge-yellow-text: #facc15;
+            --badge-pink-bg: #500724; --badge-pink-text: #f472b6;
+            --badge-gray-bg: #27272a; --badge-gray-text: #9ca3af;
         }
         [x-cloak] { display: none !important; }
         body { background-color: var(--bg-body); color: var(--text-primary); font-family: 'Inter', sans-serif; transition: 0.3s; }
@@ -51,6 +54,7 @@
         .badge-purple { background-color: var(--badge-purple-bg); color: var(--badge-purple-text); }
         .badge-yellow { background-color: var(--badge-yellow-bg); color: var(--badge-yellow-text); }
         .badge-pink { background-color: var(--badge-pink-bg); color: var(--badge-pink-text); }
+        .badge-gray { background-color: var(--badge-gray-bg); color: var(--badge-gray-text); }
         
         .label-text { font-size: 0.75rem; font-weight: 600; color: var(--text-muted); text-transform: uppercase; margin-bottom: 0.25rem; display: block; }
 
@@ -58,6 +62,7 @@
         ::-webkit-scrollbar-track { background: transparent; }
         ::-webkit-scrollbar-thumb { background: var(--border-color); border-radius: 3px; }
         
+        /* Utility overrides */
         .dark .bg-white { background-color: var(--bg-card) !important; }
         .dark .text-gray-500 { color: var(--text-secondary) !important; }
         .dark .text-gray-900 { color: var(--text-primary) !important; }
@@ -65,10 +70,6 @@
         .bg-blue-600 { background-color: var(--accent-color) !important; }
         .text-blue-600 { color: var(--accent-color) !important; }
         .login-overlay { background-color: rgba(0,0,0,0.75); backdrop-filter: blur(4px); }
-        
-        /* Toggle Switch */
-        .toggle-checkbox:checked { right: 0; border-color: var(--accent-color); }
-        .toggle-checkbox:checked + .toggle-label { background-color: var(--accent-color); }
     </style>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/alpinejs/3.13.5/cdn.min.js" defer></script>
     <script>
@@ -82,8 +83,7 @@
                 authenticated: false, password: '', loading: false, loadingData: false,
                 theme: SafeStorage.getItem('theme') || 'system', currentTab: 'status',
                 stats: {}, rules: { sources: [], distribution_rules: [] },
-                // 动态设置
-                settings: { dedup_retention_days: 30, forwarding_mode: 'copy', forward_new_only: true, mark_as_read: false, mark_target_as_read: false },
+                settings: { dedup_retention_days: 30, forwarding_mode: 'copy', forward_new_only: true, mark_as_read: false, mark_target_as_read: false, default_target: '', default_topic_id: null },
                 blacklist: { substring: '', word: '', file: '', regex: '' }, whitelist: { keywords: '' },
                 newSource: '', newRule: { name: '', target: '', topic: '', all_kw: '', any_kw: '', files: '' }, toasts: [],
                 tabs: [
@@ -208,28 +208,39 @@
         <div class="md:hidden border-b overflow-x-auto flex px-4 gap-4" style="border-color: var(--border-color);"><template x-for="tab in tabs" :key="tab.id"><button @click="currentTab=tab.id" :class="currentTab===tab.id?'border-b-2 border-blue-500 text-blue-500':'text-secondary'" class="whitespace-nowrap text-sm py-3 font-medium" x-text="tab.name"></button></template></div>
 
         <main class="flex-grow max-w-7xl mx-auto w-full px-4 py-8 space-y-6">
-            <!-- 状态 -->
+            <!-- 状态 (恢复 6 项) -->
             <div x-show="currentTab==='status'&&!loadingData" class="grid grid-cols-2 md:grid-cols-3 gap-4">
                 <div class="app-card p-6"><dt class="text-xs font-bold text-secondary uppercase">数据库去重</dt><dd class="mt-2 text-3xl font-bold" x-text="stats.dedup_hashes||0"></dd></div>
                 <div class="app-card p-6"><dt class="text-xs font-bold text-secondary uppercase">活跃监控源</dt><dd class="mt-2 text-3xl font-bold text-blue-600" x-text="stats.sources||0"></dd></div>
                 <div class="app-card p-6"><dt class="text-xs font-bold text-secondary uppercase">分发规则</dt><dd class="mt-2 text-3xl font-bold text-purple-600" x-text="stats.distribution_rules||0"></dd></div>
                 <div class="app-card p-6"><dt class="text-xs font-bold text-secondary uppercase">黑名单词条</dt><dd class="mt-2 text-3xl font-bold text-red-600" x-text="(stats.blacklist_substring||0)+(stats.blacklist_word||0)"></dd></div>
+                <div class="app-card p-6"><dt class="text-xs font-bold text-secondary uppercase">白名单词条</dt><dd class="mt-2 text-3xl font-bold text-green-600" x-text="stats.whitelist_keywords||0"></dd></div>
+                <div class="app-card p-6"><dt class="text-xs font-bold text-secondary uppercase">失效链接</dt><dd class="mt-2 text-3xl font-bold text-yellow-600" x-text="stats.invalid_links||0"></dd></div>
             </div>
 
-            <!-- 设置 (新) -->
+            <!-- 设置 -->
             <div x-show="currentTab==='settings'&&!loadingData" class="app-card p-6 max-w-2xl mx-auto">
                 <div class="flex justify-between items-center mb-6 pb-4 border-b" style="border-color: var(--border-color);">
                     <h3 class="text-lg font-bold">系统核心设置</h3>
                     <button @click="saveSettings" class="app-btn">保存设置</button>
                 </div>
                 <div class="space-y-6">
+                    <!-- 默认转发目标 (新) -->
+                    <div class="p-4 rounded-lg bg-yellow-50 dark:bg-yellow-900/20 border border-yellow-100 dark:border-yellow-900/30">
+                        <label class="block text-sm font-bold text-yellow-800 dark:text-yellow-200 mb-2">📁 默认转发目标 (Fallback)</label>
+                        <p class="text-xs text-yellow-700 dark:text-yellow-300 mb-3">未命中任何规则的消息将发送到这里。</p>
+                        <div class="flex gap-2">
+                            <input x-model="settings.default_target" placeholder="默认目标 ID (-100...)" class="app-input">
+                            <input x-model="settings.default_topic_id" type="number" placeholder="话题 ID" class="app-input w-24">
+                        </div>
+                    </div>
+
                     <div>
                         <label class="block text-sm font-bold text-secondary mb-2">转发模式 (Mode)</label>
                         <div class="flex gap-4">
-                            <label class="flex items-center gap-2 cursor-pointer"><input type="radio" value="copy" x-model="settings.forwarding_mode" class="w-4 h-4"><span>复制模式 (Copy) - 推荐</span></label>
+                            <label class="flex items-center gap-2 cursor-pointer"><input type="radio" value="copy" x-model="settings.forwarding_mode" class="w-4 h-4"><span>复制模式 (Copy)</span></label>
                             <label class="flex items-center gap-2 cursor-pointer"><input type="radio" value="forward" x-model="settings.forwarding_mode" class="w-4 h-4"><span>转发模式 (Forward)</span></label>
                         </div>
-                        <p class="text-xs text-muted mt-1">复制模式以新消息发送，可去除来源标签；转发模式保留来源。</p>
                     </div>
                     <div>
                         <label class="block text-sm font-bold text-secondary mb-2">去重记录保留天数</label>
@@ -239,18 +250,9 @@
                         </div>
                     </div>
                     <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
-                         <label class="flex items-center justify-between p-3 border rounded-lg cursor-pointer hover:bg-gray-50 dark:hover:bg-zinc-800 transition" style="border-color: var(--border-color);">
-                            <span class="text-sm font-medium">只处理新消息</span>
-                            <input type="checkbox" x-model="settings.forward_new_only" class="w-5 h-5">
-                        </label>
-                        <label class="flex items-center justify-between p-3 border rounded-lg cursor-pointer hover:bg-gray-50 dark:hover:bg-zinc-800 transition" style="border-color: var(--border-color);">
-                            <span class="text-sm font-medium">源频道自动已读</span>
-                            <input type="checkbox" x-model="settings.mark_as_read" class="w-5 h-5">
-                        </label>
-                        <label class="flex items-center justify-between p-3 border rounded-lg cursor-pointer hover:bg-gray-50 dark:hover:bg-zinc-800 transition" style="border-color: var(--border-color);">
-                            <span class="text-sm font-medium">目标频道自动已读</span>
-                            <input type="checkbox" x-model="settings.mark_target_as_read" class="w-5 h-5">
-                        </label>
+                         <label class="flex items-center justify-between p-3 border rounded-lg cursor-pointer hover:bg-gray-50 dark:hover:bg-zinc-800 transition" style="border-color: var(--border-color);"><span class="text-sm font-medium">只处理新消息</span><input type="checkbox" x-model="settings.forward_new_only" class="w-5 h-5"></label>
+                        <label class="flex items-center justify-between p-3 border rounded-lg cursor-pointer hover:bg-gray-50 dark:hover:bg-zinc-800 transition" style="border-color: var(--border-color);"><span class="text-sm font-medium">源频道自动已读</span><input type="checkbox" x-model="settings.mark_as_read" class="w-5 h-5"></label>
+                        <label class="flex items-center justify-between p-3 border rounded-lg cursor-pointer hover:bg-gray-50 dark:hover:bg-zinc-800 transition" style="border-color: var(--border-color);"><span class="text-sm font-medium">目标频道自动已读</span><input type="checkbox" x-model="settings.mark_target_as_read" class="w-5 h-5"></label>
                     </div>
                 </div>
             </div>
@@ -258,40 +260,75 @@
             <!-- 监控源 -->
             <div x-show="currentTab==='sources'&&!loadingData">
                 <div class="app-card p-6 mb-4 flex gap-2"><input x-model="newSource" @keyup.enter="addSource" placeholder="@Channel 或 Link" class="app-input md:w-64"><button @click="addSource" class="app-btn">添加源</button></div>
-                <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4"><template x-for="s in rules.sources" :key="s.identifier"><div class="app-card p-4 flex justify-between items-center"><div class="truncate font-mono text-sm font-bold" x-text="s.identifier"></div><button @click="removeSource(s.identifier)" class="text-muted hover:text-red-500">🗑️</button></div></template></div>
+                <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4"><template x-for="s in rules.sources" :key="s.identifier"><div class="app-card p-4 flex justify-between items-center">
+                    <div class="overflow-hidden">
+                        <div class="truncate font-mono text-sm font-bold" x-text="s.identifier"></div>
+                        <!-- 显式显示 ID -->
+                        <div class="text-xs font-mono text-muted mt-1" x-text="'ID: ' + (s.resolved_id || 'Pending...')"></div>
+                    </div>
+                    <button @click="removeSource(s.identifier)" class="text-muted hover:text-red-500">🗑️</button>
+                </div></template></div>
             </div>
 
-            <!-- 规则 (优化显示) -->
+            <!-- 规则 -->
             <div x-show="currentTab==='rules'&&!loadingData" class="space-y-6">
                 <div class="app-card p-6">
                     <h3 class="text-lg font-bold mb-4">添加分发规则</h3>
                     <div class="grid grid-cols-1 md:grid-cols-3 gap-4 mb-4"><input x-model="newRule.name" placeholder="规则名称" class="app-input"><input x-model="newRule.target" placeholder="目标 ID (-100...)" class="app-input"><input x-model="newRule.topic" type="number" placeholder="话题 ID (选填)" class="app-input"></div>
-                    <div class="grid grid-cols-1 md:grid-cols-3 gap-4 mb-4"><textarea x-model="newRule.all_kw" rows="3" placeholder="[AND] 必须包含所有关键词" class="app-input"></textarea><textarea x-model="newRule.any_kw" rows="3" placeholder="[OR] 包含任一关键词" class="app-input"></textarea><textarea x-model="newRule.files" rows="3" placeholder="文件名正则 (*.apk)" class="app-input"></textarea></div>
+                    <div class="grid grid-cols-1 md:grid-cols-3 gap-4 mb-4"><textarea x-model="newRule.all_kw" rows="3" placeholder="[AND] 必须包含所有" class="app-input"></textarea><textarea x-model="newRule.any_kw" rows="3" placeholder="[OR] 包含任一" class="app-input"></textarea><textarea x-model="newRule.files" rows="3" placeholder="文件名正则 (*.apk)" class="app-input"></textarea></div>
                     <div class="flex justify-end"><button @click="addRule" class="app-btn">保存规则</button></div>
                 </div>
+
+                <!-- 默认目标提示 (仅展示，修改去设置页) -->
+                <div class="app-card p-4 border-l-4 border-yellow-500 bg-yellow-50 dark:bg-yellow-900/10 flex justify-between items-center">
+                    <div>
+                        <span class="text-xs font-bold uppercase text-yellow-600 dark:text-yellow-400 tracking-wider">Fallback</span>
+                        <div class="font-bold text-yellow-800 dark:text-yellow-200">默认转发目标 (未命中规则时)</div>
+                    </div>
+                    <div class="text-right">
+                        <div class="font-mono text-sm font-bold text-yellow-800 dark:text-yellow-200" x-text="settings.default_target || '未设置'"></div>
+                        <div class="text-xs text-yellow-600 dark:text-yellow-400" x-show="settings.default_topic_id" x-text="'Topic: ' + settings.default_topic_id"></div>
+                    </div>
+                </div>
+
                 <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
-                    <template x-for="rule in rules.distribution_rules" :key="rule.name">
-                        <div class="app-card p-5 flex flex-col justify-between">
-                            <div class="flex justify-between items-start mb-2"><h4 class="font-bold text-lg" x-text="rule.name"></h4><button @click="removeRule(rule.name)" class="text-xs text-red-500 bg-red-50 dark:bg-red-900/20 px-2 py-1 rounded">删除</button></div>
-                            <div class="flex gap-2 mb-4"><span class="text-xs font-mono bg-gray-100 dark:bg-zinc-800 px-2 py-1 rounded" x-text="'To: '+rule.target_identifier"></span><span x-show="rule.topic_id" class="text-xs font-mono bg-purple-100 dark:bg-purple-900/20 text-purple-600 px-2 py-1 rounded" x-text="'Topic: '+rule.topic_id"></span></div>
+                    <template x-for="(rule, index) in rules.distribution_rules" :key="rule.name">
+                        <div class="app-card p-5 flex flex-col justify-between relative overflow-hidden">
+                            <!-- 序号水印 -->
+                            <div class="absolute top-0 right-0 p-2 text-[4rem] font-bold opacity-5 pointer-events-none select-none font-mono" x-text="'#' + (index + 1)"></div>
                             
-                            <!-- 详情展示区域 -->
-                            <div class="space-y-2">
-                                <div x-show="rule.all_keywords?.length">
-                                    <span class="label-text">必须包含 (AND)</span>
-                                    <div><template x-for="k in rule.all_keywords"><span class="badge badge-blue" x-text="k"></span></template></div>
+                            <div class="relative z-10">
+                                <div class="flex justify-between items-start mb-2">
+                                    <div class="flex items-center gap-2">
+                                        <span class="text-xs font-mono text-muted" x-text="'#' + (index + 1)"></span>
+                                        <h4 class="font-bold text-lg" x-text="rule.name"></h4>
+                                    </div>
+                                    <button @click="removeRule(rule.name)" class="text-xs text-red-500 bg-red-50 dark:bg-red-900/20 px-2 py-1 rounded hover:bg-red-100">删除</button>
                                 </div>
-                                <div x-show="rule.any_keywords?.length">
-                                    <span class="label-text">包含任一 (OR)</span>
-                                    <div><template x-for="k in rule.any_keywords"><span class="badge badge-purple" x-text="k"></span></template></div>
+                                
+                                <!-- 修复夜间模式 Target ID 显示不清：使用 badge-gray 强制配色 -->
+                                <div class="flex gap-2 mb-4">
+                                    <span class="badge badge-gray" x-text="'To: '+rule.target_identifier"></span>
+                                    <span x-show="rule.topic_id" class="badge badge-purple" x-text="'Topic: '+rule.topic_id"></span>
                                 </div>
-                                <div x-show="rule.file_name_patterns?.length">
-                                    <span class="label-text">文件名匹配</span>
-                                    <div><template x-for="k in rule.file_name_patterns"><span class="badge badge-yellow" x-text="k"></span></template></div>
-                                </div>
-                                <div x-show="rule.file_types?.length">
-                                    <span class="label-text">文件类型</span>
-                                    <div><template x-for="k in rule.file_types"><span class="badge badge-pink" x-text="k"></span></template></div>
+                                
+                                <div class="space-y-2">
+                                    <div x-show="rule.all_keywords?.length">
+                                        <span class="label-text">必须包含 (AND)</span>
+                                        <div><template x-for="k in rule.all_keywords"><span class="badge badge-blue" x-text="k"></span></template></div>
+                                    </div>
+                                    <div x-show="rule.any_keywords?.length">
+                                        <span class="label-text">包含任一 (OR)</span>
+                                        <div><template x-for="k in rule.any_keywords"><span class="badge badge-purple" x-text="k"></span></template></div>
+                                    </div>
+                                    <div x-show="rule.file_name_patterns?.length">
+                                        <span class="label-text">文件名匹配</span>
+                                        <div><template x-for="k in rule.file_name_patterns"><span class="badge badge-yellow" x-text="k"></span></template></div>
+                                    </div>
+                                    <div x-show="rule.file_types?.length">
+                                        <span class="label-text">文件类型</span>
+                                        <div><template x-for="k in rule.file_types"><span class="badge badge-pink" x-text="k"></span></template></div>
+                                    </div>
                                 </div>
                             </div>
                         </div>
@@ -302,7 +339,7 @@
             <!-- 黑名单 -->
             <div x-show="currentTab==='blacklist'&&!loadingData" class="app-card p-6">
                 <div class="flex justify-between mb-4 border-b pb-4" style="border-color: var(--border-color);"><h3 class="font-bold">广告过滤</h3><button @click="saveBlacklist" class="app-btn">保存</button></div>
-                <div class="grid grid-cols-1 md:grid-cols-2 gap-6"><div class="space-y-2"><label class="text-sm font-bold text-secondary">中文/部分匹配</label><textarea x-model="blacklist.substring" rows="5" class="app-input font-mono text-xs"></textarea></div><div class="space-y-2"><label class="text-sm font-bold text-secondary">英文/全词匹配</label><textarea x-model="blacklist.word" rows="5" class="app-input font-mono text-xs"></textarea></div><div class="space-y-2"><label class="text-sm font-bold text-secondary">文件名过滤</label><textarea x-model="blacklist.file" rows="5" class="app-input font-mono text-xs"></textarea></div><div class="space-y-2"><label class="text-sm font-bold text-secondary">正则表达式</label><textarea x-model="blacklist.regex" rows="5" class="app-input font-mono text-xs"></textarea></div></div>
+                <div class="grid grid-cols-1 md:grid-cols-2 gap-6"><div class="space-y-2"><label class="text-sm font-bold text-secondary">中文/部分匹配</label><textarea x-model="blacklist.substring" rows="5" class="app-input form-textarea font-mono text-xs"></textarea></div><div class="space-y-2"><label class="text-sm font-bold text-secondary">英文/全词匹配</label><textarea x-model="blacklist.word" rows="5" class="app-input form-textarea font-mono text-xs"></textarea></div><div class="space-y-2"><label class="text-sm font-bold text-secondary">文件名过滤</label><textarea x-model="blacklist.file" rows="5" class="app-input form-textarea font-mono text-xs"></textarea></div><div class="space-y-2"><label class="text-sm font-bold text-secondary">正则表达式</label><textarea x-model="blacklist.regex" rows="5" class="app-input form-textarea font-mono text-xs"></textarea></div></div>
             </div>
             
             <!-- 白名单 -->

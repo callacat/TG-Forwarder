@@ -59,11 +59,14 @@ async def load_rules_from_db(config: Optional[Config] = None):
                 try:
                     # 迁移初始化
                     initial_settings = SystemSettings(
-                        dedup_retention_days=30, # 默认值
+                        dedup_retention_days=30,
                         forwarding_mode=config.forwarding.mode,
                         forward_new_only=config.forwarding.forward_new_only,
                         mark_as_read=config.forwarding.mark_as_read,
-                        mark_target_as_read=config.forwarding.mark_target_as_read
+                        mark_target_as_read=config.forwarding.mark_target_as_read,
+                        # (新增) 迁移默认目标
+                        default_target=str(config.targets.default_target),
+                        default_topic_id=config.targets.default_topic_id
                     )
                     
                     rules_db = RulesDatabase(
@@ -121,12 +124,11 @@ async def get_settings(auth: bool = Depends(get_current_user)):
 async def update_settings(settings: SystemSettings, auth: bool = Depends(get_current_user)):
     """更新系统设置"""
     rules_db.settings = settings
-    # 同时更新数据库中的去重天数设置
     await database.set_dedup_retention(settings.dedup_retention_days)
     await save_rules_to_db()
     return {"status": "success", "message": "系统设置已更新。"}
 
-# 兼容旧 API (为了不破坏 index.html 的首次加载，虽然我们会更新 index.html)
+# 兼容旧 API
 @app.get("/api/settings/dedup")
 async def get_dedup_legacy(auth: bool = Depends(get_current_user)):
     return {"dedup_retention_days": rules_db.settings.dedup_retention_days}
