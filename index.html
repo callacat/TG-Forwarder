@@ -5,21 +5,35 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>TG Forwarder 配置面板</title>
     <script src="https://cdn.tailwindcss.com"></script>
+    <script>
+        tailwind.config = {
+            darkMode: 'class',
+            theme: {
+                extend: {
+                    colors: {
+                        gray: {
+                            750: '#2d3748',
+                        }
+                    }
+                }
+            }
+        }
+    </script>
     <style>
         @keyframes spin {
             to { transform: rotate(360deg); }
         }
         .loader {
-            border: 4px solid rgba(0, 0, 0, .1);
-            border-left-color: #3b82f6;
+            border: 3px solid rgba(255, 255, 255, 0.3);
+            border-left-color: #ffffff;
             border-radius: 50%;
-            width: 1.25rem;
-            height: 1.25rem;
+            width: 1rem;
+            height: 1rem;
             animation: spin 1s linear infinite;
         }
-        .dark .loader {
-            border-left-color: #60a5fa;
-        }
+        /* 按钮内的 loader 颜色适配 */
+        .btn-loader-blue { border-left-color: #3b82f6; border-color: rgba(59, 130, 246, 0.3); }
+        
         .no-scrollbar::-webkit-scrollbar { display: none; }
         .no-scrollbar { -ms-overflow-style: none; scrollbar-width: none; }
         body {
@@ -34,44 +48,55 @@
         .list-item {
             transition: background-color 0.2s ease;
         }
+        /* Range slider styling */
+        input[type="range"] {
+            -webkit-appearance: none;
+            background: transparent; 
+        }
         input[type="range"]::-webkit-slider-thumb {
             -webkit-appearance: none;
-            appearance: none;
-            width: 20px;
             height: 20px;
-            background: #3b82f6;
+            width: 20px;
             border-radius: 50%;
+            background: #3b82f6;
             cursor: pointer;
-            margin-top: -6px; /* 居中 */
+            margin-top: -8px; 
+            box-shadow: 0 1px 3px rgba(0,0,0,0.3);
         }
-        input[type="range"]::-moz-range-thumb {
-            width: 20px;
-            height: 20px;
-            background: #3b82f6;
-            border-radius: 50%;
+        input[type="range"]::-webkit-slider-runnable-track {
+            width: 100%;
+            height: 4px;
             cursor: pointer;
+            background: #e5e7eb;
+            border-radius: 2px;
+        }
+        .dark input[type="range"]::-webkit-slider-runnable-track {
+            background: #4b5563;
         }
     </style>
 </head>
-<body class="bg-gray-100 text-gray-800 dark:bg-gray-900 dark:text-gray-200 font-sans antialiased">
+<body class="bg-gray-100 text-gray-800 dark:bg-gray-900 dark:text-gray-200 font-sans antialiased transition-colors duration-300">
 
     <!-- 登录遮罩 -->
-    <div id="login-modal" class="fixed inset-0 z-50 flex items-center justify-center bg-black bg-opacity-50 transition-opacity duration-300 opacity-0 pointer-events-none">
-        <div class="bg-white dark:bg-gray-800 rounded-lg shadow-xl p-6 w-full max-w-sm mx-4">
-            <h2 class="text-2xl font-bold text-center text-gray-900 dark:text-gray-100 mb-4">登录</h2>
-            <p class="text-sm text-gray-600 dark:text-gray-400 text-center mb-4">
-                请输入你在 <code>config.yaml</code> 中设置的 <code>web_ui.password</code>。
+    <div id="login-modal" class="fixed inset-0 z-50 flex items-center justify-center bg-black bg-opacity-60 backdrop-blur-sm transition-opacity duration-300 opacity-0 pointer-events-none">
+        <div class="bg-white dark:bg-gray-800 rounded-xl shadow-2xl p-8 w-full max-w-sm mx-4 border border-gray-200 dark:border-gray-700">
+            <div class="text-center mb-6">
+                <span class="text-4xl">🔒</span>
+                <h2 class="text-2xl font-bold text-gray-900 dark:text-gray-100 mt-4">验证身份</h2>
+            </div>
+            <p class="text-sm text-gray-600 dark:text-gray-400 text-center mb-6">
+                请输入 <code>config.yaml</code> 中设置的 <br><code>web_ui.password</code>
             </p>
             <div class="space-y-4">
                 <div>
-                    <label for="password-input" class="block text-sm font-medium text-gray-700 dark:text-gray-300">密码</label>
-                    <input type="password" id="password-input" class="mt-1 block w-full px-3 py-2 border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-700 text-gray-900 dark:text-gray-100 rounded-md shadow-sm placeholder-gray-400 focus:outline-none focus:ring-blue-500 focus:border-blue-500" placeholder="你的密码">
+                    <label for="password-input" class="sr-only">密码</label>
+                    <input type="password" id="password-input" class="block w-full px-4 py-3 border border-gray-300 dark:border-gray-600 bg-gray-50 dark:bg-gray-900 text-gray-900 dark:text-gray-100 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500 transition-colors" placeholder="输入密码...">
                 </div>
-                <div id="login-error" class="text-red-500 text-sm font-medium hidden">
-                    密码错误。
+                <div id="login-error" class="text-red-500 text-sm text-center font-medium hidden bg-red-50 dark:bg-red-900/20 py-2 rounded">
+                    密码错误
                 </div>
-                <button id="login-button" class="w-full flex justify-center py-2 px-4 border border-transparent rounded-md shadow-sm text-sm font-medium text-white bg-blue-600 hover:bg-blue-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-blue-500">
-                    <span id="login-button-text">登录</span>
+                <button id="login-button" class="w-full flex justify-center items-center py-3 px-4 border border-transparent rounded-lg shadow-md text-sm font-bold text-white bg-blue-600 hover:bg-blue-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-blue-500 transition-colors disabled:opacity-70">
+                    <span id="login-button-text">解锁面板</span>
                     <div id="login-button-loader" class="loader hidden"></div>
                 </button>
             </div>
@@ -79,63 +104,99 @@
     </div>
 
     <!-- 主应用外壳 (默认隐藏) -->
-    <div id="app-shell" class="hidden min-h-screen">
+    <div id="app-shell" class="hidden min-h-screen flex flex-col">
         
         <!-- 顶部导航栏 -->
-        <nav class="bg-white dark:bg-gray-800 shadow-md sticky top-0 z-40">
+        <nav class="bg-white dark:bg-gray-800 shadow-sm border-b border-gray-200 dark:border-gray-700 sticky top-0 z-40 transition-colors duration-300">
             <div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
-                <div class="flex justify-between items-center h-16">
-                    <div class="flex-shrink-0 flex items-center">
-                        <span class="text-2xl font-bold text-blue-600 dark:text-blue-500">TG Forwarder</span>
+                <div class="flex justify-between h-16">
+                    <!-- Logo & Title -->
+                    <div class="flex">
+                        <div class="flex-shrink-0 flex items-center space-x-2">
+                            <svg class="w-8 h-8 text-blue-600" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 10V3L4 14h7v7l9-11h-7z"></path></svg>
+                            <span class="text-xl font-bold text-gray-900 dark:text-white tracking-tight">TG Forwarder</span>
+                        </div>
+                        <!-- 桌面端导航 -->
+                        <div class="hidden md:ml-10 md:flex md:space-x-8" id="main-nav">
+                            <!-- 导航标签 JS 插入 -->
+                        </div>
                     </div>
                     
-                    <!-- 桌面端导航 -->
-                    <div class="hidden sm:ml-6 sm:flex sm:items-center sm:space-x-8" id="main-nav">
-                        <!-- 导航标签将由 JS 动态插入 -->
-                    </div>
-                    
-                    <div class="ml-auto flex items-center">
+                    <!-- 右侧工具栏 -->
+                    <div class="flex items-center space-x-4">
+                        <!-- 重载提示 (简版) -->
+                        <button id="quick-reload-hint" class="hidden text-yellow-600 dark:text-yellow-400 text-xs font-medium bg-yellow-100 dark:bg-yellow-900/30 px-2 py-1 rounded border border-yellow-200 dark:border-yellow-800 cursor-help" title="配置已更改，请在 Bot 中执行 /reload">
+                            需要 Reload
+                        </button>
+
+                        <!-- 主题切换 -->
                         <div class="relative">
-                            <button id="theme-toggle-button" type="button" class="p-2 rounded-full text-gray-500 dark:text-gray-400 hover:bg-gray-100 dark:hover:bg-gray-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-blue-500">
+                            <button id="theme-toggle-button" type="button" class="p-2 rounded-full text-gray-500 dark:text-gray-400 hover:bg-gray-100 dark:hover:bg-gray-700 focus:outline-none transition-colors">
                                 <span class="sr-only">切换主题</span>
-                                <span id="theme-icon-light" class="hidden">☀️</span>
-                                <span id="theme-icon-dark" class="hidden">🌙</span>
-                                <span id="theme-icon-system" class="hidden">💻</span>
+                                <span id="theme-icon-light" class="hidden text-xl">☀️</span>
+                                <span id="theme-icon-dark" class="hidden text-xl">🌙</span>
+                                <span id="theme-icon-system" class="hidden text-xl">💻</span>
                             </button>
                             <!-- 下拉菜单 -->
-                            <div id="theme-menu" class="origin-top-right absolute right-0 mt-2 w-32 rounded-md shadow-lg py-1 bg-white dark:bg-gray-700 ring-1 ring-black ring-opacity-5 focus:outline-none hidden transition ease-out duration-100 opacity-0 scale-95" role="menu">
-                                <a href="#" class="theme-menu-item block px-4 py-2 text-sm text-gray-700 dark:text-gray-200 hover:bg-gray-100 dark:hover:bg-gray-600" data-theme="light" role="menuitem">☀️ 亮色</a>
-                                <a href="#" class="theme-menu-item block px-4 py-2 text-sm text-gray-700 dark:text-gray-200 hover:bg-gray-100 dark:hover:bg-gray-600" data-theme="dark" role="menuitem">🌙 暗色</a>
-                                <a href="#" class="theme-menu-item block px-4 py-2 text-sm text-gray-700 dark:text-gray-200 hover:bg-gray-100 dark:hover:bg-gray-600" data-theme="system" role="menuitem">💻 跟随系统</a>
+                            <div id="theme-menu" class="absolute right-0 mt-2 w-36 rounded-lg shadow-xl bg-white dark:bg-gray-700 ring-1 ring-black ring-opacity-5 hidden transform opacity-0 scale-95 transition-all duration-200 origin-top-right z-50">
+                                <div class="py-1">
+                                    <a href="#" class="theme-menu-item flex items-center px-4 py-2 text-sm text-gray-700 dark:text-gray-200 hover:bg-gray-100 dark:hover:bg-gray-600" data-theme="light">☀️ 亮色模式</a>
+                                    <a href="#" class="theme-menu-item flex items-center px-4 py-2 text-sm text-gray-700 dark:text-gray-200 hover:bg-gray-100 dark:hover:bg-gray-600" data-theme="dark">🌙 暗色模式</a>
+                                    <a href="#" class="theme-menu-item flex items-center px-4 py-2 text-sm text-gray-700 dark:text-gray-200 hover:bg-gray-100 dark:hover:bg-gray-600" data-theme="system">💻 跟随系统</a>
+                                </div>
                             </div>
                         </div>
                     </div>
                 </div>
             </div>
+            <!-- 移动端导航容器 (可扩展) -->
+            <div class="md:hidden border-t border-gray-200 dark:border-gray-700 overflow-x-auto scrollbar-hide">
+                <div class="flex px-4 space-x-6" id="mobile-nav">
+                    <!-- JS 填充 -->
+                </div>
+            </div>
         </nav>
 
         <!-- 主内容区域 -->
-        <main class="py-10">
+        <main class="flex-grow py-8 bg-gray-50 dark:bg-gray-900 transition-colors duration-300">
             <div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
                 
                 <!-- "请 Reload" 的全局提示 -->
-                <div id="reload-notice" class="bg-yellow-100 border-l-4 border-yellow-500 text-yellow-700 p-4 rounded-md mb-6 shadow hidden" role="alert">
-                    <div class="flex">
-                        <div class="py-1"><svg class="h-6 w-6 text-yellow-500 mr-4" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z"/></svg></div>
-                        <div>
-                            <p class="font-bold">规则已保存！</p>
-                            <p class="text-sm">配置已成功保存到 <code>rules_db.json</code>。请在你的 Bot 聊天中发送 <code>/reload</code> 命令，以使更改在正在运行的程序中生效。</p>
+                <div id="reload-notice" class="hidden mb-8 transform transition-all duration-500 ease-out translate-y-[-10px] opacity-0" role="alert">
+                    <div class="bg-gradient-to-r from-yellow-50 to-white dark:from-gray-800 dark:to-gray-800 border-l-4 border-yellow-500 rounded-r-lg shadow-md p-4 flex items-start">
+                        <div class="flex-shrink-0">
+                            <svg class="h-6 w-6 text-yellow-500" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z"/></svg>
+                        </div>
+                        <div class="ml-3 w-full">
+                            <h3 class="text-sm font-bold text-yellow-800 dark:text-yellow-300">配置已保存</h3>
+                            <div class="mt-1 text-sm text-yellow-700 dark:text-yellow-400">
+                                <p>更改已写入 <code>rules_db.json</code>。请在 Telegram Bot 中发送 <code>/reload</code> 命令使其生效。</p>
+                            </div>
+                        </div>
+                        <div class="ml-auto pl-3">
+                            <div class="-mx-1.5 -my-1.5">
+                                <button type="button" onclick="hideReloadNotice()" class="inline-flex bg-transparent rounded-md p-1.5 text-yellow-500 hover:bg-yellow-100 dark:hover:bg-gray-700 focus:outline-none">
+                                    <span class="sr-only">关闭</span>
+                                    <svg class="h-5 w-5" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor"><path fill-rule="evenodd" d="M4.293 4.293a1 1 0 011.414 0L10 8.586l4.293-4.293a1 1 0 111.414 1.414L11.414 10l4.293 4.293a1 1 0 01-1.414 1.414L10 11.414l-4.293 4.293a1 1 0 01-1.414-1.414L8.586 10 4.293 5.707a1 1 0 010-1.414z" clip-rule="evenodd" /></svg>
+                                </button>
+                            </div>
                         </div>
                     </div>
                 </div>
 
                 <!-- 动态内容面板 -->
-                <div id="content-panels">
+                <div id="content-panels" class="transition-opacity duration-200">
                     <!-- 面板将由 JS 动态插入 -->
                 </div>
 
             </div>
         </main>
+        
+        <footer class="bg-white dark:bg-gray-800 border-t border-gray-200 dark:border-gray-700 py-6">
+            <div class="max-w-7xl mx-auto px-4 text-center text-sm text-gray-400 dark:text-gray-500">
+                TG Forwarder v9.3 &copy; 2024
+            </div>
+        </footer>
 
     </div>
 
@@ -149,7 +210,6 @@
 
         async function apiFetch(url, options = {}) {
             if (!AUTH_HEADER) {
-                console.error("API 认证未设置。");
                 showLoginModal();
                 throw new Error("未认证");
             }
@@ -162,9 +222,8 @@
             try {
                 const response = await fetch(url, config);
                 if (response.status === 401) {
-                    console.error("API 认证失败 (401)");
                     localStorage.removeItem('tgf_password'); 
-                    showLoginModal("密码错误或会话已过期。");
+                    showLoginModal("密码错误或会话已过期");
                     throw new Error("认证失败");
                 }
                 if (!response.ok) {
@@ -192,20 +251,21 @@
         function showLoginModal(errorMsg = null) {
             loginModal.classList.remove('opacity-0', 'pointer-events-none');
             loginModal.classList.add('opacity-100');
-            appShell.classList.add('hidden');
+            appShell.classList.add('blur-sm'); // 增加背景模糊
             if (errorMsg) {
                 loginError.textContent = errorMsg;
                 loginError.classList.remove('hidden');
             } else {
                 loginError.classList.add('hidden');
             }
+            passwordInput.value = "";
             passwordInput.focus();
         }
 
         function hideLoginModal() {
             loginModal.classList.add('opacity-0', 'pointer-events-none');
             loginModal.classList.remove('opacity-100');
-            appShell.classList.remove('hidden');
+            appShell.classList.remove('blur-sm', 'hidden');
         }
         
         function setLoading(isLoading) {
@@ -225,7 +285,8 @@
             loginError.classList.add('hidden');
 
             if (!password) {
-                showLoginModal("请输入密码。");
+                loginError.textContent = "请输入密码";
+                loginError.classList.remove('hidden');
                 setLoading(false);
                 return;
             }
@@ -243,7 +304,11 @@
                 setLoading(false);
                 AUTH_HEADER = ""; 
                 localStorage.removeItem('tgf_password'); 
-                loginError.textContent = "密码错误。请重试。";
+                if(error.message !== "认证失败") {
+                     loginError.textContent = "无法连接到服务器";
+                } else {
+                     loginError.textContent = "密码不正确";
+                }
                 loginError.classList.remove('hidden');
             }
         }
@@ -256,14 +321,13 @@
         async function checkSavedAuth() {
             const savedPassword = localStorage.getItem('tgf_password');
             if (savedPassword) {
-                passwordInput.value = savedPassword; 
                 await handleLogin(savedPassword);
             } else {
                 showLoginModal(); 
             }
         }
 
-        // --- 主题切换逻辑 ---
+        // --- 主题切换逻辑 (已修复) ---
         const themeToggleButton = document.getElementById('theme-toggle-button');
         const themeMenu = document.getElementById('theme-menu');
         const themeIcons = {
@@ -271,12 +335,17 @@
             dark: document.getElementById('theme-icon-dark'),
             system: document.getElementById('theme-icon-system'),
         };
+        
+        // 监听系统主题变化
+        const systemThemeMedia = window.matchMedia('(prefers-color-scheme: dark)');
 
         function applyTheme(theme) {
-            themeIcons.light.classList.add('hidden');
-            themeIcons.dark.classList.add('hidden');
-            themeIcons.system.classList.add('hidden');
+            // 隐藏所有图标
+            Object.values(themeIcons).forEach(el => el.classList.add('hidden'));
             
+            // 移除可能的监听器 (简单处理：重新绑定监听器成本低)
+            systemThemeMedia.onchange = null;
+
             if (theme === 'dark') {
                 document.documentElement.classList.add('dark');
                 themeIcons.dark.classList.remove('hidden');
@@ -284,11 +353,19 @@
                 document.documentElement.classList.remove('dark');
                 themeIcons.light.classList.remove('hidden');
             } else { // system
-                if (window.matchMedia('(prefers-color-scheme: dark)').matches) {
+                // 初始判断
+                if (systemThemeMedia.matches) {
                     document.documentElement.classList.add('dark');
                 } else {
                     document.documentElement.classList.remove('dark');
                 }
+                // 绑定监听
+                systemThemeMedia.onchange = (e) => {
+                    if (localStorage.getItem('theme') === 'system') {
+                        if (e.matches) document.documentElement.classList.add('dark');
+                        else document.documentElement.classList.remove('dark');
+                    }
+                };
                 themeIcons.system.classList.remove('hidden');
             }
         }
@@ -302,8 +379,10 @@
         // --- 主应用逻辑 ---
         
         const mainNav = document.getElementById('main-nav');
+        const mobileNav = document.getElementById('mobile-nav');
         const contentPanels = document.getElementById('content-panels');
         const reloadNotice = document.getElementById('reload-notice');
+        const quickReloadHint = document.getElementById('quick-reload-hint');
         
         let state = { rules: {}, stats: {}, settings: {} }; 
         
@@ -317,6 +396,18 @@
         
         function showReloadNotice() {
             reloadNotice.classList.remove('hidden');
+            // 小动画
+            setTimeout(() => {
+                reloadNotice.classList.remove('translate-y-[-10px]', 'opacity-0');
+            }, 10);
+            quickReloadHint.classList.remove('hidden');
+        }
+        
+        window.hideReloadNotice = function() {
+            reloadNotice.classList.add('translate-y-[-10px]', 'opacity-0');
+            setTimeout(() => {
+                reloadNotice.classList.add('hidden');
+            }, 500);
         }
         
         function arrayToText(arr) {
@@ -331,81 +422,53 @@
                        .filter(Boolean); 
         }
 
-        // --- v9.1：状态 & 设置面板 ---
+        // --- 面板渲染函数 ---
+
+        // 1. 状态 & 设置
         function renderStatsPanel(stats, settings) {
             const { 
-                dedup_hashes = 0, 
-                forward_progress_channels = 0,
-                invalid_links = 0,
-                sources = 0,
-                distribution_rules = 0,
-                whitelist_keywords = 0,
-                blacklist_substring = 0,
-                blacklist_word = 0,
-                blacklist_file = 0,
-                blacklist_regex = 0
+                dedup_hashes = 0, forward_progress_channels = 0, invalid_links = 0,
+                sources = 0, distribution_rules = 0, whitelist_keywords = 0,
+                blacklist_substring = 0, blacklist_word = 0, blacklist_file = 0, blacklist_regex = 0
             } = stats || {};
-            
             const { dedup_retention_days = 30 } = settings || {};
-            
             const blacklist_total = blacklist_substring + blacklist_word + blacklist_file + blacklist_regex;
 
             return `
-                <div class="panel bg-white dark:bg-gray-800 p-6 rounded-lg shadow space-y-8">
-                    
-                    <!-- 1. 统计概览 -->
-                    <div>
-                        <h2 class="text-2xl font-semibold mb-4 text-gray-900 dark:text-gray-100">统计概览 (SQLite)</h2>
-                        <div class="grid grid-cols-1 md:grid-cols-3 gap-4">
-                            <div class="bg-gray-50 dark:bg-gray-700 p-4 rounded-lg">
-                                <dt class="text-sm font-medium text-gray-500 dark:text-gray-400 truncate">去重哈希 (Dedup)</dt>
-                                <dd class="mt-1 text-3xl font-semibold text-blue-600 dark:text-blue-400">${dedup_hashes}</dd>
-                            </div>
-                            <div class="bg-gray-50 dark:bg-gray-700 p-4 rounded-lg">
-                                <dt class="text-sm font-medium text-gray-500 dark:text-gray-400 truncate">频道转发进度</dt>
-                                <dd class="mt-1 text-3xl font-semibold text-blue-600 dark:text-blue-400">${forward_progress_channels}</dd>
-                            </div>
-                            <div class="bg-gray-50 dark:bg-gray-700 p-4 rounded-lg">
-                                <dt class="text-sm font-medium text-gray-500 dark:text-gray-400 truncate">已发现的失效链接</dt>
-                                <dd class="mt-1 text-3xl font-semibold text-red-600 dark:text-red-400">${invalid_links}</dd>
-                            </div>
+                <div class="grid grid-cols-1 gap-6">
+                    <!-- 概览卡片 -->
+                    <div class="bg-white dark:bg-gray-800 rounded-xl shadow-sm p-6 border border-gray-200 dark:border-gray-700">
+                        <h2 class="text-lg font-bold mb-4 text-gray-900 dark:text-gray-100 flex items-center">
+                            <span class="mr-2">📊</span> 运行统计
+                        </h2>
+                        <div class="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-6 gap-4">
+                            ${renderStatCard("去重记录", dedup_hashes, "blue")}
+                            ${renderStatCard("转发进度", forward_progress_channels, "indigo")}
+                            ${renderStatCard("失效链接", invalid_links, "red")}
+                            ${renderStatCard("监控源", sources, "green")}
+                            ${renderStatCard("转发规则", distribution_rules, "purple")}
+                            ${renderStatCard("黑/白名单", `${blacklist_total} / ${whitelist_keywords}`, "gray")}
                         </div>
                     </div>
 
-                    <!-- 2. 规则统计 -->
-                    <div>
-                        <h2 class="text-2xl font-semibold mb-4 text-gray-900 dark:text-gray-100">规则概览 (rules_db.json)</h2>
-                        <div class="grid grid-cols-1 md:grid-cols-3 gap-4">
-                            <div class="bg-gray-50 dark:bg-gray-700 p-4 rounded-lg">
-                                <dt class="text-sm font-medium text-gray-500 dark:text-gray-400 truncate">监控源</dt>
-                                <dd class="mt-1 text-3xl font-semibold text-blue-600 dark:text-blue-400">${sources}</dd>
+                    <!-- 设置卡片 -->
+                    <div class="bg-white dark:bg-gray-800 rounded-xl shadow-sm p-6 border border-gray-200 dark:border-gray-700">
+                        <h2 class="text-lg font-bold mb-4 text-gray-900 dark:text-gray-100 flex items-center">
+                            <span class="mr-2">⚙️</span> 数据库设置
+                        </h2>
+                        <div class="max-w-lg">
+                            <div class="flex justify-between mb-2">
+                                <label for="dedup-slider" class="text-sm font-medium text-gray-700 dark:text-gray-300">去重记录保留时间</label>
+                                <span class="text-sm font-bold text-blue-600 dark:text-blue-400"><span id="dedup-days-label">${dedup_retention_days}</span> 天</span>
                             </div>
-                            <div class="bg-gray-50 dark:bg-gray-700 p-4 rounded-lg">
-                                <dt class="text-sm font-medium text-gray-500 dark:text-gray-400 truncate">转发规则</dt>
-                                <dd class="mt-1 text-3xl font-semibold text-blue-600 dark:text-blue-400">${distribution_rules}</dd>
-                            </div>
-                            <div class="bg-gray-50 dark:bg-gray-700 p-4 rounded-lg">
-                                <dt class="text-sm font-medium text-gray-500 dark:text-gray-400 truncate">黑名单 / 白名单</dt>
-                                <dd class="mt-1 text-3xl font-semibold text-blue-600 dark:text-blue-400">${blacklist_total} / ${whitelist_keywords}</dd>
-                            </div>
-                        </div>
-                    </div>
-                    
-                    <!-- 3. 数据库设置 -->
-                    <div>
-                        <h2 class="text-2xl font-semibold mb-4 text-gray-900 dark:text-gray-100">数据库设置</h2>
-                        <div class="bg-gray-50 dark:bg-gray-700 p-6 rounded-lg">
-                            <div class="max-w-md">
-                                <label for="dedup-slider" class="block text-sm font-medium text-gray-700 dark:text-gray-300">
-                                    去重哈希保留天数: <span id="dedup-days-label" class="font-bold text-blue-600 dark:text-blue-400">${dedup_retention_days}</span> 天
-                                </label>
-                                <input id="dedup-slider" type="range" min="1" max="30" value="${dedup_retention_days}" class="w-full h-2 bg-gray-200 dark:bg-gray-600 rounded-lg appearance-none cursor-pointer mt-2">
-                                <p class="text-xs text-gray-500 dark:text-gray-400 mt-2">
-                                    设置哈希在数据库中保留的最长时间 (1-30天)。更短的时间可以节省空间。将在下次定时任务（每天 4:05 UTC）时生效。
-                                </p>
-                                <button id="save-dedup" class="mt-4 flex justify-center py-2 px-4 border border-transparent rounded-md shadow-sm text-sm font-medium text-white bg-blue-600 hover:bg-blue-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-blue-500">
+                            <input id="dedup-slider" type="range" min="1" max="30" value="${dedup_retention_days}" class="w-full h-2 bg-gray-200 dark:bg-gray-700 rounded-lg appearance-none cursor-pointer">
+                            <p class="text-xs text-gray-500 dark:text-gray-400 mt-2">
+                                更短的时间可以减少 <code>forwarder.sqlite</code> 的体积。设置将在每天凌晨 4:05 (UTC) 的维护任务中生效。
+                            </p>
+                            <div class="mt-4">
+                                <button id="save-dedup" class="btn-primary inline-flex items-center px-4 py-2 border border-transparent text-sm font-medium rounded-md text-white bg-blue-600 hover:bg-blue-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-blue-500">
                                     <span id="save-dedup-text">保存设置</span>
-                                    <div id="save-dedup-loader" class="loader hidden"></div>
+                                    <div id="save-dedup-loader" class="loader hidden ml-2"></div>
                                 </button>
                             </div>
                         </div>
@@ -414,52 +477,60 @@
             `;
         }
         
-        // (占位符) 
-        function renderRulesPanel(data) {
+        function renderStatCard(label, value, color) {
+            const colorMap = {
+                blue: 'text-blue-600 dark:text-blue-400 bg-blue-50 dark:bg-blue-900/20',
+                red: 'text-red-600 dark:text-red-400 bg-red-50 dark:bg-red-900/20',
+                green: 'text-emerald-600 dark:text-emerald-400 bg-emerald-50 dark:bg-emerald-900/20',
+                purple: 'text-purple-600 dark:text-purple-400 bg-purple-50 dark:bg-purple-900/20',
+                indigo: 'text-indigo-600 dark:text-indigo-400 bg-indigo-50 dark:bg-indigo-900/20',
+                gray: 'text-gray-600 dark:text-gray-400 bg-gray-100 dark:bg-gray-700/50',
+            };
+            const style = colorMap[color] || colorMap.gray;
+            
             return `
-                <div class="panel bg-white dark:bg-gray-800 p-6 rounded-lg shadow">
-                    <h2 class="text-2xl font-semibold mb-4 text-gray-900 dark:text-gray-100">转发规则 (Distribution Rules)</h2>
-                    <p class="text-gray-600 dark:text-gray-400">
-                        (下一步：v9.3) 这里将显示一个用于添加、查看和删除转发规则的完整表单。
-                    </p>
+                <div class="p-4 rounded-lg ${style.split(' ')[2]} ${style.split(' ')[3]} border border-transparent hover:border-opacity-50 transition-all">
+                    <dt class="text-xs font-medium opacity-80 uppercase tracking-wider text-gray-500 dark:text-gray-400">${label}</dt>
+                    <dd class="mt-1 text-2xl font-bold ${style.split(' ')[0]} ${style.split(' ')[1]}">${value}</dd>
                 </div>
             `;
         }
-        
-        // v9.2：实现监控源面板
+
+        // 2. 监控源 (修复了删除按钮布局)
         function renderSourcesPanel(data) {
             const sources = data || [];
             return `
-                <div class="panel bg-white dark:bg-gray-800 p-6 rounded-lg shadow">
-                    <h2 class="text-2xl font-semibold mb-4 text-gray-900 dark:text-gray-100">监控源 (Sources)</h2>
-                    
-                    <!-- 添加源表单 -->
-                    <div class="bg-gray-50 dark:bg-gray-700 p-4 rounded-lg mb-6">
-                        <h3 class="text-lg font-medium mb-2">添加新监控源</h3>
-                        <div class="flex flex-col sm:flex-row gap-2">
-                            <input type="text" id="new-source-id" class="flex-grow block w-full px-3 py-2 border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800 text-gray-900 dark:text-gray-100 rounded-md shadow-sm placeholder-gray-400 focus:outline-none focus:ring-blue-500 focus:border-blue-500" placeholder="频道/群组 ID, @username, 或 t.me/ 链接">
-                            <button id="add-source-button" class="flex justify-center py-2 px-4 border border-transparent rounded-md shadow-sm text-sm font-medium text-white bg-blue-600 hover:bg-blue-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-blue-500">
-                                <span id="add-source-text">添加源</span>
+                <div class="bg-white dark:bg-gray-800 rounded-xl shadow-sm border border-gray-200 dark:border-gray-700 overflow-hidden">
+                    <div class="p-6 border-b border-gray-200 dark:border-gray-700 flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4">
+                        <div>
+                            <h2 class="text-xl font-bold text-gray-900 dark:text-gray-100">监控源列表</h2>
+                            <p class="text-sm text-gray-500 dark:text-gray-400 mt-1">Bot 将监听这些频道的消息。</p>
+                        </div>
+                        <div class="flex w-full sm:w-auto gap-2">
+                            <input type="text" id="new-source-id" class="flex-grow sm:w-64 px-3 py-2 border border-gray-300 dark:border-gray-600 bg-gray-50 dark:bg-gray-900 text-gray-900 dark:text-gray-100 rounded-md focus:ring-blue-500 focus:border-blue-500 text-sm" placeholder="频道ID, @username 或链接">
+                            <button id="add-source-button" class="flex-shrink-0 px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white rounded-md text-sm font-medium transition-colors flex items-center justify-center min-w-[80px]">
+                                <span id="add-source-text">添加</span>
                                 <div id="add-source-loader" class="loader hidden"></div>
                             </button>
                         </div>
-                        <p class="text-xs text-gray-500 dark:text-gray-400 mt-2">
-                            添加后，请点击 <code>/reload</code> 使其在机器人上生效。
-                        </p>
                     </div>
 
-                    <!-- 源列表 -->
-                    <div class="space-y-3" id="source-list">
-                        ${sources.length === 0 ? '<p class="text-gray-500 dark:text-gray-400">当前没有配置监控源。</p>' : ''}
+                    <div class="divide-y divide-gray-200 dark:divide-gray-700">
+                        ${sources.length === 0 ? '<div class="p-8 text-center text-gray-500 dark:text-gray-400">暂无监控源</div>' : ''}
                         ${sources.map(s => `
-                            <div class="list-item flex items-center justify-between p-3 bg-gray-100 dark:bg-gray-700 rounded-md">
-                                <div class="truncate">
-                                    <p class="text-sm font-medium text-gray-900 dark:text-gray-100">${s.identifier}</p>
-                                    <p class="text-xs text-gray-500 dark:text-gray-400">
-                                        (解析后的 ID: ${s.resolved_id ? `<code>${s.resolved_id}</code>` : '<em>未解析, 请 /reload</em>'})
+                            <div class="group flex items-center justify-between p-4 hover:bg-gray-50 dark:hover:bg-gray-700/50 transition-colors">
+                                <!-- 修复：添加 flex-1 和 min-w-0 确保文本正确截断且不挤压按钮 -->
+                                <div class="flex-1 min-w-0 mr-4">
+                                    <div class="flex items-center">
+                                        <p class="text-sm font-semibold text-gray-900 dark:text-gray-100 truncate" title="${s.identifier}">${s.identifier}</p>
+                                        ${s.resolved_id ? `<span class="ml-2 inline-flex items-center px-2 py-0.5 rounded text-xs font-medium bg-green-100 text-green-800 dark:bg-green-900 dark:text-green-200">已解析</span>` : 
+                                        `<span class="ml-2 inline-flex items-center px-2 py-0.5 rounded text-xs font-medium bg-yellow-100 text-yellow-800 dark:bg-yellow-900 dark:text-yellow-200" title="请 /reload">未解析</span>`}
+                                    </div>
+                                    <p class="text-xs text-gray-500 dark:text-gray-400 mt-0.5 font-mono truncate">
+                                        ID: ${s.resolved_id || 'Waiting for reload...'}
                                     </p>
                                 </div>
-                                <button data-id="${s.identifier}" class="remove-source-btn ml-4 flex-shrink-0 p-1.5 rounded-full text-red-500 hover:bg-red-100 dark:hover:bg-red-800 focus:outline-none focus:ring-2 focus:ring-red-500">
+                                <button data-id="${s.identifier}" class="remove-source-btn flex-shrink-0 p-2 text-gray-400 hover:text-red-600 hover:bg-red-50 dark:hover:bg-red-900/30 rounded-full transition-all focus:outline-none" title="删除">
                                     <svg class="h-5 w-5" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" /></svg>
                                 </button>
                             </div>
@@ -468,401 +539,469 @@
                 </div>
             `;
         }
-        
-        // v8.3：实现黑名单面板
-        function renderBlacklistPanel(data) {
-            const { keywords_substring, keywords_word, file_name_keywords, patterns } = data || {};
+
+        // 3. 转发规则 (完整实现)
+        function renderRulesPanel(data) {
+            const rules = data || [];
+            return `
+                <div class="space-y-6">
+                    <!-- 添加规则卡片 (默认折叠) -->
+                    <div class="bg-white dark:bg-gray-800 rounded-xl shadow-sm border border-gray-200 dark:border-gray-700 overflow-hidden">
+                        <button id="toggle-add-rule" class="w-full px-6 py-4 flex justify-between items-center bg-gray-50 dark:bg-gray-800 hover:bg-gray-100 dark:hover:bg-gray-700 transition-colors text-left focus:outline-none">
+                            <div>
+                                <h2 class="text-lg font-bold text-gray-900 dark:text-gray-100">添加新转发规则</h2>
+                                <p class="text-xs text-gray-500 dark:text-gray-400">创建基于关键词或文件名的分发策略</p>
+                            </div>
+                            <svg id="add-rule-icon" class="h-5 w-5 text-gray-500 transform transition-transform duration-200" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 4v16m8-8H4" /></svg>
+                        </button>
+                        
+                        <div id="add-rule-form-container" class="hidden border-t border-gray-200 dark:border-gray-700 p-6 space-y-4 bg-white dark:bg-gray-800">
+                            <div class="grid grid-cols-1 md:grid-cols-3 gap-4">
+                                <div>
+                                    <label class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">规则名称 <span class="text-red-500">*</span></label>
+                                    <input type="text" id="rule-name" class="w-full form-input rounded-md border-gray-300 dark:border-gray-600 dark:bg-gray-700 dark:text-white text-sm" placeholder="例如: 电影转发">
+                                </div>
+                                <div>
+                                    <label class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">目标 ID <span class="text-red-500">*</span></label>
+                                    <input type="text" id="rule-target" class="w-full form-input rounded-md border-gray-300 dark:border-gray-600 dark:bg-gray-700 dark:text-white text-sm" placeholder="-100... 或 @channel">
+                                </div>
+                                <div>
+                                    <label class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">话题 ID (Topic ID)</label>
+                                    <input type="number" id="rule-topic" class="w-full form-input rounded-md border-gray-300 dark:border-gray-600 dark:bg-gray-700 dark:text-white text-sm" placeholder="可选，例如: 1">
+                                </div>
+                            </div>
+                            
+                            <div class="grid grid-cols-1 md:grid-cols-2 gap-4 border-t border-gray-100 dark:border-gray-700 pt-4">
+                                <div>
+                                    <label class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">必须包含 (All Keywords)</label>
+                                    <textarea id="rule-all-kw" rows="3" class="w-full form-textarea rounded-md border-gray-300 dark:border-gray-600 dark:bg-gray-700 dark:text-white text-sm font-mono" placeholder="每行一个，需全部匹配"></textarea>
+                                </div>
+                                <div>
+                                    <label class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">任一包含 (Any Keywords)</label>
+                                    <textarea id="rule-any-kw" rows="3" class="w-full form-textarea rounded-md border-gray-300 dark:border-gray-600 dark:bg-gray-700 dark:text-white text-sm font-mono" placeholder="每行一个，满足其一即可"></textarea>
+                                </div>
+                                <div>
+                                    <label class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">文件名正则 (File Patterns)</label>
+                                    <textarea id="rule-file-pat" rows="3" class="w-full form-textarea rounded-md border-gray-300 dark:border-gray-600 dark:bg-gray-700 dark:text-white text-sm font-mono" placeholder="例如: *.apk&#10;*.exe"></textarea>
+                                </div>
+                                <div>
+                                    <label class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">MIME 类型 (File Types)</label>
+                                    <textarea id="rule-file-types" rows="3" class="w-full form-textarea rounded-md border-gray-300 dark:border-gray-600 dark:bg-gray-700 dark:text-white text-sm font-mono" placeholder="例如: video/mp4"></textarea>
+                                </div>
+                            </div>
+                            
+                            <div class="flex justify-end pt-2">
+                                <button id="save-rule-btn" class="px-6 py-2 bg-blue-600 hover:bg-blue-700 text-white rounded-md text-sm font-medium transition-colors flex items-center">
+                                    <span id="save-rule-text">添加规则</span>
+                                    <div id="save-rule-loader" class="loader hidden ml-2"></div>
+                                </button>
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- 规则列表 -->
+                    <div class="space-y-4">
+                         ${rules.length === 0 ? '<div class="text-center py-10 text-gray-500 dark:text-gray-400 bg-white dark:bg-gray-800 rounded-xl border border-gray-200 dark:border-gray-700">没有设置任何转发规则，所有消息将转发到默认目标。</div>' : ''}
+                         ${rules.map((rule, idx) => renderRuleCard(rule, idx)).join('')}
+                    </div>
+                </div>
+            `;
+        }
+
+        function renderRuleCard(rule, idx) {
+            // 简易摘要生成
+            const conditions = [];
+            if(rule.all_keywords?.length) conditions.push(`<span class="text-blue-600 dark:text-blue-400">All:</span> ${rule.all_keywords.length}个`);
+            if(rule.any_keywords?.length) conditions.push(`<span class="text-purple-600 dark:text-purple-400">Any:</span> ${rule.any_keywords.length}个`);
+            if(rule.file_name_patterns?.length) conditions.push(`<span class="text-green-600 dark:text-green-400">Files:</span> ${rule.file_name_patterns.join(', ')}`);
             
             return `
-                <div class="panel bg-white dark:bg-gray-800 p-6 rounded-lg shadow">
-                    <h2 class="text-2xl font-semibold mb-4 text-gray-900 dark:text-gray-100">黑名单 (Ad Filter)</h2>
-                    <div class="space-y-6">
-                        <p class="text-sm text-gray-600 dark:text-gray-400">
-                            添加关键词（每行一个）以过滤消息。更改将自动保存，但你需要 <strong>/reload</strong> 才能在机器人上生效。
-                        </p>
-                        
-                        <div class="grid grid-cols-1 md:grid-cols-2 gap-6">
-                            <div>
-                                <label for="bl-sub" class="block text-sm font-medium text-gray-700 dark:text-gray-300">子字符串 (用于中文, 如 "发财娱乐")</label>
-                                <textarea id="bl-sub" rows="5" class="mt-1 block w-full shadow-sm sm:text-sm border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-700 text-gray-900 dark:text-gray-100 rounded-md focus:ring-blue-500 focus:border-blue-500">${arrayToText(keywords_substring)}</textarea>
-                            </div>
-                            <div>
-                                <label for="bl-word" class="block text-sm font-medium text-gray-700 dark:text-gray-300">全词 (用于英文, 如 "ad")</label>
-                                <textarea id="bl-word" rows="5" class="mt-1 block w-full shadow-sm sm:text-sm border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-700 text-gray-900 dark:text-gray-100 rounded-md focus:ring-blue-500 focus:border-blue-500">${arrayToText(keywords_word)}</textarea>
-                            </div>
-                            <div>
-                                <label for="bl-file" class="block text-sm font-medium text-gray-700 dark:text-gray-300">文件名 (子字符串, 如 "VPN")</label>
-                                <textarea id="bl-file" rows="5" class="mt-1 block w-full shadow-sm sm:text-sm border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-700 text-gray-900 dark:text-gray-100 rounded-md focus:ring-blue-500 focus:border-blue-500">${arrayToText(file_name_keywords)}</textarea>
+                <div class="bg-white dark:bg-gray-800 rounded-xl shadow-sm border border-gray-200 dark:border-gray-700 p-5 flex flex-col sm:flex-row justify-between items-start gap-4 transition-all hover:shadow-md">
+                    <div class="flex-1">
+                        <div class="flex items-center gap-2 mb-1">
+                            <span class="px-2 py-1 bg-gray-100 dark:bg-gray-700 rounded text-xs font-mono text-gray-500">#${idx + 1}</span>
+                            <h3 class="font-bold text-gray-900 dark:text-gray-100">${rule.name}</h3>
+                        </div>
+                        <div class="text-sm text-gray-600 dark:text-gray-400 space-y-1">
+                            <p>🎯 目标: <code class="bg-gray-100 dark:bg-gray-900 px-1 rounded text-xs">${rule.target_identifier}</code> ${rule.topic_id ? `(Topic: ${rule.topic_id})` : ''}</p>
+                            <p class="text-xs opacity-80">🔍 条件: ${conditions.join(' | ') || '无限制'}</p>
+                        </div>
+                    </div>
+                    <button onclick="handleRemoveRule('${rule.name}')" class="flex-shrink-0 text-sm text-red-500 hover:text-red-700 hover:bg-red-50 dark:hover:bg-red-900/20 px-3 py-2 rounded-md transition-colors">
+                        删除
+                    </button>
+                </div>
+            `;
+        }
 
-                            </div>
-                            <div>
-                                <label for="bl-regex" class="block text-sm font-medium text-gray-700 dark:text-gray-300">正则表达式 (高级)</label>
-                                <textarea id="bl-regex" rows="5" class="mt-1 block w-full shadow-sm sm:text-sm border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-700 text-gray-900 dark:text-gray-100 rounded-md focus:ring-blue-500 focus:border-blue-500">${arrayToText(patterns)}</textarea>
-                            </div>
-                        </div>
-                        
-                        <div class="flex justify-end">
-                            <button id="save-blacklist" class="flex justify-center py-2 px-4 border border-transparent rounded-md shadow-sm text-sm font-medium text-white bg-blue-600 hover:bg-blue-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-blue-500">
-                                <span id="save-blacklist-text">保存黑名单</span>
-                                <div id="save-blacklist-loader" class="loader hidden"></div>
-                            </button>
-                        </div>
+        // 4. 黑名单
+        function renderBlacklistPanel(data) {
+            const { keywords_substring, keywords_word, file_name_keywords, patterns } = data || {};
+            return `
+                <div class="bg-white dark:bg-gray-800 rounded-xl shadow-sm border border-gray-200 dark:border-gray-700 p-6">
+                    <div class="flex justify-between items-center mb-6">
+                        <h2 class="text-xl font-bold text-gray-900 dark:text-gray-100">广告过滤 (Blacklist)</h2>
+                        <button id="save-blacklist" class="px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white rounded-md text-sm font-medium flex items-center">
+                            <span id="save-blacklist-text">保存更改</span>
+                            <div id="save-blacklist-loader" class="loader hidden ml-2"></div>
+                        </button>
+                    </div>
+                    
+                    <div class="grid grid-cols-1 lg:grid-cols-2 gap-6">
+                        ${renderTextareaGroup("bl-sub", "子字符串匹配 (中文)", "如: 发财娱乐, 赌场", keywords_substring)}
+                        ${renderTextareaGroup("bl-word", "全词匹配 (英文)", "如: ad, promo (不匹配 download)", keywords_word)}
+                        ${renderTextareaGroup("bl-file", "文件名过滤", "如: 芒果VPN, .exe", file_name_keywords)}
+                        ${renderTextareaGroup("bl-regex", "正则表达式 (高级)", "Python Regex Syntax", patterns)}
                     </div>
                 </div>
             `;
         }
 
-        // (新) v9.3：实现白名单面板
+        // 5. 白名单
         function renderWhitelistPanel(data) {
-             const { keywords, enable } = data || {};
-             
-             return `
-                <div class="panel bg-white dark:bg-gray-800 p-6 rounded-lg shadow">
-                    <h2 class="text-2xl font-semibold mb-4 text-gray-900 dark:text-gray-100">白名单 (Whitelist)</h2>
-                    <div class="space-y-6">
-                        <div class="flex items-center">
-                            <input id="wl-enable" type="checkbox" class="h-4 w-4 text-blue-600 border-gray-300 rounded focus:ring-blue-500" ${enable ? 'checked' : ''}>
-                            <label for="wl-enable" class="ml-2 block text-sm font-medium text-gray-900 dark:text-gray-300">启用白名单模式</label>
-                        </div>
-                        <p class="text-sm text-gray-600 dark:text-gray-400">
-                            启用后，**只有**包含以下关键词的消息才会被转发。
-                        </p>
-                        
-                        <div>
-                            <label for="wl-keywords" class="block text-sm font-medium text-gray-700 dark:text-gray-300">白名单关键词 (子字符串, 每行一个)</label>
-                            <textarea id="wl-keywords" rows="5" class="mt-1 block w-full shadow-sm sm:text-sm border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-700 text-gray-900 dark:text-gray-100 rounded-md focus:ring-blue-500 focus:border-blue-500">${arrayToText(keywords)}</textarea>
-                        </div>
-                        
-                        <div class="flex justify-end">
-                            <button id="save-whitelist" class="flex justify-center py-2 px-4 border border-transparent rounded-md shadow-sm text-sm font-medium text-white bg-blue-600 hover:bg-blue-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-blue-500">
-                                <span id="save-whitelist-text">保存白名单</span>
-                                <div id="save-whitelist-loader" class="loader hidden"></div>
-                            </button>
-                        </div>
+            const { keywords, enable } = data || {};
+            return `
+                <div class="bg-white dark:bg-gray-800 rounded-xl shadow-sm border border-gray-200 dark:border-gray-700 p-6">
+                    <div class="flex justify-between items-center mb-6">
+                        <h2 class="text-xl font-bold text-gray-900 dark:text-gray-100">白名单模式</h2>
+                        <button id="save-whitelist" class="px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white rounded-md text-sm font-medium flex items-center">
+                            <span id="save-whitelist-text">保存更改</span>
+                            <div id="save-whitelist-loader" class="loader hidden ml-2"></div>
+                        </button>
                     </div>
+
+                    <div class="mb-6 bg-yellow-50 dark:bg-yellow-900/20 p-4 rounded-lg border border-yellow-100 dark:border-yellow-800/30">
+                        <div class="flex items-center">
+                            <input id="wl-enable" type="checkbox" class="h-5 w-5 text-blue-600 border-gray-300 rounded focus:ring-blue-500 cursor-pointer" ${enable ? 'checked' : ''}>
+                            <label for="wl-enable" class="ml-3 block text-sm font-bold text-gray-900 dark:text-gray-200 cursor-pointer">启用白名单模式</label>
+                        </div>
+                        <p class="mt-2 text-sm text-yellow-700 dark:text-yellow-300 ml-8">
+                            ⚠️ 启用后，只有包含以下关键词的消息才会被转发，其他所有消息（包括媒体）将被丢弃。优先级高于黑名单。
+                        </p>
+                    </div>
+                    
+                    ${renderTextareaGroup("wl-keywords", "白名单关键词", "每行一个", keywords, 8)}
                 </div>
             `;
         }
-        
+
+        function renderTextareaGroup(id, label, placeholder, valueArr, rows=5) {
+            return `
+                <div class="flex flex-col">
+                    <label for="${id}" class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">${label}</label>
+                    <textarea id="${id}" rows="${rows}" class="flex-1 form-textarea block w-full rounded-lg border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-900 text-gray-900 dark:text-gray-100 shadow-sm focus:ring-blue-500 focus:border-blue-500 sm:text-sm font-mono resize-y" placeholder="${placeholder}">${arrayToText(valueArr)}</textarea>
+                </div>
+            `;
+        }
+
+        // --- 交互逻辑 ---
+
         function navigateToTab(tabId) {
+             // 更新桌面导航
              Array.from(mainNav.children).forEach(el => {
-                if (el.dataset.tab === tabId) {
-                    el.classList.add('border-blue-500', 'text-gray-900', 'dark:text-gray-100');
-                    el.classList.remove('border-transparent', 'text-gray-500', 'dark:text-gray-400', 'hover:border-gray-300', 'hover:text-gray-700');
+                const isActive = el.dataset.tab === tabId;
+                el.className = isActive 
+                    ? 'nav-link border-blue-500 text-gray-900 dark:text-gray-100 inline-flex items-center px-1 pt-1 border-b-2 text-sm font-medium'
+                    : 'nav-link border-transparent text-gray-500 dark:text-gray-400 hover:border-gray-300 hover:text-gray-700 inline-flex items-center px-1 pt-1 border-b-2 text-sm font-medium cursor-pointer';
+             });
+             
+             // 更新移动端导航
+             Array.from(mobileNav.children).forEach(el => {
+                const isActive = el.dataset.tab === tabId;
+                el.className = isActive 
+                    ? 'whitespace-nowrap py-4 px-1 border-b-2 font-medium text-sm border-blue-500 text-blue-600 dark:text-blue-400'
+                    : 'whitespace-nowrap py-4 px-1 border-b-2 font-medium text-sm border-transparent text-gray-500 hover:text-gray-700 hover:border-gray-300 cursor-pointer';
+             });
+
+             // 切换面板
+             Array.from(contentPanels.children).forEach(el => {
+                if (el.id === `panel-${tabId}`) {
+                    el.classList.remove('hidden');
+                    setTimeout(() => el.classList.remove('opacity-0'), 10);
                 } else {
-                    el.classList.remove('border-blue-500', 'text-gray-900', 'dark:text-gray-100');
-                    el.classList.add('border-transparent', 'text-gray-500', 'dark:text-gray-400', 'hover:border-gray-300', 'hover:text-gray-700');
+                    el.classList.add('hidden', 'opacity-0');
                 }
              });
-             Array.from(contentPanels.children).forEach(el => {
-                el.classList.toggle('hidden', el.id !== `panel-${tabId}`);
-             });
+        }
+
+        // --- 事件处理函数 ---
+
+        // 规则页面逻辑
+        function bindRulesEvents() {
+            const toggleBtn = document.getElementById('toggle-add-rule');
+            const formContainer = document.getElementById('add-rule-form-container');
+            const icon = document.getElementById('add-rule-icon');
+            const saveBtn = document.getElementById('save-rule-btn');
+
+            if(toggleBtn) {
+                toggleBtn.addEventListener('click', () => {
+                    formContainer.classList.toggle('hidden');
+                    icon.classList.toggle('rotate-45'); // 简单的旋转动画表示开关
+                    if(!formContainer.classList.contains('hidden')) {
+                        document.getElementById('rule-name').focus();
+                    }
+                });
+            }
+
+            if(saveBtn) {
+                saveBtn.addEventListener('click', async () => {
+                    // 验证
+                    const name = document.getElementById('rule-name').value.trim();
+                    const target = document.getElementById('rule-target').value.trim();
+                    if(!name || !target) {
+                        alert("规则名称和目标 ID 为必填项");
+                        return;
+                    }
+                    
+                    const payload = {
+                        name: name,
+                        target_identifier: target,
+                        topic_id: document.getElementById('rule-topic').value.trim() ? parseInt(document.getElementById('rule-topic').value) : null,
+                        all_keywords: textToArray(document.getElementById('rule-all-kw').value),
+                        any_keywords: textToArray(document.getElementById('rule-any-kw').value),
+                        file_name_patterns: textToArray(document.getElementById('rule-file-pat').value),
+                        file_types: textToArray(document.getElementById('rule-file-types').value)
+                    };
+
+                    const btnText = document.getElementById('save-rule-text');
+                    const btnLoader = document.getElementById('save-rule-loader');
+                    
+                    btnText.classList.add('hidden');
+                    btnLoader.classList.remove('hidden');
+                    saveBtn.disabled = true;
+                    
+                    try {
+                        await apiFetch('/api/rules/add', { method: 'POST', body: payload });
+                        state.rules.distribution_rules.push(payload);
+                        // 重新渲染列表
+                        document.getElementById('panel-rules').innerHTML = renderRulesPanel(state.rules.distribution_rules);
+                        bindRulesEvents(); // 重新绑定事件
+                        showReloadNotice();
+                    } catch(e) {
+                        alert("添加失败: " + e.message);
+                    } finally {
+                        // 恢复状态 (重新渲染后其实不需要恢复，因为DOM已经替换)
+                    }
+                });
+            }
         }
         
-        async function handleSaveBlacklist() {
-            const btn = document.getElementById('save-blacklist');
-            const btnText = document.getElementById('save-blacklist-text');
-            const btnLoader = document.getElementById('save-blacklist-loader');
+        // 暴露给全局以便 onclick 调用
+        window.handleRemoveRule = async function(ruleName) {
+            if(!confirm(`确定要删除规则 "${ruleName}" 吗?`)) return;
+            try {
+                await apiFetch('/api/rules/remove', { method: 'POST', body: { name: ruleName } });
+                state.rules.distribution_rules = state.rules.distribution_rules.filter(r => r.name !== ruleName);
+                document.getElementById('panel-rules').innerHTML = renderRulesPanel(state.rules.distribution_rules);
+                bindRulesEvents();
+                showReloadNotice();
+            } catch(e) {
+                alert("删除失败: " + e.message);
+            }
+        }
+
+        // 保存通用逻辑
+        async function handleSaveButton(btnId, apiPath, payloadBuilder, successMsg) {
+            const btn = document.getElementById(btnId);
+            if(!btn) return;
+            const textSpan = btn.querySelector('span');
+            const loader = btn.querySelector('.loader');
             
-            btnText.classList.add('hidden');
-            btnLoader.classList.remove('hidden');
+            textSpan.classList.add('hidden');
+            loader.classList.remove('hidden');
             btn.disabled = true;
             
             try {
-                const enableState = (state.rules && state.rules.ad_filter) ? state.rules.ad_filter.enable : true;
+                const payload = payloadBuilder();
+                await apiFetch(apiPath, { method: 'POST', body: payload });
+                showReloadNotice();
+                // Optional: alert(successMsg);
+            } catch(e) {
+                alert(`操作失败: ${e.message}`);
+            } finally {
+                textSpan.classList.remove('hidden');
+                loader.classList.add('hidden');
+                btn.disabled = false;
+            }
+        }
+        
+        // 源操作逻辑
+        async function handleAddSource() {
+            const input = document.getElementById('new-source-id');
+            const id = input.value.trim();
+            if(!id) return;
+            
+            const btn = document.getElementById('add-source-button');
+            const loader = document.getElementById('add-source-loader');
+            const text = document.getElementById('add-source-text');
+            
+            text.classList.add('hidden');
+            loader.classList.remove('hidden');
+            btn.disabled = true;
+            
+            try {
+                const payload = { identifier: id };
+                await apiFetch('/api/sources/add', { method: 'POST', body: payload });
+                state.rules.sources.push(payload);
+                
+                // 局部刷新
+                document.getElementById('panel-sources').innerHTML = renderSourcesPanel(state.rules.sources);
+                bindSourcesEvents();
+                showReloadNotice();
+            } catch(e) {
+                alert(e.message);
+            } finally {
+                text.classList.remove('hidden');
+                loader.classList.add('hidden');
+                btn.disabled = false;
+            }
+        }
 
-                const payload = {
-                    enable: enableState, 
+        function bindSourcesEvents() {
+            document.getElementById('add-source-button')?.addEventListener('click', handleAddSource);
+            document.querySelectorAll('.remove-source-btn').forEach(btn => {
+                btn.addEventListener('click', async (e) => {
+                    const id = e.currentTarget.dataset.id;
+                    if(!confirm(`删除源 ${id}?`)) return;
+                    
+                    try {
+                        await apiFetch('/api/sources/remove', { method: 'POST', body: { identifier: id } });
+                        state.rules.sources = state.rules.sources.filter(s => String(s.identifier) !== String(id));
+                        document.getElementById('panel-sources').innerHTML = renderSourcesPanel(state.rules.sources);
+                        bindSourcesEvents();
+                        showReloadNotice();
+                    } catch(err) { alert(err.message); }
+                });
+            });
+        }
+
+        // 绑定所有动态面板事件
+        function attachPanelEvents() {
+            // Stats
+            const dedupSlider = document.getElementById('dedup-slider');
+            if(dedupSlider) {
+                dedupSlider.addEventListener('input', e => document.getElementById('dedup-days-label').textContent = e.target.value);
+                document.getElementById('save-dedup').addEventListener('click', () => handleSaveButton(
+                    'save-dedup', '/api/settings/dedup', 
+                    () => ({ days: parseInt(dedupSlider.value) }), "已保存"
+                ));
+            }
+            
+            // Sources
+            bindSourcesEvents();
+            
+            // Rules
+            bindRulesEvents();
+            
+            // Blacklist
+            document.getElementById('save-blacklist')?.addEventListener('click', () => handleSaveButton(
+                'save-blacklist', '/api/blacklist/update',
+                () => ({
+                    enable: true,
                     keywords_substring: textToArray(document.getElementById('bl-sub').value),
                     keywords_word: textToArray(document.getElementById('bl-word').value),
                     file_name_keywords: textToArray(document.getElementById('bl-file').value),
                     patterns: textToArray(document.getElementById('bl-regex').value),
-                };
-                
-                await apiFetch('/api/blacklist/update', {
-                    method: 'POST',
-                    body: payload
-                });
-                
-                state.rules.ad_filter = payload;
-                showReloadNotice();
-
-            } catch (error) {
-                console.error("保存黑名单失败:", error);
-                alert(`保存失败: ${error.message}`);
-            } finally {
-                btnText.classList.remove('hidden');
-                btnLoader.classList.add('hidden');
-                btn.disabled = false;
-            }
-        }
-        
-        // (新) v9.3：保存白名单
-        async function handleSaveWhitelist() {
-            const btn = document.getElementById('save-whitelist');
-            const btnText = document.getElementById('save-whitelist-text');
-            const btnLoader = document.getElementById('save-whitelist-loader');
+                }), "黑名单已保存"
+            ));
             
-            btnText.classList.add('hidden');
-            btnLoader.classList.remove('hidden');
-            btn.disabled = true;
-            
-            try {
-                const payload = {
+            // Whitelist
+            document.getElementById('save-whitelist')?.addEventListener('click', () => handleSaveButton(
+                'save-whitelist', '/api/whitelist/update',
+                () => ({
                     enable: document.getElementById('wl-enable').checked,
                     keywords: textToArray(document.getElementById('wl-keywords').value),
-                };
-                
-                await apiFetch('/api/whitelist/update', {
-                    method: 'POST',
-                    body: payload
-                });
-                
-                state.rules.whitelist = payload;
-                showReloadNotice();
-
-            } catch (error) {
-                console.error("保存白名单失败:", error);
-                alert(`保存失败: ${error.message}`);
-            } finally {
-                btnText.classList.remove('hidden');
-                btnLoader.classList.add('hidden');
-                btn.disabled = false;
-            }
+                }), "白名单已保存"
+            ));
         }
 
-        async function handleSaveDedupSettings() {
-            const btn = document.getElementById('save-dedup');
-            const btnText = document.getElementById('save-dedup-text');
-            const btnLoader = document.getElementById('save-dedup-loader');
-            
-            btnText.classList.add('hidden');
-            btnLoader.classList.remove('hidden');
-            btn.disabled = true;
-            
-            try {
-                const days = parseInt(document.getElementById('dedup-slider').value, 10);
-                const payload = { days: days };
-                
-                await apiFetch('/api/settings/dedup', {
-                    method: 'POST',
-                    body: payload
-                });
-                
-                showReloadNotice(); // 严格来说不需要
-                alert("设置已保存！将在下次定时任务时生效。");
+        // --- 初始化 ---
 
-            } catch (error) {
-                console.error("保存去重设置失败:", error);
-                alert(`保存失败: ${error.message}`);
-            } finally {
-                btnText.classList.remove('hidden');
-                btnLoader.classList.add('hidden');
-                btn.disabled = false;
-            }
-        }
-        
-        async function handleAddSource() {
-            const btn = document.getElementById('add-source-button');
-            const btnText = document.getElementById('add-source-text');
-            const btnLoader = document.getElementById('add-source-loader');
-            const input = document.getElementById('new-source-id');
-            const identifier = input.value.trim();
-
-            if (!identifier) {
-                alert("请输入源 ID、用户名或链接。");
-                return;
-            }
-
-            btnText.classList.add('hidden');
-            btnLoader.classList.remove('hidden');
-            btn.disabled = true;
-
-            try {
-                const payload = { identifier: identifier };
-                await apiFetch('/api/sources/add', {
-                    method: 'POST',
-                    body: payload
-                });
-                
-                state.rules.sources.push(payload);
-                renderAndAttachSources(state.rules.sources); // 重新渲染列表
-                
-                input.value = ""; // 清空输入框
-                showReloadNotice();
-
-            } catch (error) {
-                console.error("添加源失败:", error);
-                alert(`添加源失败: ${error.message}`);
-            } finally {
-                btnText.classList.remove('hidden');
-                btnLoader.classList.add('hidden');
-                btn.disabled = false;
-            }
-        }
-
-        async function handleRemoveSource(e) {
-            const button = e.currentTarget;
-            const identifier = button.dataset.id;
-            
-            if (!confirm(`确定要删除源 "${identifier}" 吗？`)) {
-                return;
-            }
-
-            button.disabled = true;
-            button.innerHTML = `<div class="loader" style="width: 1rem; height: 1rem;"></div>`;
-
-            try {
-                const payload = { identifier: identifier };
-                await apiFetch('/api/sources/remove', {
-                    method: 'POST',
-                    body: payload
-                });
-
-                state.rules.sources = state.rules.sources.filter(s => String(s.identifier) !== String(identifier));
-                renderAndAttachSources(state.rules.sources); // 重新渲染列表
-                showReloadNotice();
-
-            } catch (error) {
-                console.error("删除源失败:", error);
-                alert(`删除源失败: ${error.message}`);
-                button.disabled = false; 
-                // 恢复按钮图标（简化）
-                button.innerHTML = `<svg class="h-5 w-5" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" /></svg>`;
-            }
-        }
-
-        // --- 渲染函数 ---
-        
-        function renderAndAttachStats(stats, settings) {
-             document.getElementById('panel-status').innerHTML = renderStatsPanel(stats, settings);
-             document.getElementById('dedup-slider').addEventListener('input', (e) => {
-                document.getElementById('dedup-days-label').textContent = e.target.value;
-             });
-             document.getElementById('save-dedup').addEventListener('click', handleSaveDedupSettings);
-        }
-        
-        function renderAndAttachSources(data) {
-            document.getElementById('panel-sources').innerHTML = renderSourcesPanel(data);
-            document.getElementById('add-source-button').addEventListener('click', handleAddSource);
-            document.querySelectorAll('.remove-source-btn').forEach(btn => {
-                btn.addEventListener('click', handleRemoveSource);
-            });
-        }
-
-        function renderAndAttachBlacklist(data) {
-            document.getElementById('panel-blacklist').innerHTML = renderBlacklistPanel(data);
-            document.getElementById('save-blacklist').addEventListener('click', handleSaveBlacklist);
-        }
-        
-        function renderAndAttachWhitelist(data) {
-            document.getElementById('panel-whitelist').innerHTML = renderWhitelistPanel(data);
-            // (新) v9.3：绑定事件
-            document.getElementById('save-whitelist').addEventListener('click', handleSaveWhitelist);
-        }
-        
-        function renderAndAttachRules(data) {
-            document.getElementById('panel-rules').innerHTML = renderRulesPanel(data);
-            // (下一步：绑定事件)
-        }
-        
         async function loadAllRulesAndRender() {
             try {
-                // 1. 获取所有规则
-                const rulesPromise = apiFetch('/api/rules');
-                const statsPromise = apiFetch('/api/stats');
-                const settingsPromise = apiFetch('/api/settings/dedup');
+                const [rulesData, statsData, settingsData] = await Promise.all([
+                    apiFetch('/api/rules'),
+                    apiFetch('/api/stats'),
+                    apiFetch('/api/settings/dedup')
+                ]);
                 
-                const [rulesData, statsData, settingsData] = await Promise.all([rulesPromise, statsPromise, settingsPromise]);
-                
-                state.rules = rulesData;
-                state.stats = statsData;
-                state.settings = settingsData;
+                state = { rules: rulesData, stats: statsData, settings: settingsData };
 
-                // 2. 渲染所有面板
-                renderAndAttachStats(state.stats, state.settings);
-                renderAndAttachSources(state.rules.sources);
-                renderAndAttachBlacklist(state.rules.ad_filter);
-                renderAndAttachWhitelist(state.rules.whitelist);
-                renderAndAttachRules(state.rules.distribution_rules);
+                document.getElementById('panel-status').innerHTML = renderStatsPanel(state.stats, state.settings);
+                document.getElementById('panel-sources').innerHTML = renderSourcesPanel(state.rules.sources);
+                document.getElementById('panel-rules').innerHTML = renderRulesPanel(state.rules.distribution_rules);
+                document.getElementById('panel-blacklist').innerHTML = renderBlacklistPanel(state.rules.ad_filter);
+                document.getElementById('panel-whitelist').innerHTML = renderWhitelistPanel(state.rules.whitelist);
+                
+                attachPanelEvents();
                 
             } catch (error) {
                  console.error("初始化应用失败:", error);
                  if (error.message !== "认证失败") {
-                    contentPanels.innerHTML = `<p class="text-red-500 p-6">加载规则失败: ${error.message}。请刷新页面重试。</p>`;
+                    contentPanels.innerHTML = `<div class="p-4 bg-red-100 text-red-700 rounded">加载数据失败: ${error.message}</div>`;
                  }
             }
         }
 
         async function initializeApp() {
-            // 1. 渲染导航栏
-            mainNav.innerHTML = Object.entries(TABS).map(([id, name], index) => `
-                <a href="#" 
-                   data-tab="${id}" 
-                   class="nav-link ${index === 0 ? 'border-blue-500 text-gray-900 dark:text-gray-100' : 'border-transparent text-gray-500 dark:text-gray-400 hover:border-gray-300 hover:text-gray-700'} 
-                          inline-flex items-center px-1 pt-1 border-b-2 text-sm font-medium">
+            // Render Nav
+            const tabsHtml = Object.entries(TABS).map(([id, name]) => `
+                <a href="#" data-tab="${id}" class="nav-link">
                     ${name}
                 </a>
             `).join('');
-            
-            // 2. 渲染内容面板 (带占位符)
-            contentPanels.innerHTML = `
-                <div id="panel-status"><div class="flex justify-center p-10"><div class="loader"></div></div></div>
-                <div id="panel-sources" class="hidden"><div class="flex justify-center p-10"><div class="loader"></div></div></div>
-                <div id="panel-rules" class="hidden"><div class="flex justify-center p-10"><div class="loader"></div></div></div>
-                <div id="panel-blacklist" class="hidden"><div class="flex justify-center p-10"><div class="loader"></div></div></div>
-                <div id="panel-whitelist" class="hidden"><div class="flex justify-center p-10"><div class="loader"></div></div></div>
-            `;
-            
-            // 3. 绑定导航点击事件
-            mainNav.addEventListener('click', (e) => {
-                if (e.target.closest('a')?.dataset.tab) {
-                    e.preventDefault();
-                    navigateToTab(e.target.closest('a').dataset.tab);
-                }
+            mainNav.innerHTML = tabsHtml;
+            mobileNav.innerHTML = tabsHtml; // Mobile nav uses simplified classes dynamically
+
+            // Render Shell Placeholders
+            contentPanels.innerHTML = Object.keys(TABS).map(id => `
+                <div id="panel-${id}" class="${id === 'status' ? '' : 'hidden opacity-0'} transition-opacity duration-200">
+                    <div class="flex justify-center p-12"><div class="loader border-gray-400 border-t-blue-500 w-8 h-8 border-4"></div></div>
+                </div>
+            `).join('');
+
+            // Bind Nav Events
+            [mainNav, mobileNav].forEach(nav => {
+                nav.addEventListener('click', (e) => {
+                    const tab = e.target.dataset.tab;
+                    if(tab) {
+                        e.preventDefault();
+                        navigateToTab(tab);
+                    }
+                });
             });
             
-            // 4. (新) v8.4.1：修复主题切换器 Bug
-            themeToggleButton.addEventListener('click', () => {
+            // Theme Menu Toggle
+            themeToggleButton.addEventListener('click', (e) => {
+                e.stopPropagation();
                 themeMenu.classList.toggle('hidden');
-                setTimeout(() => { 
+                setTimeout(() => {
                     themeMenu.classList.toggle('opacity-0');
                     themeMenu.classList.toggle('scale-95');
-                    themeMenu.classList.toggle('opacity-100');
-                    themeMenu.classList.toggle('scale-100');
                 }, 10);
             });
-            
-            document.addEventListener('click', (e) => {
-                if (!themeToggleButton.contains(e.target) && !themeMenu.contains(e.target)) {
-                    themeMenu.classList.add('hidden', 'opacity-0', 'scale-95');
-                }
+            document.addEventListener('click', () => {
+                themeMenu.classList.add('opacity-0', 'scale-95');
+                setTimeout(() => themeMenu.classList.add('hidden'), 200);
             });
-
             document.querySelectorAll('.theme-menu-item').forEach(item => {
                 item.addEventListener('click', (e) => {
                     e.preventDefault();
                     setTheme(e.target.dataset.theme);
                 });
             });
-            
-            // 5. 加载所有真实数据
+
+            // Initial Style for Tabs
+            navigateToTab('status');
+
             await loadAllRulesAndRender();
-            
-            // 6. 默认显示状态页
-            navigateToTab('status'); 
         }
         
-        // --- 启动 ---
-        
-        // 1. 应用保存的主题
+        // Boot
         const savedTheme = localStorage.getItem('theme') || 'system';
         setTheme(savedTheme);
-        
-        // 2. 检查登录
         checkSavedAuth();
 
     </script>
-
 </body>
 </html>
