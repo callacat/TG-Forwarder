@@ -9,73 +9,279 @@
     <link rel="preconnect" href="https://rsms.me/">
     <link rel="stylesheet" href="https://rsms.me/inter/inter.css">
     
-    <!-- 2. 核心: Tailwind CSS (CDN) -->
-    <script src="https://cdn.tailwindcss.com"></script>
+    <!-- 2. Tailwind CSS 核心 (关键修复：使用 onload 回调) -->
+    <script src="https://cdn.tailwindcss.com" onload="initTailwind()"></script>
+    
     <script>
-        tailwind.config = {
-            darkMode: 'class',
-            theme: {
-                extend: {
-                    fontFamily: { sans: ['Inter', 'sans-serif'] },
-                    colors: {
-                        gray: {
-                            850: '#1f2937',
-                            900: '#111827',
-                            950: '#030712',
+        // 只有当 Tailwind 脚本加载完成后，这个函数才会被调用
+        function initTailwind() {
+            if (typeof tailwind === 'undefined') {
+                console.error("Tailwind CSS 加载失败，可能是被浏览器插件拦截。");
+                return;
+            }
+            
+            tailwind.config = {
+                darkMode: 'class',
+                theme: {
+                    extend: {
+                        fontFamily: { sans: ['Inter', 'sans-serif'] },
+                        colors: {
+                            gray: {
+                                750: '#2d3748',
+                                850: '#1f2937',
+                                900: '#111827',
+                                950: '#030712',
+                            }
                         }
-                    },
-                    animation: {
-                        'fade-in': 'fadeIn 0.3s ease-out',
-                        'slide-up': 'slideUp 0.3s ease-out',
-                    },
-                    keyframes: {
-                        fadeIn: { '0%': { opacity: '0' }, '100%': { opacity: '1' } },
-                        slideUp: { '0%': { transform: 'translateY(10px)', opacity: '0' }, '100%': { transform: 'translateY(0)', opacity: '1' } }
                     }
                 }
-            }
+            };
+            console.log("Tailwind 配置已应用");
         }
     </script>
 
-    <!-- 3. 自定义样式 (type="text/tailwindcss" 使得 @apply 生效) -->
+    <!-- 3. 自定义样式 -->
     <style type="text/tailwindcss">
         [x-cloak] { display: none !important; }
         
-        /* 自定义滚动条 */
+        /* 滚动条 */
         ::-webkit-scrollbar { width: 6px; height: 6px; }
         ::-webkit-scrollbar-track { background: transparent; }
-        ::-webkit-scrollbar-thumb { background: #d1d5db; border-radius: 3px; }
-        .dark ::-webkit-scrollbar-thumb { background: #4b5563; }
+        ::-webkit-scrollbar-thumb { @apply bg-gray-300 dark:bg-gray-700 rounded-full; }
         
-        /* 滑块样式重置 */
+        /* 滑块 */
         input[type=range] { 
-            -webkit-appearance: none; /* VSCode 警告可忽略，这是 Chrome/Safari 必需的 */
-            appearance: none;         /* 标准属性 */
-            background: transparent; 
+            -webkit-appearance: none; appearance: none; background: transparent; 
         }
         input[type=range]::-webkit-slider-thumb {
-            -webkit-appearance: none; 
-            height: 16px; width: 16px; border-radius: 50%;
-            background: #3b82f6; cursor: pointer; margin-top: -6px; 
-            box-shadow: 0 1px 3px rgba(0,0,0,0.3);
+            -webkit-appearance: none; height: 16px; width: 16px; border-radius: 50%;
+            @apply bg-blue-600 cursor-pointer shadow-sm mt-[-6px];
         }
         input[type=range]::-webkit-slider-runnable-track {
-            width: 100%; height: 4px; cursor: pointer; background: #e5e7eb; border-radius: 2px;
+            width: 100%; height: 4px; cursor: pointer; 
+            @apply bg-gray-200 dark:bg-gray-700 rounded-full;
         }
-        .dark input[type=range]::-webkit-slider-runnable-track { background: #374151; }
 
-        /* 提取的组件类 (需要 Tailwind CDN 处理) */
+        /* 组件类 */
         .form-input, .form-textarea {
-            @apply w-full px-4 py-2 rounded-lg border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-900 focus:ring-2 focus:ring-blue-500 outline-none text-sm transition-colors;
+            @apply w-full px-4 py-2.5 rounded-lg border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 text-gray-900 dark:text-gray-100 focus:ring-2 focus:ring-blue-500 focus:border-transparent outline-none text-sm transition-all placeholder-gray-400 dark:placeholder-gray-500;
+        }
+        
+        .card {
+            @apply bg-white dark:bg-gray-800 rounded-xl border border-gray-200 dark:border-gray-700 shadow-sm transition-all duration-200;
+        }
+        .card-hover {
+            @apply hover:shadow-md hover:border-gray-300 dark:hover:border-gray-600;
         }
     </style>
+</head>
 
-    <!-- 4. 应用逻辑 (前置加载，解决 app is not defined 问题) -->
+<body 
+    x-data="app()" 
+    x-init="initApp()" 
+    class="bg-gray-50 text-gray-900 dark:bg-gray-950 dark:text-gray-100 transition-colors duration-300 min-h-screen flex flex-col selection:bg-blue-500 selection:text-white"
+    :class="{ 'dark': theme === 'dark' || (theme === 'system' && window.matchMedia('(prefers-color-scheme: dark)').matches) }"
+>
+
+    <!-- Toast 通知 -->
+    <div class="fixed top-6 right-6 z-50 space-y-3 pointer-events-none">
+        <template x-for="toast in toasts" :key="toast.id">
+            <div 
+                x-show="toast.visible"
+                x-transition:enter="transition ease-out duration-300"
+                x-transition:enter-start="opacity-0 translate-x-8"
+                x-transition:enter-end="opacity-100 translate-x-0"
+                x-transition:leave="transition ease-in duration-200"
+                x-transition:leave-start="opacity-100 translate-x-0"
+                x-transition:leave-end="opacity-0 translate-x-8"
+                class="pointer-events-auto w-80 bg-white dark:bg-gray-800 shadow-xl rounded-xl border border-gray-100 dark:border-gray-700 overflow-hidden"
+            >
+                <div class="p-4 flex items-start gap-3">
+                    <div class="flex-shrink-0 mt-0.5">
+                        <svg x-show="toast.type === 'success'" class="h-5 w-5 text-green-500" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z" /></svg>
+                        <svg x-show="toast.type === 'error'" class="h-5 w-5 text-red-500" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 8v4m0 4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" /></svg>
+                    </div>
+                    <div class="flex-1">
+                        <h3 class="text-sm font-semibold text-gray-900 dark:text-gray-100" x-text="toast.title"></h3>
+                        <p class="mt-1 text-xs text-gray-500 dark:text-gray-400 leading-relaxed" x-text="toast.message"></p>
+                    </div>
+                </div>
+            </div>
+        </template>
+    </div>
+
+    <!-- 登录遮罩 -->
+    <div x-show="!authenticated" x-transition.opacity class="fixed inset-0 z-50 flex items-center justify-center bg-gray-900/70 backdrop-blur-md p-4">
+        <div class="bg-white dark:bg-gray-800 rounded-2xl shadow-2xl p-8 w-full max-w-sm border border-gray-200 dark:border-gray-700" @click.outside="$refs.pwd.focus()">
+            <div class="text-center mb-8">
+                <div class="w-14 h-14 bg-blue-50 dark:bg-blue-900/20 rounded-2xl flex items-center justify-center mx-auto mb-5 text-blue-600 dark:text-blue-400 ring-1 ring-blue-100 dark:ring-blue-800">
+                    <svg class="w-7 h-7" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 15v2m-6 4h12a2 2 0 002-2v-6a2 2 0 00-2-2H6a2 2 0 00-2 2v6a2 2 0 002 2zm10-10V7a4 4 0 00-8 0v4h8z"></path></svg>
+                </div>
+                <h2 class="text-2xl font-bold text-gray-900 dark:text-white">身份验证</h2>
+                <p class="mt-2 text-sm text-gray-500 dark:text-gray-400">请输入 <code>config.yaml</code> 中设置的密码</p>
+            </div>
+            <form @submit.prevent="login">
+                <div class="space-y-4">
+                    <input x-ref="pwd" type="password" x-model="password" class="form-input px-5 py-3 text-base text-center tracking-widest" placeholder="••••••••" required>
+                    <button type="submit" :disabled="loading" class="w-full py-3 rounded-xl bg-blue-600 hover:bg-blue-700 text-white font-bold shadow-lg shadow-blue-500/30 transition-all active:scale-[0.98] disabled:opacity-70 disabled:cursor-not-allowed flex justify-center items-center">
+                        <span x-show="!loading">解锁面板</span>
+                        <svg x-show="loading" class="animate-spin h-5 w-5 text-white" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24"><circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle><path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path></svg>
+                    </button>
+                </div>
+            </form>
+        </div>
+    </div>
+
+    <!-- 主界面 -->
+    <div x-show="authenticated" x-cloak class="flex-grow flex flex-col">
+        
+        <!-- 顶部导航 -->
+        <nav class="sticky top-0 z-40 bg-white/80 dark:bg-gray-950/80 backdrop-blur-xl border-b border-gray-200 dark:border-gray-800">
+            <div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
+                <div class="flex justify-between h-16 items-center">
+                    <!-- Logo -->
+                    <div class="flex items-center gap-3">
+                        <div class="w-9 h-9 bg-gradient-to-br from-blue-600 to-indigo-600 rounded-lg flex items-center justify-center text-white font-bold shadow-lg shadow-blue-500/20">TG</div>
+                        <span class="font-bold text-xl tracking-tight hidden sm:block">Forwarder</span>
+                    </div>
+                    
+                    <!-- 桌面 Tab (居中) -->
+                    <div class="hidden md:flex space-x-1 bg-gray-100/50 dark:bg-gray-800/50 p-1.5 rounded-xl border border-gray-200/50 dark:border-gray-700/50 absolute left-1/2 transform -translate-x-1/2">
+                        <template x-for="tab in tabs" :key="tab.id">
+                            <button 
+                                @click="currentTab = tab.id" 
+                                :class="currentTab === tab.id ? 'bg-white dark:bg-gray-700 shadow-sm text-blue-600 dark:text-blue-400' : 'text-gray-500 dark:text-gray-400 hover:text-gray-700 dark:hover:text-gray-200 hover:bg-gray-200/50 dark:hover:bg-gray-700/50'"
+                                class="px-4 py-1.5 rounded-lg text-sm font-medium transition-all duration-200"
+                                x-text="tab.name"
+                            ></button>
+                        </template>
+                    </div>
+
+                    <!-- 右侧工具栏 -->
+                    <div class="flex items-center gap-3">
+                        <button x-show="needsReload" @click="showToast('提示', '配置已保存，请在 Telegram 中发送 /reload 生效', 'success')" class="hidden sm:flex items-center gap-1.5 text-xs bg-yellow-50 dark:bg-yellow-900/20 text-yellow-600 dark:text-yellow-400 px-3 py-1.5 rounded-full font-bold border border-yellow-100 dark:border-yellow-800/50 animate-pulse hover:animate-none transition-colors cursor-pointer">
+                            <span class="w-2 h-2 rounded-full bg-yellow-500"></span>
+                            配置已更改
+                        </button>
+                        <button @click="toggleTheme" class="p-2 rounded-full bg-gray-100 dark:bg-gray-800 text-gray-500 dark:text-gray-400 hover:bg-gray-200 dark:hover:bg-gray-700 transition-colors">
+                            <span x-show="theme === 'light'">☀️</span>
+                            <span x-show="theme === 'dark'">🌙</span>
+                            <span x-show="theme === 'system'">💻</span>
+                        </button>
+                    </div>
+                </div>
+            </div>
+            <!-- 移动端 Tab -->
+            <div class="md:hidden border-t border-gray-200 dark:border-gray-800 overflow-x-auto scrollbar-hide">
+                <div class="flex px-4 py-1 space-x-2 min-w-max">
+                    <template x-for="tab in tabs" :key="tab.id">
+                        <button @click="currentTab = tab.id" :class="currentTab === tab.id ? 'text-blue-600 dark:text-blue-400 border-b-2 border-blue-600 dark:border-blue-400' : 'text-gray-500 dark:text-gray-400 border-b-2 border-transparent'" class="text-sm font-medium py-3 px-2 transition-colors" x-text="tab.name"></button>
+                    </template>
+                </div>
+            </div>
+        </nav>
+
+        <!-- 内容区域 -->
+        <main class="flex-grow max-w-7xl mx-auto w-full px-4 sm:px-6 lg:px-8 py-8">
+            
+            <!-- Loading -->
+            <div x-show="loadingData" class="grid grid-cols-1 md:grid-cols-3 gap-6 animate-pulse">
+                <div class="h-32 bg-gray-200 dark:bg-gray-800 rounded-xl"></div>
+                <div class="h-32 bg-gray-200 dark:bg-gray-800 rounded-xl"></div>
+                <div class="h-32 bg-gray-200 dark:bg-gray-800 rounded-xl"></div>
+            </div>
+
+            <!-- Tab 1: 状态 -->
+            <div x-show="currentTab === 'status' && !loadingData" x-transition.opacity.duration.300ms class="space-y-8">
+                <div class="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-6 gap-4">
+                    <div class="card p-5 flex flex-col justify-between card-hover"><dt class="text-xs font-medium text-gray-500 dark:text-gray-400 uppercase tracking-wider">去重哈希</dt><dd class="mt-2 text-2xl font-bold text-gray-900 dark:text-white" x-text="stats.dedup_hashes || 0"></dd></div>
+                    <div class="card p-5 flex flex-col justify-between card-hover"><dt class="text-xs font-medium text-gray-500 dark:text-gray-400 uppercase tracking-wider">频道进度</dt><dd class="mt-2 text-2xl font-bold text-indigo-600 dark:text-indigo-400" x-text="stats.forward_progress_channels || 0"></dd></div>
+                    <div class="card p-5 flex flex-col justify-between card-hover"><dt class="text-xs font-medium text-gray-500 dark:text-gray-400 uppercase tracking-wider">失效链接</dt><dd class="mt-2 text-2xl font-bold text-red-600 dark:text-red-400" x-text="stats.invalid_links || 0"></dd></div>
+                    <div class="card p-5 flex flex-col justify-between card-hover"><dt class="text-xs font-medium text-gray-500 dark:text-gray-400 uppercase tracking-wider">活跃监控源</dt><dd class="mt-2 text-2xl font-bold text-blue-600 dark:text-blue-400" x-text="stats.sources || 0"></dd></div>
+                    <div class="card p-5 flex flex-col justify-between card-hover"><dt class="text-xs font-medium text-gray-500 dark:text-gray-400 uppercase tracking-wider">分发规则</dt><dd class="mt-2 text-2xl font-bold text-emerald-600 dark:text-emerald-400" x-text="stats.distribution_rules || 0"></dd></div>
+                    <div class="card p-5 flex flex-col justify-between card-hover"><dt class="text-xs font-medium text-gray-500 dark:text-gray-400 uppercase tracking-wider">黑 / 白名单</dt><dd class="mt-2 text-2xl font-bold text-gray-700 dark:text-gray-300"><span x-text="(stats.blacklist_substring + stats.blacklist_word + stats.blacklist_file + stats.blacklist_regex) || 0"></span><span class="text-gray-300 dark:text-gray-600 mx-1">/</span><span x-text="stats.whitelist_keywords || 0"></span></dd></div>
+                </div>
+                <div class="card p-8">
+                    <h3 class="text-lg font-bold mb-6 flex items-center gap-2"><svg class="w-5 h-5 text-gray-400" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 7v10c0 2.21 3.582 4 8 4s8-1.79 8-4V7M4 7c0 2.21 3.582 4 8 4s8-1.79 8-4M4 7c0-2.21 3.582-4 8-4s8 1.79 8 4m0 5c0 2.21-3.582 4-8 4s-8-1.79-8-4"></path></svg>数据库维护</h3>
+                    <div class="max-w-2xl"><div class="flex justify-between mb-4"><label class="text-sm font-medium text-gray-700 dark:text-gray-300">去重记录保留时间</label><div class="px-3 py-1 rounded bg-blue-50 dark:bg-blue-900/30 text-blue-700 dark:text-blue-300 text-xs font-bold font-mono" x-text="settings.dedup_retention_days + ' 天'"></div></div><input type="range" min="1" max="30" x-model="settings.dedup_retention_days" @change="saveSettings" class="w-full mb-4"><div class="text-xs text-gray-500 dark:text-gray-400 bg-gray-50 dark:bg-gray-800/50 p-3 rounded-lg border border-gray-100 dark:border-gray-700"><p>💡 建议保留 30 天。减少天数可以显著降低 <code>forwarder.sqlite</code> 数据库的体积。设置将在每天凌晨 4:05 (UTC) 的维护任务中自动应用。</p></div></div>
+                </div>
+            </div>
+
+            <!-- Tab 2: 监控源 -->
+            <div x-show="currentTab === 'sources' && !loadingData" class="space-y-6">
+                <div class="card p-6 flex flex-col sm:flex-row gap-4 justify-between items-end sm:items-center">
+                    <div><h3 class="text-lg font-bold">监控源列表</h3><p class="text-sm text-gray-500 dark:text-gray-400 mt-1">Bot 将监听这些频道/群组的消息并进行转发。</p></div>
+                    <div class="flex w-full sm:w-auto gap-2"><input x-model="newSource" @keyup.enter="addSource" type="text" placeholder="频道ID / @username / 链接" class="form-input flex-1 sm:w-64"><button @click="addSource" class="bg-blue-600 hover:bg-blue-700 text-white px-5 py-2.5 rounded-lg text-sm font-medium transition-colors shadow-sm whitespace-nowrap">添加源</button></div>
+                </div>
+                <div class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
+                    <template x-for="source in rules.sources" :key="source.identifier">
+                        <div class="card p-4 flex flex-col justify-between hover:border-blue-300 dark:hover:border-blue-700 transition-colors group relative">
+                            <div>
+                                <div class="flex items-start justify-between"><span class="font-mono font-bold text-gray-800 dark:text-gray-200 text-sm break-all pr-8" x-text="source.identifier"></span><div class="flex-shrink-0"><span x-show="source.resolved_id" class="text-[10px] px-1.5 py-0.5 bg-green-100 dark:bg-green-900/30 text-green-700 dark:text-green-400 rounded font-bold">正常</span><span x-show="!source.resolved_id" class="text-[10px] px-1.5 py-0.5 bg-yellow-100 dark:bg-yellow-900/30 text-yellow-700 dark:text-yellow-400 rounded font-bold animate-pulse">待解析</span></div></div>
+                                <div class="mt-3 text-xs text-gray-500 dark:text-gray-400 font-mono bg-gray-50 dark:bg-gray-900/50 p-2 rounded border border-gray-100 dark:border-gray-700/50 truncate"><span class="select-all" x-text="source.resolved_id || '等待 Reload...'"></span></div>
+                            </div>
+                            <button @click="removeSource(source.identifier)" class="absolute top-3 right-3 text-gray-300 hover:text-red-500 transition-colors opacity-0 group-hover:opacity-100 p-1"><svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16"></path></svg></button>
+                        </div>
+                    </template>
+                    <div x-show="rules.sources.length === 0" class="col-span-full text-center py-12 bg-white dark:bg-gray-800 rounded-xl border border-dashed border-gray-300 dark:border-gray-700"><p class="text-gray-500 dark:text-gray-400">暂无监控源，请在上方添加。</p></div>
+                </div>
+            </div>
+
+            <!-- Tab 3: 规则 -->
+            <div x-show="currentTab === 'rules' && !loadingData" class="space-y-6">
+                <div class="card p-6">
+                    <h3 class="text-lg font-bold mb-6">添加转发规则</h3>
+                    <div class="space-y-4">
+                        <div class="grid grid-cols-1 md:grid-cols-3 gap-4"><div><label class="block text-xs font-medium text-gray-500 dark:text-gray-400 mb-1.5">规则名称 <span class="text-red-500">*</span></label><input x-model="newRule.name" type="text" placeholder="如: 搬运视频" class="form-input"></div><div><label class="block text-xs font-medium text-gray-500 dark:text-gray-400 mb-1.5">目标 ID <span class="text-red-500">*</span></label><input x-model="newRule.target" type="text" placeholder="-100... 或 @channel" class="form-input"></div><div><label class="block text-xs font-medium text-gray-500 dark:text-gray-400 mb-1.5">Topic ID (可选)</label><input x-model="newRule.topic" type="number" placeholder="如: 1" class="form-input"></div></div>
+                        <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4"><div><label class="block text-xs font-medium text-gray-500 dark:text-gray-400 mb-1.5">必须包含 (All Keywords)</label><textarea x-model="newRule.keywords" rows="3" placeholder="每行一个" class="form-textarea text-xs"></textarea></div><div><label class="block text-xs font-medium text-gray-500 dark:text-gray-400 mb-1.5">任一包含 (Any Keywords)</label><textarea x-model="newRule.any_keywords" rows="3" placeholder="每行一个" class="form-textarea text-xs"></textarea></div><div><label class="block text-xs font-medium text-gray-500 dark:text-gray-400 mb-1.5">文件名正则 (Regex)</label><textarea x-model="newRule.files" rows="3" placeholder="如 *.apk" class="form-textarea text-xs"></textarea></div><div><label class="block text-xs font-medium text-gray-500 dark:text-gray-400 mb-1.5">MIME 类型</label><textarea x-model="newRule.types" rows="3" placeholder="如 video/mp4" class="form-textarea text-xs"></textarea></div></div>
+                        <div class="flex justify-end pt-2"><button @click="addRule" class="bg-gray-900 dark:bg-gray-100 text-white dark:text-gray-900 px-6 py-2 rounded-lg font-bold text-sm hover:opacity-90 transition-opacity shadow-lg">保存规则</button></div>
+                    </div>
+                </div>
+                <div class="grid grid-cols-1 lg:grid-cols-2 gap-4">
+                    <template x-for="rule in rules.distribution_rules" :key="rule.name">
+                        <div class="card p-5 flex flex-col justify-between relative group hover:border-blue-300 dark:hover:border-blue-700">
+                            <div>
+                                <div class="flex justify-between items-start mb-2"><h4 class="font-bold text-base text-gray-900 dark:text-gray-100" x-text="rule.name"></h4></div>
+                                <div class="flex flex-wrap gap-2 mb-4"><span class="inline-flex items-center px-2 py-1 rounded text-xs font-medium bg-blue-50 dark:bg-blue-900/20 text-blue-700 dark:text-blue-300 border border-blue-100 dark:border-blue-800"><span class="mr-1 opacity-70">TO:</span><span x-text="rule.target_identifier"></span></span><span x-show="rule.topic_id" class="inline-flex items-center px-2 py-1 rounded text-xs font-medium bg-purple-50 dark:bg-purple-900/20 text-purple-700 dark:text-purple-300 border border-purple-100 dark:border-purple-800"><span class="mr-1 opacity-70">TOPIC:</span><span x-text="rule.topic_id"></span></span></div>
+                                <div class="space-y-2 text-xs text-gray-500 dark:text-gray-400 bg-gray-50 dark:bg-gray-900/50 p-3 rounded-lg border border-gray-100 dark:border-gray-700/50">
+                                    <div x-show="rule.all_keywords?.length" class="flex gap-2"><span class="font-mono font-bold text-gray-400 w-8">ALL:</span> <span x-text="rule.all_keywords.join(', ')"></span></div>
+                                    <div x-show="rule.any_keywords?.length" class="flex gap-2"><span class="font-mono font-bold text-gray-400 w-8">ANY:</span> <span x-text="rule.any_keywords.join(', ')"></span></div>
+                                    <div x-show="rule.file_name_patterns?.length" class="flex gap-2"><span class="font-mono font-bold text-gray-400 w-8">FILE:</span> <span x-text="rule.file_name_patterns.join(', ')"></span></div>
+                                    <div x-show="!rule.all_keywords?.length && !rule.any_keywords?.length && !rule.file_name_patterns?.length" class="italic opacity-50">无过滤条件 (全部转发)</div>
+                                </div>
+                            </div>
+                            <button @click="removeRule(rule.name)" class="absolute top-4 right-4 text-red-400 hover:text-red-600 bg-red-50 dark:bg-red-900/20 hover:bg-red-100 dark:hover:bg-red-900/40 px-3 py-1 rounded-md text-xs font-medium transition-all opacity-0 group-hover:opacity-100">删除</button>
+                        </div>
+                    </template>
+                </div>
+            </div>
+            
+            <!-- Tab 4: 黑名单 -->
+            <div x-show="currentTab === 'blacklist' && !loadingData">
+                 <div class="card p-6">
+                    <div class="flex justify-between items-center mb-6"><div><h3 class="text-lg font-bold">广告过滤 (黑名单)</h3><p class="text-sm text-gray-500 dark:text-gray-400 mt-1">命中任一条件的**消息**将被丢弃。</p></div><button @click="saveBlacklist" class="bg-blue-600 hover:bg-blue-700 text-white px-5 py-2 rounded-lg text-sm font-medium transition-colors shadow-sm">保存更改</button></div>
+                    <div class="grid grid-cols-1 md:grid-cols-2 gap-6">
+                        <div><label class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">包含关键词 (中文/子串)</label><textarea x-model="blacklist.substring" rows="6" class="form-textarea font-mono text-sm" placeholder="如: 发财, 赌场 (每行一个)"></textarea></div>
+                        <div><label class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">包含关键词 (英文/全词)</label><textarea x-model="blacklist.word" rows="6" class="form-textarea font-mono text-sm" placeholder="如: ad, promo (每行一个)"></textarea></div>
+                        <div><label class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">文件名包含 (子串)</label><textarea x-model="blacklist.files" rows="6" class="form-textarea font-mono text-sm" placeholder="如: 芒果VPN (每行一个)"></textarea></div>
+                        <div><label class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">正则匹配 (Regex)</label><textarea x-model="blacklist.regex" rows="6" class="form-textarea font-mono text-sm" placeholder="Python 正则表达式 (每行一个)"></textarea></div>
+                    </div>
+                 </div>
+            </div>
+
+            <!-- Tab 5: 白名单 -->
+            <div x-show="currentTab === 'whitelist' && !loadingData">
+                <div class="card p-6 border-yellow-200 dark:border-yellow-800/30">
+                   <div class="flex justify-between items-center mb-6"><h3 class="text-lg font-bold flex items-center gap-2">✨ 白名单模式<span x-show="whitelist.enable" class="text-xs bg-green-100 text-green-700 px-2 py-0.5 rounded-full">已启用</span></h3><button @click="saveWhitelist" class="bg-yellow-600 hover:bg-yellow-700 text-white px-5 py-2 rounded-lg text-sm font-medium transition-colors shadow-sm">保存更改</button></div>
+                   <div class="mb-6 bg-yellow-50 dark:bg-yellow-900/10 p-4 rounded-xl border border-yellow-100 dark:border-yellow-800/30"><label class="flex items-center cursor-pointer"><input type="checkbox" x-model="whitelist.enable" class="w-5 h-5 text-yellow-600 border-gray-300 rounded focus:ring-yellow-500"><span class="ml-3 font-bold text-gray-900 dark:text-gray-100">启用白名单</span></label><p class="mt-2 text-sm text-yellow-800 dark:text-yellow-400 ml-8 leading-relaxed">⚠️ <strong>警告：</strong> 启用后，<strong>只有</strong>包含下方关键词的消息才会被转发。其他所有消息（包括无文本的图片/视频）都将被直接丢弃！白名单优先级高于黑名单。</p></div>
+                   <div><label class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">白名单关键词 (每行一个)</label><textarea x-model="whitelist.keywords" rows="10" class="form-textarea font-mono text-sm border-yellow-200 dark:border-gray-700 focus:ring-yellow-500" placeholder="重要通知&#10;#MyTag"></textarea></div>
+                </div>
+           </div>
+        </main>
+    </div>
+
+    <!-- 5. 核心逻辑脚本 (Alpine.js 之前) -->
     <script>
-        // 通用工具函数
-        const arrayToText = (arr) => (arr || []).join('\n');
-        const textToArray = (text) => text.split('\n').map(s => s.trim()).filter(Boolean);
-
         function app() {
             return {
                 authenticated: false,
@@ -86,431 +292,71 @@
                 currentTab: 'status',
                 needsReload: false,
                 
-                // 数据模型
-                stats: {},
-                settings: { dedup_retention_days: 30 },
-                rules: { sources: [], distribution_rules: [] },
-                blacklist: { substring: '', word: '' },
+                stats: {}, settings: { dedup_retention_days: 30 },
+                rules: { sources: [], distribution_rules: [], ad_filter: {}, whitelist: {} },
                 
-                // 临时表单数据
-                newSource: '',
-                newRule: { name: '', target: '', topic: '', keywords: '', files: '' },
-                
-                // Toast 系统
+                blacklist: { substring: '', word: '', files: '', regex: '' },
+                whitelist: { enable: false, keywords: '' },
+                newSource: '', newRule: { name: '', target: '', topic: '', keywords: '', any_keywords: '', files: '', types: '' },
                 toasts: [],
                 
-                // Tab 定义
-                tabs: [
-                    { id: 'status', name: '状态概览' },
-                    { id: 'sources', name: '监控源' },
-                    { id: 'rules', name: '转发规则' },
-                    { id: 'blacklist', name: '过滤黑名单' }
-                ],
+                tabs: [{id: 'status', name: '📊 状态概览'}, {id: 'sources', name: '📡 监控源'}, {id: 'rules', name: '🔀 转发规则'}, {id: 'blacklist', name: '🛡️ 黑名单'}, {id: 'whitelist', name: '✨ 白名单'}],
 
                 async initApp() {
-                    // 尝试自动登录
                     const savedPwd = localStorage.getItem('tgf_pwd');
-                    if (savedPwd) {
-                        this.password = savedPwd;
-                        await this.login();
-                    }
+                    if (savedPwd) { this.password = savedPwd; await this.login(); }
                 },
-
                 async login() {
+                    if(!this.password) return this.showToast('提示', '请输入密码', 'error');
                     this.loading = true;
                     try {
                         const headers = { 'Authorization': 'Basic ' + btoa('admin:' + this.password) };
                         const res = await fetch('/api/rules', { headers });
-                        if (!res.ok) throw new Error('认证失败');
-                        
-                        this.authenticated = true;
-                        localStorage.setItem('tgf_pwd', this.password);
-                        await this.fetchAllData();
-                        this.showToast('Welcome', '登录成功', 'success');
-                    } catch (e) {
-                        this.password = '';
-                        localStorage.removeItem('tgf_pwd');
-                        this.showToast('Error', '密码错误', 'error');
-                    } finally {
-                        this.loading = false;
-                    }
+                        if (!res.ok) throw new Error(res.status === 401 ? '密码错误' : '连接失败');
+                        this.authenticated = true; localStorage.setItem('tgf_pwd', this.password);
+                        await this.fetchAllData(); this.showToast('欢迎', '登录成功', 'success');
+                    } catch (e) { this.password = ''; localStorage.removeItem('tgf_pwd'); this.showToast('错误', e.message, 'error'); } finally { this.loading = false; }
                 },
-
                 async api(url, method = 'GET', body = null) {
-                    const headers = { 
-                        'Authorization': 'Basic ' + btoa('admin:' + this.password),
-                        'Content-Type': 'application/json'
-                    };
-                    const opts = { method, headers };
-                    if (body) opts.body = JSON.stringify(body);
-                    
+                    const headers = { 'Authorization': 'Basic ' + btoa('admin:' + this.password), 'Content-Type': 'application/json' };
+                    const opts = { method, headers }; if (body) opts.body = JSON.stringify(body);
                     const res = await fetch(url, opts);
-                    if (!res.ok) {
-                        const err = await res.json();
-                        throw new Error(err.detail || '请求失败');
-                    }
+                    if (!res.ok) { const err = await res.json().catch(() => ({})); throw new Error(err.detail || `请求失败 (${res.status})`); }
                     return res.json();
                 },
-
                 async fetchAllData() {
                     this.loadingData = true;
                     try {
-                        const [rules, stats, settings] = await Promise.all([
-                            this.api('/api/rules'),
-                            this.api('/api/stats'),
-                            this.api('/api/settings/dedup')
-                        ]);
-                        this.rules = rules;
-                        this.stats = stats;
-                        this.settings = settings;
-                        
-                        // 映射黑名单数据
+                        const [rules, stats, settings] = await Promise.all([this.api('/api/rules'), this.api('/api/stats'), this.api('/api/settings/dedup')]);
+                        this.rules = rules; this.stats = stats; this.settings = settings;
                         this.blacklist.substring = arrayToText(rules.ad_filter?.keywords_substring);
                         this.blacklist.word = arrayToText(rules.ad_filter?.keywords_word);
-                    } catch (e) {
-                        this.showToast('API Error', e.message, 'error');
-                    } finally {
-                        this.loadingData = false;
-                    }
+                        this.blacklist.files = arrayToText(rules.ad_filter?.file_name_keywords);
+                        this.blacklist.regex = arrayToText(rules.ad_filter?.patterns);
+                        this.whitelist.enable = !!rules.whitelist?.enable;
+                        this.whitelist.keywords = arrayToText(rules.whitelist?.keywords);
+                    } catch (e) { this.showToast('数据加载失败', e.message, 'error'); } finally { this.loadingData = false; }
                 },
-
-                // --- Actions ---
-                
-                async saveSettings() {
-                    try {
-                        await this.api('/api/settings/dedup', 'POST', { days: parseInt(this.settings.dedup_retention_days) });
-                        this.showToast('Saved', '设置已保存');
-                    } catch(e) { this.showToast('Error', e.message, 'error'); }
-                },
-
-                async addSource() {
-                    if (!this.newSource) return;
-                    try {
-                        await this.api('/api/sources/add', 'POST', { identifier: this.newSource });
-                        this.rules.sources.push({ identifier: this.newSource, resolved_id: null });
-                        this.newSource = '';
-                        this.needsReload = true;
-                        this.showToast('Success', '源已添加');
-                    } catch(e) { this.showToast('Error', e.message, 'error'); }
-                },
-
-                async removeSource(id) {
-                    if (!confirm('确认删除?')) return;
-                    try {
-                        await this.api('/api/sources/remove', 'POST', { identifier: id });
-                        this.rules.sources = this.rules.sources.filter(s => s.identifier !== id);
-                        this.needsReload = true;
-                        this.showToast('Deleted', '源已删除');
-                    } catch(e) { this.showToast('Error', e.message, 'error'); }
-                },
-
+                // Actions
+                async saveSettings() { try { await this.api('/api/settings/dedup', 'POST', { days: parseInt(this.settings.dedup_retention_days) }); this.showToast('保存成功', '数据库设置已更新'); } catch(e) { this.showToast('保存失败', e.message, 'error'); } },
+                async addSource() { if (!this.newSource) return; try { await this.api('/api/sources/add', 'POST', { identifier: this.newSource }); this.rules.sources.push({ identifier: this.newSource, resolved_id: null }); this.newSource = ''; this.needsReload = true; this.showToast('添加成功', '请记得 Reload'); } catch(e) { this.showToast('添加失败', e.message, 'error'); } },
+                async removeSource(id) { if (!confirm(`确定要删除源 "${id}" 吗？`)) return; try { await this.api('/api/sources/remove', 'POST', { identifier: id }); this.rules.sources = this.rules.sources.filter(s => s.identifier !== id); this.needsReload = true; this.showToast('删除成功', '源已移除'); } catch(e) { this.showToast('删除失败', e.message, 'error'); } },
                 async addRule() {
-                    if(!this.newRule.name || !this.newRule.target) return this.showToast('Warning', '名称和目标必填', 'error');
-                    const payload = {
-                        name: this.newRule.name,
-                        target_identifier: this.newRule.target,
-                        topic_id: this.newRule.topic ? parseInt(this.newRule.topic) : null,
-                        all_keywords: textToArray(this.newRule.keywords),
-                        file_name_patterns: textToArray(this.newRule.files)
-                    };
-                    try {
-                        await this.api('/api/rules/add', 'POST', payload);
-                        this.rules.distribution_rules.push(payload);
-                        // Reset form
-                        this.newRule = { name: '', target: '', topic: '', keywords: '', files: '' };
-                        this.needsReload = true;
-                        this.showToast('Success', '规则已添加');
-                    } catch(e) { this.showToast('Error', e.message, 'error'); }
+                    if(!this.newRule.name || !this.newRule.target) return this.showToast('提示', '规则名称和目标ID必填', 'error');
+                    const payload = { name: this.newRule.name, target_identifier: this.newRule.target, topic_id: this.newRule.topic ? parseInt(this.newRule.topic) : null, all_keywords: textToArray(this.newRule.keywords), any_keywords: textToArray(this.newRule.any_keywords), file_name_patterns: textToArray(this.newRule.files), file_types: textToArray(this.newRule.types) };
+                    try { await this.api('/api/rules/add', 'POST', payload); this.rules.distribution_rules.push(payload); this.newRule = { name: '', target: '', topic: '', keywords: '', any_keywords: '', files: '', types: '' }; this.needsReload = true; this.showToast('添加成功', '转发规则已保存'); } catch(e) { this.showToast('添加失败', e.message, 'error'); }
                 },
-
-                async removeRule(name) {
-                    if(!confirm('删除规则?')) return;
-                    try {
-                        await this.api('/api/rules/remove', 'POST', { name });
-                        this.rules.distribution_rules = this.rules.distribution_rules.filter(r => r.name !== name);
-                        this.needsReload = true;
-                        this.showToast('Deleted', '规则已移除');
-                    } catch(e) { this.showToast('Error', e.message, 'error'); }
-                },
-
-                async saveBlacklist() {
-                    try {
-                        const payload = {
-                            enable: true,
-                            keywords_substring: textToArray(this.blacklist.substring),
-                            keywords_word: textToArray(this.blacklist.word),
-                            // 保留原有的其他字段
-                            file_name_keywords: this.rules.ad_filter?.file_name_keywords || [],
-                            patterns: this.rules.ad_filter?.patterns || []
-                        };
-                        await this.api('/api/blacklist/update', 'POST', payload);
-                        this.needsReload = true;
-                        this.showToast('Success', '黑名单已更新');
-                    } catch(e) { this.showToast('Error', e.message, 'error'); }
-                },
-
-                // --- Utilities ---
-                
-                toggleTheme() {
-                    const modes = ['light', 'dark', 'system'];
-                    const next = modes[(modes.indexOf(this.theme) + 1) % modes.length];
-                    this.theme = next;
-                    localStorage.setItem('theme', next);
-                },
-
-                showToast(title, message, type = 'success') {
-                    const id = Date.now();
-                    this.toasts.push({ id, title, message, type, visible: true });
-                    setTimeout(() => {
-                        const t = this.toasts.find(t => t.id === id);
-                        if(t) t.visible = false;
-                    }, 3000); // 3秒后消失
-                }
+                async removeRule(name) { if(!confirm(`删除规则 "${name}"?`)) return; try { await this.api('/api/rules/remove', 'POST', { name }); this.rules.distribution_rules = this.rules.distribution_rules.filter(r => r.name !== name); this.needsReload = true; this.showToast('删除成功', '规则已移除'); } catch(e) { this.showToast('删除失败', e.message, 'error'); } },
+                async saveBlacklist() { try { const payload = { enable: true, keywords_substring: textToArray(this.blacklist.substring), keywords_word: textToArray(this.blacklist.word), file_name_keywords: textToArray(this.blacklist.files), patterns: textToArray(this.blacklist.regex) }; await this.api('/api/blacklist/update', 'POST', payload); this.needsReload = true; this.showToast('保存成功', '黑名单已更新'); } catch(e) { this.showToast('保存失败', e.message, 'error'); } },
+                async saveWhitelist() { try { const payload = { enable: this.whitelist.enable, keywords: textToArray(this.whitelist.keywords) }; await this.api('/api/whitelist/update', 'POST', payload); this.needsReload = true; this.showToast('保存成功', '白名单已更新'); } catch(e) { this.showToast('保存失败', e.message, 'error'); } },
+                toggleTheme() { const modes = ['light', 'dark', 'system']; this.theme = modes[(modes.indexOf(this.theme) + 1) % modes.length]; localStorage.setItem('theme', this.theme); },
+                showToast(title, message, type = 'success') { const id = Date.now(); this.toasts.push({ id, title, message, type, visible: true }); setTimeout(() => { const t = this.toasts.find(t => t.id === id); if(t) t.visible = false; }, 3000); }
             }
         }
     </script>
 
-    <!-- 5. Alpine.js (defer 加载，确保在 app 定义之后运行) -->
+    <!-- 6. Alpine.js (必须放在 body 的最后) -->
     <script src="https://cdn.jsdelivr.net/npm/alpinejs@3.13.5/dist/cdn.min.js"></script>
-</head>
 
-<!-- 
-    x-data: 全局状态管理 
-    Theme: 自动读取本地存储
--->
-<body 
-    x-data="app()" 
-    x-init="initApp()" 
-    class="bg-gray-50 text-gray-900 dark:bg-gray-950 dark:text-gray-100 transition-colors duration-300 min-h-screen flex flex-col"
-    :class="{ 'dark': theme === 'dark' || (theme === 'system' && window.matchMedia('(prefers-color-scheme: dark)').matches) }"
->
-
-    <!-- Toast 通知系统 (右上角) -->
-    <div class="fixed top-4 right-4 z-50 space-y-2 pointer-events-none">
-        <template x-for="toast in toasts" :key="toast.id">
-            <div 
-                x-show="toast.visible"
-                x-transition:enter="transition ease-out duration-300"
-                x-transition:enter-start="opacity-0 transform translate-x-8"
-                x-transition:enter-end="opacity-100 transform translate-x-0"
-                x-transition:leave="transition ease-in duration-200"
-                x-transition:leave-start="opacity-100 transform translate-x-0"
-                x-transition:leave-end="opacity-0 transform translate-x-8"
-                class="pointer-events-auto max-w-xs w-full bg-white dark:bg-gray-800 shadow-lg rounded-lg ring-1 ring-black ring-opacity-5 overflow-hidden"
-            >
-                <div class="p-4 flex items-start">
-                    <div class="flex-shrink-0">
-                        <!-- Success Icon -->
-                        <svg x-show="toast.type === 'success'" class="h-6 w-6 text-green-400" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z" /></svg>
-                        <!-- Error Icon -->
-                        <svg x-show="toast.type === 'error'" class="h-6 w-6 text-red-400" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 8v4m0 4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" /></svg>
-                    </div>
-                    <div class="ml-3 w-0 flex-1 pt-0.5">
-                        <p class="text-sm font-medium text-gray-900 dark:text-gray-100" x-text="toast.title"></p>
-                        <p class="mt-1 text-xs text-gray-500 dark:text-gray-400" x-text="toast.message"></p>
-                    </div>
-                </div>
-            </div>
-        </template>
-    </div>
-
-    <!-- 登录遮罩 (Glassmorphism) -->
-    <div x-show="!authenticated" x-transition.opacity class="fixed inset-0 z-50 flex items-center justify-center bg-black/50 backdrop-blur-sm">
-        <div class="bg-white dark:bg-gray-900 rounded-2xl shadow-2xl p-8 w-full max-w-sm border border-gray-200 dark:border-gray-800" @click.outside="$refs.pwd.focus()">
-            <div class="text-center mb-8">
-                <div class="w-12 h-12 bg-blue-100 dark:bg-blue-900/30 rounded-xl flex items-center justify-center mx-auto mb-4 text-blue-600 dark:text-blue-400">
-                    <svg class="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 15v2m-6 4h12a2 2 0 002-2v-6a2 2 0 00-2-2H6a2 2 0 00-2 2v6a2 2 0 002 2zm10-10V7a4 4 0 00-8 0v4h8z"></path></svg>
-                </div>
-                <h2 class="text-xl font-bold">Welcome Back</h2>
-            </div>
-            <form @submit.prevent="login">
-                <input x-ref="pwd" type="password" x-model="password" class="w-full px-4 py-3 rounded-xl bg-gray-50 dark:bg-gray-800 border border-gray-200 dark:border-gray-700 focus:ring-2 focus:ring-blue-500 outline-none transition-all" placeholder="Enter password..." required>
-                <button type="submit" :disabled="loading" class="mt-4 w-full py-3 rounded-xl bg-blue-600 hover:bg-blue-700 text-white font-medium transition-all active:scale-95 disabled:opacity-50 disabled:cursor-not-allowed flex justify-center items-center">
-                    <span x-show="!loading">Unlock</span>
-                    <svg x-show="loading" class="animate-spin h-5 w-5 text-white" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24"><circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle><path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path></svg>
-                </button>
-            </form>
-        </div>
-    </div>
-
-    <!-- 主界面 -->
-    <div x-show="authenticated" x-cloak class="flex-grow flex flex-col">
-        
-        <!-- 顶部导航 -->
-        <nav class="sticky top-0 z-40 bg-white/80 dark:bg-gray-900/80 backdrop-blur-md border-b border-gray-200 dark:border-gray-800">
-            <div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
-                <div class="flex justify-between h-16 items-center">
-                    <div class="flex items-center gap-3">
-                        <div class="w-8 h-8 bg-gradient-to-br from-blue-500 to-purple-600 rounded-lg flex items-center justify-center text-white font-bold shadow-lg shadow-blue-500/20">TG</div>
-                        <span class="font-bold text-lg tracking-tight">Forwarder</span>
-                    </div>
-                    
-                    <!-- 桌面 Tab -->
-                    <div class="hidden md:flex space-x-1 bg-gray-100 dark:bg-gray-800 p-1 rounded-xl">
-                        <template x-for="tab in tabs" :key="tab.id">
-                            <button 
-                                @click="currentTab = tab.id" 
-                                :class="currentTab === tab.id ? 'bg-white dark:bg-gray-700 shadow text-gray-900 dark:text-white' : 'text-gray-500 dark:text-gray-400 hover:text-gray-700 dark:hover:text-gray-200'"
-                                class="px-4 py-1.5 rounded-lg text-sm font-medium transition-all duration-200"
-                                x-text="tab.name"
-                            ></button>
-                        </template>
-                    </div>
-
-                    <div class="flex items-center gap-3">
-                        <!-- 重载按钮 -->
-                        <button x-show="needsReload" @click="showToast('Info', '请在 Telegram 中发送 /reload 以应用更改', 'success')" class="text-xs bg-yellow-100 dark:bg-yellow-900/30 text-yellow-700 dark:text-yellow-400 px-3 py-1 rounded-full font-medium animate-pulse">
-                            Config Changed
-                        </button>
-                        <!-- 主题切换 -->
-                        <button @click="toggleTheme" class="p-2 rounded-full hover:bg-gray-100 dark:hover:bg-gray-800 transition-colors text-gray-500">
-                            <span x-show="theme === 'light'">☀️</span>
-                            <span x-show="theme === 'dark'">🌙</span>
-                            <span x-show="theme === 'system'">💻</span>
-                        </button>
-                    </div>
-                </div>
-            </div>
-            <!-- 移动端 Tab -->
-            <div class="md:hidden border-t border-gray-200 dark:border-gray-800 overflow-x-auto scrollbar-hide">
-                <div class="flex px-4 py-2 space-x-4">
-                    <template x-for="tab in tabs" :key="tab.id">
-                        <button @click="currentTab = tab.id" :class="currentTab === tab.id ? 'text-blue-600 dark:text-blue-400 font-semibold' : 'text-gray-500'" class="whitespace-nowrap text-sm py-2" x-text="tab.name"></button>
-                    </template>
-                </div>
-            </div>
-        </nav>
-
-        <!-- 内容区域 -->
-        <main class="flex-grow max-w-7xl mx-auto w-full px-4 sm:px-6 lg:px-8 py-8">
-            
-            <!-- Loading State -->
-            <div x-show="loadingData" class="grid grid-cols-1 md:grid-cols-3 gap-6 animate-pulse">
-                <div class="h-32 bg-gray-200 dark:bg-gray-800 rounded-xl"></div>
-                <div class="h-32 bg-gray-200 dark:bg-gray-800 rounded-xl"></div>
-                <div class="h-32 bg-gray-200 dark:bg-gray-800 rounded-xl"></div>
-            </div>
-
-            <!-- Tab: Status & Settings -->
-            <div x-show="currentTab === 'status' && !loadingData" x-transition:enter="transition ease-out duration-300" x-transition:enter-start="opacity-0 translate-y-4" x-transition:enter-end="opacity-100 translate-y-0" class="space-y-6">
-                <div class="grid grid-cols-1 md:grid-cols-3 gap-6">
-                    <div class="bg-white dark:bg-gray-900 p-6 rounded-2xl border border-gray-100 dark:border-gray-800 shadow-sm hover:shadow-md transition-shadow">
-                        <dt class="text-sm font-medium text-gray-500">去重哈希 (Dedup)</dt>
-                        <dd class="mt-2 text-3xl font-bold text-gray-900 dark:text-white" x-text="stats.dedup_hashes || 0"></dd>
-                    </div>
-                    <div class="bg-white dark:bg-gray-900 p-6 rounded-2xl border border-gray-100 dark:border-gray-800 shadow-sm hover:shadow-md transition-shadow">
-                        <dt class="text-sm font-medium text-gray-500">活跃监控源</dt>
-                        <dd class="mt-2 text-3xl font-bold text-gray-900 dark:text-white" x-text="stats.sources || 0"></dd>
-                    </div>
-                    <div class="bg-white dark:bg-gray-900 p-6 rounded-2xl border border-gray-100 dark:border-gray-800 shadow-sm hover:shadow-md transition-shadow">
-                        <dt class="text-sm font-medium text-gray-500">分发规则</dt>
-                        <dd class="mt-2 text-3xl font-bold text-gray-900 dark:text-white" x-text="stats.distribution_rules || 0"></dd>
-                    </div>
-                </div>
-
-                <div class="bg-white dark:bg-gray-900 p-8 rounded-2xl border border-gray-100 dark:border-gray-800 shadow-sm">
-                    <h3 class="text-lg font-bold mb-6">系统设置</h3>
-                    <div class="max-w-xl">
-                        <div class="flex justify-between mb-2">
-                            <label class="text-sm font-medium text-gray-600 dark:text-gray-400">哈希保留天数</label>
-                            <span class="font-mono font-bold text-blue-600" x-text="settings.dedup_retention_days + ' Days'"></span>
-                        </div>
-                        <input type="range" min="1" max="30" x-model="settings.dedup_retention_days" @change="saveSettings" class="w-full">
-                        <p class="mt-2 text-xs text-gray-400">减少天数可优化数据库体积。将在下次维护任务生效。</p>
-                    </div>
-                </div>
-            </div>
-
-            <!-- Tab: Sources -->
-            <div x-show="currentTab === 'sources' && !loadingData" class="space-y-6">
-                <div class="bg-white dark:bg-gray-900 rounded-2xl border border-gray-100 dark:border-gray-800 shadow-sm overflow-hidden">
-                    <div class="p-6 border-b border-gray-100 dark:border-gray-800 flex flex-col md:flex-row gap-4 justify-between items-center bg-gray-50/50 dark:bg-gray-800/50">
-                        <h3 class="text-lg font-bold">监控源管理</h3>
-                        <div class="flex w-full md:w-auto gap-2">
-                            <input x-model="newSource" @keyup.enter="addSource" type="text" placeholder="@channel or ID" class="flex-1 md:w-64 px-4 py-2 rounded-lg border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-900 focus:ring-2 focus:ring-blue-500 outline-none text-sm">
-                            <button @click="addSource" class="bg-blue-600 hover:bg-blue-700 text-white px-4 py-2 rounded-lg text-sm font-medium transition-colors">添加</button>
-                        </div>
-                    </div>
-                    <div class="divide-y divide-gray-100 dark:divide-gray-800">
-                        <template x-for="source in rules.sources" :key="source.identifier">
-                            <div class="p-4 flex justify-between items-center hover:bg-gray-50 dark:hover:bg-gray-800/50 transition-colors group">
-                                <div>
-                                    <div class="flex items-center gap-2">
-                                        <span class="font-mono font-medium text-gray-900 dark:text-gray-100" x-text="source.identifier"></span>
-                                        <span x-show="source.resolved_id" class="text-[10px] px-1.5 py-0.5 bg-green-100 dark:bg-green-900/30 text-green-700 dark:text-green-400 rounded font-bold">ACTIVE</span>
-                                        <span x-show="!source.resolved_id" class="text-[10px] px-1.5 py-0.5 bg-yellow-100 dark:bg-yellow-900/30 text-yellow-700 dark:text-yellow-400 rounded font-bold">PENDING</span>
-                                    </div>
-                                    <div class="text-xs text-gray-400 font-mono mt-1" x-text="'ID: ' + (source.resolved_id || 'Waiting for reload...')"></div>
-                                </div>
-                                <button @click="removeSource(source.identifier)" class="text-gray-300 hover:text-red-500 p-2 transition-colors opacity-0 group-hover:opacity-100">
-                                    <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16"></path></svg>
-                                </button>
-                            </div>
-                        </template>
-                        <div x-show="rules.sources.length === 0" class="p-8 text-center text-gray-500">暂无监控源</div>
-                    </div>
-                </div>
-            </div>
-
-            <!-- Tab: Rules (Forwarding) -->
-            <div x-show="currentTab === 'rules' && !loadingData" class="space-y-6">
-                <!-- Add Rule Card -->
-                <div class="bg-white dark:bg-gray-900 rounded-2xl border border-gray-100 dark:border-gray-800 shadow-sm p-6">
-                    <h3 class="text-lg font-bold mb-4">添加转发规则</h3>
-                    <div class="grid grid-cols-1 md:grid-cols-3 gap-4 mb-4">
-                        <input x-model="newRule.name" type="text" placeholder="规则名称 (如: 搬运视频)" class="form-input">
-                        <input x-model="newRule.target" type="text" placeholder="目标 ID (-100...)" class="form-input">
-                        <input x-model="newRule.topic" type="number" placeholder="Topic ID (可选)" class="form-input">
-                    </div>
-                    <div class="grid grid-cols-1 md:grid-cols-2 gap-4 mb-4">
-                        <textarea x-model="newRule.keywords" rows="3" placeholder="包含关键词 (每行一个)" class="form-textarea"></textarea>
-                        <textarea x-model="newRule.files" rows="3" placeholder="文件名正则 (如 *.apk)" class="form-textarea"></textarea>
-                    </div>
-                    <div class="flex justify-end">
-                        <button @click="addRule" class="bg-black dark:bg-white text-white dark:text-black px-6 py-2 rounded-lg font-bold text-sm hover:opacity-80 transition-opacity">保存规则</button>
-                    </div>
-                </div>
-
-                <!-- Rules List -->
-                <div class="grid grid-cols-1 gap-4">
-                    <template x-for="rule in rules.distribution_rules" :key="rule.name">
-                        <div class="bg-white dark:bg-gray-900 p-5 rounded-xl border border-gray-100 dark:border-gray-800 shadow-sm flex justify-between items-start group">
-                            <div>
-                                <h4 class="font-bold text-gray-900 dark:text-gray-100" x-text="rule.name"></h4>
-                                <div class="flex items-center gap-2 mt-2 text-xs text-gray-500">
-                                    <span class="bg-gray-100 dark:bg-gray-800 px-2 py-1 rounded" x-text="'To: ' + rule.target_identifier"></span>
-                                    <span x-show="rule.topic_id" class="bg-gray-100 dark:bg-gray-800 px-2 py-1 rounded" x-text="'Topic: ' + rule.topic_id"></span>
-                                </div>
-                            </div>
-                            <button @click="removeRule(rule.name)" class="text-xs text-red-500 hover:bg-red-50 dark:hover:bg-red-900/20 px-3 py-1 rounded border border-red-200 dark:border-red-900/50 transition-colors">
-                                删除
-                            </button>
-                        </div>
-                    </template>
-                </div>
-            </div>
-            
-            <!-- Tab: Blacklist -->
-            <div x-show="currentTab === 'blacklist' && !loadingData">
-                 <div class="bg-white dark:bg-gray-900 rounded-2xl border border-gray-100 dark:border-gray-800 shadow-sm p-6">
-                    <div class="flex justify-between items-center mb-6">
-                        <h3 class="text-lg font-bold">广告过滤 (Blacklist)</h3>
-                        <button @click="saveBlacklist" class="text-blue-600 text-sm font-bold hover:underline">保存更改</button>
-                    </div>
-                    <div class="grid grid-cols-1 md:grid-cols-2 gap-6">
-                        <div>
-                            <label class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">关键词 (中文/子串)</label>
-                            <textarea x-model="blacklist.substring" rows="6" class="form-textarea font-mono text-sm"></textarea>
-                        </div>
-                         <div>
-                            <label class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">关键词 (英文/全词)</label>
-                            <textarea x-model="blacklist.word" rows="6" class="form-textarea font-mono text-sm"></textarea>
-                        </div>
-                    </div>
-                 </div>
-            </div>
-
-        </main>
-    </div>
 </body>
 </html>
