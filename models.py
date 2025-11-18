@@ -53,6 +53,8 @@ class SourceConfig(BaseModel):
     replies_limit: int = 10
     forward_new_only: Optional[bool] = None
     resolved_id: Optional[int] = None 
+    # (新增) 缓存的真实标题
+    cached_title: Optional[str] = None
 
 class TargetDistributionRule(BaseModel):
     name: str 
@@ -136,7 +138,6 @@ class AdFilterConfig(BaseModel):
     patterns: Optional[List[str]] = Field(default_factory=list)
     file_name_keywords: Optional[List[str]] = Field(default_factory=list)
 
-# --- (修改) 内容过滤器模型 ---
 class ContentFilterConfig(BaseModel):
     enable: bool = True
     meaningless_words: List[str] = Field(default_factory=list)
@@ -198,7 +199,5 @@ class RulesDatabase(BaseModel):
     ad_filter: AdFilterConfig = Field(default_factory=AdFilterConfig)
     whitelist: WhitelistConfig = Field(default_factory=WhitelistConfig)
     settings: SystemSettings = Field(default_factory=SystemSettings)
-    
-    # (新增) 动态管理内容过滤和替换
     content_filter: ContentFilterConfig = Field(default_factory=ContentFilterConfig)
     replacements: Dict[str, str] = Field(default_factory=dict)

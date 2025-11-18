@@ -61,27 +61,54 @@ class UltimateForwarder:
         if not self.clients: return
         client = self.clients[0]
         
-        async def normalize_target(identifier: Union[str, int]) -> Optional[int]:
+        # (新增) 用于更新源标题的辅助函数
+        async def update_source_title(identifier, title, resolved_id):
+            for s in web_server.rules_db.sources:
+                if str(s.identifier) == str(identifier):
+                    s.cached_title = title
+                    s.resolved_id = resolved_id
+                    # 顺便保存到文件，避免下次启动丢失
+                    await web_server.save_rules_to_db()
+                    break
+
+        async def normalize_target(identifier: Union[str, int], is_source: bool = False) -> Optional[int]:
             try:
                 if not identifier: return None
                 entity = await client.get_entity(identifier)
                 resolved_id = entity.id
+                
+                # 获取标题
+                title = getattr(entity, 'title', None)
+                if not title and hasattr(entity, 'username'):
+                    title = entity.username
+                
                 if isinstance(entity, Channel) and not str(resolved_id).startswith("-100"):
                     resolved_id = int(f"-100{resolved_id}")
                 elif isinstance(entity, Chat) and not str(resolved_id).startswith("-"):
                     resolved_id = int(f"-{resolved_id}")
-                logger.info(f"目标 '{identifier}' -> 解析为 ID: {resolved_id}")
+                
+                # 如果是源，更新标题缓存
+                if is_source and title:
+                     await update_source_title(identifier, title, resolved_id)
+
+                logger.info(f"目标 '{identifier}' -> {title} (ID: {resolved_id})")
                 return resolved_id
             except Exception as e:
                 logger.error(f"❌ 无法解析目标: {identifier} - {e}")
                 return None
         
+        # 解析默认目标
         settings = web_server.rules_db.settings
         if settings.default_target:
             self.config.targets.resolved_default_target_id = await normalize_target(settings.default_target)
         
+        # 解析分发规则目标
         for rule in web_server.rules_db.distribution_rules:
             rule.resolved_target_id = await normalize_target(rule.target_identifier)
+
+        # (新增) 解析源并缓存标题
+        for s in web_server.rules_db.sources:
+             await normalize_target(s.identifier, is_source=True)
 
     async def _get_channel_progress(self, channel_id: int) -> int:
         return await database.get_progress(channel_id)
@@ -186,7 +213,6 @@ class UltimateForwarder:
     # --- 辅助方法 ---
 
     def _apply_replacements(self, text: str) -> str:
-        # (修改) 读取动态规则
         replacements = web_server.rules_db.replacements
         if not text or not replacements: return text
         for find, replace_with in replacements.items():
@@ -203,7 +229,6 @@ class UltimateForwarder:
         text = text or ""
         text_lower = text.lower()
         
-        # (修改) 从 rules_db 读取动态内容过滤器
         whitelist = web_server.rules_db.whitelist
         ad_filter = web_server.rules_db.ad_filter
         content_filter = web_server.rules_db.content_filter
