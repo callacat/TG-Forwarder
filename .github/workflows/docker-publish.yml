@@ -6,7 +6,7 @@ name: Build and Push to Docker Hub
 on:
   push:
     branches:
-      - v2.5  # 只在 v2 分支 push 时触发
+      - main  # 只在 v2 分支 push 时触发
   workflow_dispatch: # 允许手动触发
 
 jobs:
@@ -36,7 +36,7 @@ jobs:
           file: ./Dockerfile
           push: true
           tags: |
-            ${{ secrets.DOCKER_USERNAME }}/tgf:v2.5
+            ${{ secrets.DOCKER_USERNAME }}/tgf:latest
           platforms: linux/amd64,linux/arm64 # 构建多种架构
 
       - name: Delete workflow runs
