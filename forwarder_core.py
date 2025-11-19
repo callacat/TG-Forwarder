@@ -74,7 +74,46 @@ class UltimateForwarder:
         async def normalize_target(identifier: Union[str, int], is_source: bool = False) -> Optional[int]:
             try:
                 if not identifier: return None
-                entity = await client.get_entity(identifier)
+                
+                # [Fix] 强制类型转换：将数字字符串转为 int
+                # Telethon 对 "-100xxx" 字符串支持不佳，必须转为 int
+                search_key = identifier
+                if isinstance(identifier, str):
+                    identifier = identifier.strip()
+                    # 检查是否为纯数字或负数
+                    if identifier.lstrip('-').isdigit():
+                        search_key = int(identifier)
+                
+                entity = None
+                try:
+                    entity = await client.get_entity(search_key)
+                except (ValueError, errors.RpcError) as e:
+                    # [Fix] 尝试策略 2: 如果是 -100 开头的 ID 失败，尝试去掉前缀
+                    if isinstance(search_key, int) and str(search_key).startswith("-100"):
+                        try:
+                            stripped_id = int(str(search_key)[4:])
+                            logger.debug(f"尝试使用无前缀 ID 查找: {stripped_id}")
+                            entity = await client.get_entity(stripped_id)
+                        except:
+                            pass
+                    
+                    # [Fix] 尝试策略 3: 如果还是失败，且不是 FloodWait，尝试刷新 Dialogs 缓存
+                    if not entity and not isinstance(e, errors.FloodWaitError):
+                        try:
+                            logger.warning(f"未在缓存中找到 {search_key}，尝试从服务器刷新 Dialogs...")
+                            # 仅获取少量 dialogs 以预热缓存，避免严重 FloodWait
+                            async for d in client.iter_dialogs(limit=50): 
+                                pass
+                            # 再次尝试
+                            entity = await client.get_entity(search_key)
+                        except Exception as refresh_error:
+                            logger.warning(f"刷新缓存后仍未找到: {refresh_error}")
+
+                if not entity:
+                     # 最后的挣扎：如果是源且没找到，可能不需要立刻报错（也许只是暂时获取不到）
+                     # 但如果是目标，必须报错
+                     raise ValueError(f"Cannot find entity corresponding to {identifier}")
+
                 resolved_id = entity.id
                 
                 # 获取标题
@@ -82,6 +121,7 @@ class UltimateForwarder:
                 if not title and hasattr(entity, 'username'):
                     title = entity.username
                 
+                # 规范化 ID (确保是 -100 开头)
                 if isinstance(entity, Channel) and not str(resolved_id).startswith("-100"):
                     resolved_id = int(f"-100{resolved_id}")
                 elif isinstance(entity, Chat) and not str(resolved_id).startswith("-"):
@@ -95,6 +135,9 @@ class UltimateForwarder:
                 return resolved_id
             except Exception as e:
                 logger.error(f"❌ 无法解析目标: {identifier} - {e}")
+                # 如果是关键的 FloodWait，这里打印出来
+                if "FloodWait" in str(e):
+                    logger.warning("⚠️ 触发了 Telegram API 限制 (FloodWait)。建议暂停操作几分钟。")
                 return None
         
         # 解析默认目标
