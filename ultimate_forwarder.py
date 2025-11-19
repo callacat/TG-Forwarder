@@ -141,10 +141,27 @@ async def resolve_identifiers(client: TelegramClient, source_list: List[SourceCo
     resolved_ids = []
     if not client: return []
     logger.info(f"正在解析 {config_desc} 中的 {len(source_list)} 个源...")
+    
     for s_config in source_list:
         identifier = s_config.identifier
+        entity = None
+        
         try:
-            entity = await client.get_entity(identifier)
+            # [Optimization] 性能优化：快速通道
+            # 如果已有 resolved_id，直接用 ID 获取实体 (速度快，通常命中本地缓存)
+            # 避免重复解析用户名字符串 (速度慢，容易触发 FloodWait)
+            if s_config.resolved_id:
+                try:
+                    entity = await client.get_entity(s_config.resolved_id)
+                    # 验证成功，使用快速通道
+                except Exception:
+                    # ID 失效（极少见），回退到下面的常规解析
+                    entity = None
+            
+            # 常规通道：解析 Identifier (字符串/链接)
+            if not entity:
+                entity = await client.get_entity(identifier)
+
             resolved_id = entity.id
             
             # 获取标题
@@ -155,7 +172,10 @@ async def resolve_identifiers(client: TelegramClient, source_list: List[SourceCo
             if isinstance(entity, Channel) and not str(resolved_id).startswith("-100"): resolved_id = int(f"-100{resolved_id}")
             elif isinstance(entity, Chat) and not str(resolved_id).startswith("-"): resolved_id = int(f"-{resolved_id}")
             
-            logger.debug(f"解析源: {identifier} -> {resolved_id}")
+            # 仅在 ID 变更时才打印日志，减少刷屏
+            if s_config.resolved_id != resolved_id:
+                logger.debug(f"解析源更新: {identifier} -> {resolved_id}")
+            
             s_config.resolved_id = resolved_id 
             
             # 缓存标题到 Web 数据库

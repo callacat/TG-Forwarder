@@ -149,9 +149,9 @@ class UltimateForwarder:
         for rule in web_server.rules_db.distribution_rules:
             rule.resolved_target_id = await normalize_target(rule.target_identifier)
 
-        # (新增) 解析源并缓存标题
-        for s in web_server.rules_db.sources:
-             await normalize_target(s.identifier, is_source=True)
+        # [Optimization] 已移除：不再重复解析源
+        # UltimateForwarder.resolve_identifiers 已经完成了这项工作
+        # 此处的重复循环是导致热重载缓慢的主要原因
 
     async def _get_channel_progress(self, channel_id: int) -> int:
         return await database.get_progress(channel_id)
