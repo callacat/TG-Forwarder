@@ -186,7 +186,7 @@
         <header class="flex flex-col md:flex-row justify-between items-start md:items-center mb-10 gap-4 animate-scale-in">
             <div>
                 <h1 class="text-3xl font-bold tracking-tight flex items-center gap-3">
-                    <div class="w-8 h-8 bg-gradient-to-tr from-apple-blue to-apple-teal rounded-lg shadow-lg">TG</div>
+                    <div class="w-8 h-8 bg-gradient-to-tr from-apple-blue to-apple-teal rounded-lg shadow-lg"></div>
                     <span class="bg-clip-text text-transparent bg-gradient-to-r from-surface-900 to-surface-500 dark:from-white dark:to-surface-400">Forwarder Pro</span>
                 </h1>
             </div>
@@ -594,7 +594,8 @@
                     const savedPwd = SafeStorage.getItem('tgf_pwd'); 
                     if (savedPwd) { this.password = savedPwd; await this.login(); }
                     
-                    setInterval(() => { if (this.authenticated && !document.hidden) this.fetchAllData(false); }, 5000);
+                    // 修复：仅自动刷新 Stats，不刷新 Rules/Config，避免编辑时输入框跳变
+                    setInterval(() => { if (this.authenticated && !document.hidden) this.fetchStatsOnly(); }, 5000);
                 },
                 
                 async login() { this.loading = true; try { const headers = { 'Authorization': 'Basic ' + btoa('admin:' + this.password) }; const res = await fetch('/api/rules', { headers }); if (res.status === 401) throw new Error('密码错误'); if (!res.ok) throw new Error(`连接失败 (${res.status})`); this.authenticated = true; SafeStorage.setItem('tgf_pwd', this.password); await this.fetchAllData(); this.showToast('欢迎回来', '系统已就绪'); } catch (e) { if (e.message === '密码错误') { this.password = ''; SafeStorage.removeItem('tgf_pwd'); } this.showToast('登录失败', e.message, 'error'); } finally { this.loading = false; } },
@@ -602,6 +603,16 @@
                     const headers = { 'Authorization': 'Basic ' + btoa('admin:' + this.password), 'Content-Type': 'application/json' };
                     const opts = { method, headers }; if (body) opts.body = JSON.stringify(body);
                     const res = await fetch(url, opts); if (!res.ok) throw new Error(`API Error: ${res.status}`); return await res.json();
+                },
+
+                // 新增：只获取状态统计数据 (非破坏性刷新)
+                async fetchStatsOnly() {
+                    try {
+                        const stats = await this.api('/api/stats');
+                        this.stats = stats || {};
+                    } catch (e) {
+                        // 静默失败，不打扰用户
+                    }
                 },
                 
                 async fetchAllData(showLoading = false) {
