@@ -7,6 +7,8 @@ import secrets
 from fastapi import FastAPI, HTTPException, Request, Depends 
 from fastapi.security import HTTPBasic, HTTPBasicCredentials 
 from fastapi.responses import HTMLResponse, FileResponse
+from fastapi.openapi.docs import get_swagger_ui_html, get_redoc_html # 新增导入
+from fastapi.openapi.utils import get_openapi # 新增导入
 from typing import List, Optional, Dict, Any, Callable, Awaitable
 from pydantic import BaseModel 
 
@@ -28,13 +30,14 @@ RULES_DB_PATH = "/app/data/rules_db.json"
 rules_db: RulesDatabase = RulesDatabase() 
 db_lock = asyncio.Lock() 
 
-# 显式开启 /docs 和 /redoc
+# 1. 禁用默认文档路由，以便我们要么完全接管，要么加上认证
 app = FastAPI(
     title="TG Forwarder Web UI",
     description="TG 终极转发器管理面板",
     version="2.5",
-    docs_url="/docs",
-    redoc_url="/redoc"
+    docs_url=None, # 禁用默认 /docs
+    redoc_url=None, # 禁用默认 /redoc
+    openapi_url=None # 禁用默认 /openapi.json (稍后手动添加)
 )
 
 # --- 全局状态提供者钩子 ---
@@ -55,7 +58,7 @@ def get_current_user(credentials: HTTPBasicCredentials = Depends(security)):
     correct_password = secrets.compare_digest(credentials.password, WEB_UI_PASSWORD)
     if not correct_password:
         raise HTTPException(status_code=401, detail="凭据不正确", headers={"WWW-Authenticate": "Basic"})
-    return True 
+    return credentials.username
 
 async def _save_rules_to_db_internal():
     try:
@@ -112,9 +115,27 @@ async def save_rules_to_db():
     async with db_lock:
         await _save_rules_to_db_internal() 
 
+# --- 2. 手动添加受保护的文档路由 ---
+
+@app.get("/docs", include_in_schema=False)
+async def get_swagger_documentation(username: str = Depends(get_current_user)):
+    """受密码保护的 Swagger UI"""
+    return get_swagger_ui_html(openapi_url="/openapi.json", title="API 文档")
+
+@app.get("/redoc", include_in_schema=False)
+async def get_redoc_documentation(username: str = Depends(get_current_user)):
+    """受密码保护的 ReDoc"""
+    return get_redoc_html(openapi_url="/openapi.json", title="API 文档")
+
+@app.get("/openapi.json", include_in_schema=False)
+async def get_open_api_endpoint(username: str = Depends(get_current_user)):
+    """受密码保护的 OpenAPI JSON Schema"""
+    return get_openapi(title=app.title, version=app.version, routes=app.routes)
+
+
 # --- 统计 API ---
 @app.get("/api/stats")
-async def get_stats(auth: bool = Depends(get_current_user)):
+async def get_stats(auth: str = Depends(get_current_user)):
     try:
         db_stats = await database.get_db_stats()
         
@@ -155,28 +176,27 @@ async def get_stats(auth: bool = Depends(get_current_user)):
 
 # --- 设置 API ---
 @app.get("/api/settings", response_model=SystemSettings)
-async def get_settings(auth: bool = Depends(get_current_user)):
+async def get_settings(auth: str = Depends(get_current_user)):
     return rules_db.settings
 
 @app.post("/api/settings/update")
-async def update_settings(settings: SystemSettings, auth: bool = Depends(get_current_user)):
+async def update_settings(settings: SystemSettings, auth: str = Depends(get_current_user)):
     rules_db.settings = settings
-    # 确保 dedup_retention_days 正确传递
     await database.set_dedup_retention(settings.dedup_retention_days)
     await save_rules_to_db()
     return {"status": "success", "message": "系统设置已更新。"}
 
 @app.get("/api/settings/dedup")
-async def get_dedup_legacy(auth: bool = Depends(get_current_user)):
+async def get_dedup_legacy(auth: str = Depends(get_current_user)):
     return {"dedup_retention_days": rules_db.settings.dedup_retention_days}
 
 # --- 规则与黑白名单 API ---
 @app.get("/api/rules", response_model=RulesDatabase)
-async def get_all_rules(auth: bool = Depends(get_current_user)):
+async def get_all_rules(auth: str = Depends(get_current_user)):
     return rules_db
 
 @app.post("/api/sources/add")
-async def add_source(source: SourceConfig, auth: bool = Depends(get_current_user)):
+async def add_source(source: SourceConfig, auth: str = Depends(get_current_user)):
     if source.identifier in [s.identifier for s in rules_db.sources]:
         raise HTTPException(status_code=400, detail="源已存在")
     rules_db.sources.append(source)
@@ -184,19 +204,19 @@ async def add_source(source: SourceConfig, auth: bool = Depends(get_current_user
     return {"status": "success"}
 
 @app.post("/api/sources/remove")
-async def remove_source(data: Dict[str, Any], auth: bool = Depends(get_current_user)):
+async def remove_source(data: Dict[str, Any], auth: str = Depends(get_current_user)):
     rules_db.sources = [s for s in rules_db.sources if str(s.identifier) != str(data.get('identifier'))]
     await save_rules_to_db()
     return {"status": "success"}
 
 @app.post("/api/rules/add")
-async def add_rule(rule: TargetDistributionRule, auth: bool = Depends(get_current_user)):
+async def add_rule(rule: TargetDistributionRule, auth: str = Depends(get_current_user)):
     rules_db.distribution_rules.append(rule)
     await save_rules_to_db()
     return rule
 
 @app.post("/api/rules/update_single")
-async def update_single_rule(rule: TargetDistributionRule, name_to_replace: str = "", auth: bool = Depends(get_current_user)):
+async def update_single_rule(rule: TargetDistributionRule, name_to_replace: str = "", auth: str = Depends(get_current_user)):
     target_name = name_to_replace if name_to_replace else rule.name
     
     for index, r in enumerate(rules_db.distribution_rules):
@@ -213,7 +233,7 @@ class ReorderRequest(BaseModel):
     names: List[str]
 
 @app.post("/api/rules/reorder")
-async def reorder_rules(data: ReorderRequest, auth: bool = Depends(get_current_user)):
+async def reorder_rules(data: ReorderRequest, auth: str = Depends(get_current_user)):
     name_map = {r.name: r for r in rules_db.distribution_rules}
     new_list = []
     for name in data.names:
@@ -228,47 +248,47 @@ async def reorder_rules(data: ReorderRequest, auth: bool = Depends(get_current_u
     return {"status": "success", "message": "规则顺序已保存"}
 
 @app.post("/api/rules/remove")
-async def remove_rule(data: Dict[str, str], auth: bool = Depends(get_current_user)):
+async def remove_rule(data: Dict[str, str], auth: str = Depends(get_current_user)):
     rules_db.distribution_rules = [r for r in rules_db.distribution_rules if r.name != data.get('name')]
     await save_rules_to_db()
     return {"status": "success"}
 
 @app.get("/api/blacklist", response_model=AdFilterConfig)
-async def get_blacklist(auth: bool = Depends(get_current_user)):
+async def get_blacklist(auth: str = Depends(get_current_user)):
     return rules_db.ad_filter
 
 @app.post("/api/blacklist/update")
-async def update_blacklist(config: AdFilterConfig, auth: bool = Depends(get_current_user)):
+async def update_blacklist(config: AdFilterConfig, auth: str = Depends(get_current_user)):
     rules_db.ad_filter = config
     await save_rules_to_db()
     return {"status": "success"}
 
 @app.get("/api/whitelist", response_model=WhitelistConfig)
-async def get_whitelist(auth: bool = Depends(get_current_user)):
+async def get_whitelist(auth: str = Depends(get_current_user)):
     return rules_db.whitelist
 
 @app.post("/api/whitelist/update")
-async def update_whitelist(config: WhitelistConfig, auth: bool = Depends(get_current_user)):
+async def update_whitelist(config: WhitelistConfig, auth: str = Depends(get_current_user)):
     rules_db.whitelist = config
     await save_rules_to_db()
     return {"status": "success"}
 
 @app.get("/api/content_filter", response_model=ContentFilterConfig)
-async def get_content_filter(auth: bool = Depends(get_current_user)):
+async def get_content_filter(auth: str = Depends(get_current_user)):
     return rules_db.content_filter
 
 @app.post("/api/content_filter/update")
-async def update_content_filter(config: ContentFilterConfig, auth: bool = Depends(get_current_user)):
+async def update_content_filter(config: ContentFilterConfig, auth: str = Depends(get_current_user)):
     rules_db.content_filter = config
     await save_rules_to_db()
     return {"status": "success"}
 
 @app.get("/api/replacements", response_model=Dict[str, str])
-async def get_replacements(auth: bool = Depends(get_current_user)):
+async def get_replacements(auth: str = Depends(get_current_user)):
     return rules_db.replacements
 
 @app.post("/api/replacements/update")
-async def update_replacements(data: Dict[str, str], auth: bool = Depends(get_current_user)):
+async def update_replacements(data: Dict[str, str], auth: str = Depends(get_current_user)):
     rules_db.replacements = data
     await save_rules_to_db()
     return {"status": "success"}
