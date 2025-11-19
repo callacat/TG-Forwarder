@@ -5,14 +5,15 @@ import os
 import asyncio
 from telethon import TelegramClient, events, Button
 from telethon.tl.types import Message
-from typing import Callable, Awaitable
+from typing import Callable, Awaitable, List, Any
 from datetime import datetime, timezone 
 from models import Config 
 from link_checker import LinkChecker 
 from telethon.tl.functions.bots import SetBotCommandsRequest
 from telethon.tl.types import (
     BotCommand, 
-    BotCommandScopeDefault
+    BotCommandScopeDefault,
+    BotCommandScopePeer
 )
 
 import database
@@ -21,13 +22,14 @@ import web_server # 引入 web_server 以获取实时规则统计
 from loguru import logger
 
 class BotService:
-    def __init__(self, config: Config, bot_client: TelegramClient, forwarder: 'UltimateForwarder', link_checker: LinkChecker, reload_config_func: Callable[[], Awaitable[str]]):
+    def __init__(self, config: Config, bot_client: TelegramClient, forwarder: 'UltimateForwarder', link_checker: LinkChecker, reload_config_func: Callable[[], Awaitable[str]], get_clients_func: Callable[[], List[Any]]):
         self.config = config.bot_service
         self.bot = bot_client
-        self.forwarder = forwarder
+        self.forwarder = forwarder # 引用可能为 None
         self.link_checker = link_checker
         self.admin_ids = self.config.admin_user_ids if self.config else []
         self.reload_config = reload_config_func
+        self.get_clients = get_clients_func # (新) 获取最新客户端列表的回调
         self.start_time = datetime.now(timezone.utc)
 
     def is_admin(self, event: events.NewMessage.Event) -> bool:
@@ -43,6 +45,17 @@ class BotService:
         if event.sender_id not in current_admin_ids:
             return False
         return True
+    
+    async def notify_admin(self, message: str):
+        """(新) 发送通知给所有管理员"""
+        if not self.bot or not self.bot.is_connected():
+            return
+            
+        for admin_id in self.admin_ids:
+            try:
+                await self.bot.send_message(admin_id, message)
+            except Exception as e:
+                logger.warning(f"无法发送通知给管理员 {admin_id}: {e}")
 
     async def register_commands(self):
         """注册所有 Bot 命令处理程序"""
@@ -55,7 +68,7 @@ class BotService:
             await event.reply(
                 "**🤖 TG 终极转发器控制台**\n\n"
                 "Web 面板已就绪，你可以通过 Bot 进行快捷运维。\n\n"
-                "**常用命令:**\n"
+                "**可用命令:**\n"
                 "`/status` - 查看详细运行状态\n"
                 "`/reload` - 重载所有配置文件\n" 
                 "`/check` - 启动失效链接检测\n"
@@ -74,19 +87,23 @@ class BotService:
             minutes, seconds = divmod(rem, 60)
             uptime_str = f"{days}天 {hours}小时 {minutes}分"
 
-            # 2. 客户端状态
+            # 2. 客户端状态 (修复：使用 get_clients 回调)
+            current_clients = self.get_clients()
             client_status = "❌ 无可用账号"
-            if self.forwarder and self.forwarder.clients:
-                count = len(self.forwarder.clients)
-                flood_clients = [c.session_name_for_forwarder for c in self.forwarder.clients 
-                                 if self.forwarder.client_flood_wait.get(c.session_name_for_forwarder, 0) > time.time()]
+            
+            if current_clients:
+                count = len(current_clients)
+                # 检查 FloodWait (需要访问 forwarder 实例)
+                flood_info = ""
+                if self.forwarder:
+                    flood_clients = [c.session_name_for_forwarder for c in current_clients 
+                                     if self.forwarder.client_flood_wait.get(c.session_name_for_forwarder, 0) > time.time()]
+                    if flood_clients:
+                        flood_info = f" ({len(flood_clients)} 个 FloodWait)"
                 
-                if flood_clients:
-                    client_status = f"⚠️ {count} 个在线 ({len(flood_clients)} 个 FloodWait)"
-                else:
-                    client_status = f"✅ {count} 个在线 (状态良好)"
+                client_status = f"✅ {count} 个在线{flood_info}"
 
-            # 3. 数据库与规则统计 (与 Web 端对齐)
+            # 3. 数据库与规则统计
             try:
                 db_stats = await database.get_db_stats()
                 
@@ -118,7 +135,6 @@ class BotService:
                 logger.error(f"获取 Bot 统计失败: {e}")
                 stats_msg = f"❌ 获取统计数据失败: {e}"
 
-            # 发送带按钮的消息 (未来可扩展功能)
             await event.reply(stats_msg)
 
         # --- /reload ---
@@ -137,7 +153,7 @@ class BotService:
                 logger.error(f"热重载失败: {e}")
                 await msg.edit(f"❌ **重载失败**\n\n错误信息: `{e}`")
 
-        # --- /check (原 /run_checklinks) ---
+        # --- /check ---
         @self.bot.on(events.NewMessage(pattern='/check'))
         async def checklinks_handler(event: events.NewMessage.Event):
             if not self.is_admin(event): return
@@ -149,7 +165,6 @@ class BotService:
             msg = await event.reply("🕵️‍♂️ **开始检测失效链接...**\n这可能需要几分钟，请稍候。")
             try:
                 await self.link_checker.run()
-                # 再次获取统计以显示结果
                 db_stats = await database.get_db_stats()
                 invalid_count = db_stats.get('invalid_links', 0)
                 await msg.edit(f"✅ **检测完成**\n\n当前数据库中共有 `{invalid_count}` 个失效链接记录。")
@@ -157,12 +172,11 @@ class BotService:
                 logger.error(f"链接检测出错: {e}")
                 await msg.edit(f"❌ 检测过程中出错: {e}")
 
-        # --- /ids (原 /export_sources) ---
+        # --- /ids ---
         @self.bot.on(events.NewMessage(pattern='/ids'))
         async def export_sources_handler(event: events.NewMessage.Event):
             if not self.is_admin(event): return
 
-            # 优先从 Web 数据库读取，因为那里是最新的
             sources = web_server.rules_db.sources
             if not sources:
                 await event.reply("📭 当前没有配置任何监控源。")
@@ -174,15 +188,25 @@ class BotService:
                 name = s.cached_title or s.identifier
                 status = "✅" if s.resolved_id else "⚠️"
                 id_str = f"`{s.resolved_id}`" if s.resolved_id else "*未解析*"
-                
-                output += f"{status} **{name}**\n"
-                output += f"└ ID: {id_str}\n\n"
+                output += f"{status} **{name}**\n└ ID: {id_str}\n\n"
             
             await event.reply(output)
 
-        # --- 自动设置 Bot 命令菜单 ---
+        # --- 自动设置 Bot 命令菜单 (修复：中文支持) ---
         try:
-            commands = [
+            logger.info("正在同步 Bot 命令菜单...")
+            
+            # 英文命令 (默认)
+            en_commands = [
+                BotCommand("status", "Show system dashboard"),
+                BotCommand("reload", "Reload configuration"),
+                BotCommand("ids", "Show source channel IDs"),
+                BotCommand("check", "Run link checker"),
+                BotCommand("start", "Show help message")
+            ]
+            
+            # 中文命令
+            zh_commands = [
                 BotCommand("status", "查看详细运行仪表盘"),
                 BotCommand("reload", "重载配置 (Web修改后点此)"),
                 BotCommand("ids", "显示监控源的真实 ID"),
@@ -190,11 +214,21 @@ class BotService:
                 BotCommand("start", "显示帮助信息")
             ]
             
+            # 设置默认命令
             await self.bot(SetBotCommandsRequest(
                 scope=BotCommandScopeDefault(),
                 lang_code="",
-                commands=commands
+                commands=en_commands
             ))
-            logger.info("✅ Bot 命令菜单已自动同步。")
+
+            # 设置中文命令 (针对 zh-hans, zh-hant, zh 等变体)
+            for lang in ['zh', 'zh-hans', 'zh-hant']:
+                await self.bot(SetBotCommandsRequest(
+                    scope=BotCommandScopeDefault(),
+                    lang_code=lang,
+                    commands=zh_commands
+                ))
+
+            logger.info("✅ Bot 命令菜单已同步 (含中文支持)。")
         except Exception as e:
             logger.warning(f"无法设置 Bot 菜单: {e}")

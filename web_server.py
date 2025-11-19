@@ -40,10 +40,23 @@ app = FastAPI(
 )
 
 _stats_provider: Optional[Callable[[], Awaitable[Dict[str, Any]]]] = None
+_bot_notifier: Optional[Callable[[str], Awaitable[None]]] = None # (新) Bot 通知回调
 
 def set_stats_provider(func):
     global _stats_provider
     _stats_provider = func
+
+def set_bot_notifier(func): # (新) 设置通知回调
+    global _bot_notifier
+    _bot_notifier = func
+
+async def notify_bot(message: str):
+    """调用 Bot 发送通知"""
+    if _bot_notifier:
+        try:
+            await _bot_notifier(message)
+        except Exception as e:
+            logger.warning(f"Bot 通知发送失败: {e}")
 
 security = HTTPBasic()
 WEB_UI_PASSWORD = "default_password_please_change" 
@@ -174,6 +187,8 @@ async def update_settings(settings: SystemSettings, auth: str = Depends(get_curr
     rules_db.settings = settings
     await database.set_dedup_retention(settings.dedup_retention_days)
     await save_rules_to_db()
+    # (新) 发送通知
+    await notify_bot("⚠️ **系统设置已更新**\n请发送 /reload 以应用更改。")
     return {"status": "success", "message": "系统设置已更新。"}
 
 @app.get("/api/settings/dedup")
@@ -190,6 +205,7 @@ async def add_source(source: SourceConfig, auth: str = Depends(get_current_user)
         raise HTTPException(status_code=400, detail="源已存在")
     rules_db.sources.append(source)
     await save_rules_to_db()
+    await notify_bot(f"➕ **新增监控源**: `{source.identifier}`\n请发送 /reload 生效。")
     return {"status": "success"}
 
 @app.post("/api/sources/remove")
@@ -202,6 +218,7 @@ async def remove_source(data: Dict[str, Any], auth: str = Depends(get_current_us
 async def add_rule(rule: TargetDistributionRule, auth: str = Depends(get_current_user)):
     rules_db.distribution_rules.append(rule)
     await save_rules_to_db()
+    await notify_bot(f"➕ **新增分发规则**: `{rule.name}`\n请发送 /reload 生效。")
     return rule
 
 @app.post("/api/rules/update_single")
