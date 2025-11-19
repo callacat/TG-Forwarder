@@ -16,8 +16,6 @@
             --success-bg: #dcfce7; --success-text: #15803d;
             --warning-bg: #fef3c7; --warning-text: #b45309;
             --error-bg: #fee2e2; --error-text: #b91c1c;
-            
-            /* Badge Colors */
             --badge-blue-bg: #eff6ff; --badge-blue-text: #1d4ed8;
             --badge-purple-bg: #f3e8ff; --badge-purple-text: #7e22ce;
             --badge-yellow-bg: #fefce8; --badge-yellow-text: #a16207;
@@ -31,7 +29,6 @@
             --success-bg: #14532d; --success-text: #4ade80;
             --warning-bg: #451a03; --warning-text: #fbbf24;
             --error-bg: #7f1d1d; --error-text: #f87171;
-            
             --badge-blue-bg: #172554; --badge-blue-text: #93c5fd;
             --badge-purple-bg: #3b0764; --badge-purple-text: #d8b4fe;
             --badge-yellow-bg: #422006; --badge-yellow-text: #facc15;
@@ -40,28 +37,21 @@
         }
         [x-cloak] { display: none !important; }
         body { background-color: var(--bg-body); color: var(--text-primary); font-family: 'Inter', sans-serif; transition: 0.3s; }
-        
         .app-card { background-color: var(--bg-card); border: 1px solid var(--border-color); border-radius: 0.75rem; box-shadow: 0 1px 3px rgba(0,0,0,0.1); transition: border-color 0.2s; }
         .app-input, .form-textarea { width: 100%; padding: 0.6rem 1rem; border-radius: 0.5rem; border: 1px solid var(--border-color); background-color: var(--bg-input); color: var(--text-primary); outline: none; transition: 0.2s; }
         .app-input:focus { border-color: var(--accent-color); box-shadow: 0 0 0 3px rgba(59, 130, 246, 0.15); }
-        
-        /* 移除 .app-btn，避免优先级冲突 */
         .btn-primary { background-color: var(--accent-color); color: white; padding: 0.5rem 1rem; border-radius: 0.5rem; font-weight: 600; cursor: pointer; border: none; transition: 0.2s; display: inline-flex; align-items: center; justify-content: center; }
         .btn-primary:hover { opacity: 0.9; }
-        
         .badge { padding: 0.15rem 0.5rem; border-radius: 0.375rem; font-size: 0.75rem; font-weight: 600; font-family: monospace; display: inline-block; margin-right: 0.25rem; margin-bottom: 0.25rem;}
         .badge-blue { background-color: var(--badge-blue-bg); color: var(--badge-blue-text); }
         .badge-purple { background-color: var(--badge-purple-bg); color: var(--badge-purple-text); }
         .badge-yellow { background-color: var(--badge-yellow-bg); color: var(--badge-yellow-text); }
         .badge-pink { background-color: var(--badge-pink-bg); color: var(--badge-pink-text); }
         .badge-gray { background-color: var(--badge-gray-bg); color: var(--badge-gray-text); }
-        
         .label-text { font-size: 0.75rem; font-weight: 600; color: var(--text-muted); text-transform: uppercase; margin-bottom: 0.25rem; display: block; }
-
         ::-webkit-scrollbar { width: 6px; height: 6px; }
         ::-webkit-scrollbar-track { background: transparent; }
         ::-webkit-scrollbar-thumb { background: var(--border-color); border-radius: 3px; }
-        
         .dark .bg-white { background-color: var(--bg-card) !important; }
         .dark .text-gray-500 { color: var(--text-secondary) !important; }
         .dark .text-gray-900 { color: var(--text-primary) !important; }
@@ -69,7 +59,6 @@
         .bg-blue-600 { background-color: var(--accent-color) !important; }
         .text-blue-600 { color: var(--accent-color) !important; }
         .login-overlay, .modal-overlay { background-color: rgba(0,0,0,0.75); backdrop-filter: blur(4px); }
-
         .draggable-source { cursor: move; } .dragging { opacity: 0.5; border: 2px dashed var(--accent-color); }
     </style>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/alpinejs/3.13.5/cdn.min.js" defer></script>
@@ -87,6 +76,8 @@
                 draggingIndex: null, orderChanged: false,
                 showEditModal: false, editRuleData: { name: '', target: '', topic: '', all_kw: '', any_kw: '', files: '', original_name: '' },
                 newSource: '', newRule: { name: '', target: '', topic: '', all_kw: '', any_kw: '', files: '' }, toasts: [],
+                refreshInterval: null,
+                
                 tabs: [
                     { id: 'status', name: '📊 状态概览' }, { id: 'sources', name: '📡 监控源' }, 
                     { id: 'rules', name: '🔀 转发规则' }, { id: 'filter_replace', name: '🧹 过滤与替换' },
@@ -96,9 +87,30 @@
                 arrayToText(arr) { return (arr || []).join('\n'); },
                 textToArray(text) { if (!text) return []; return text.split('\n').map(s => s.trim()).filter(Boolean); },
 
-                async initApp() { const saved = SafeStorage.getItem('tgf_pwd'); if (saved) { this.password = saved; await this.login(); } },
-                async login() { this.loading = true; try { const headers = { 'Authorization': 'Basic ' + btoa('admin:' + this.password) }; const res = await fetch('/api/rules', { headers }); if (res.status === 401) throw new Error('密码错误'); if (!res.ok) throw new Error(`连接失败 (${res.status})`); this.authenticated = true; SafeStorage.setItem('tgf_pwd', this.password); await this.fetchAllData(); this.showToast('登录成功'); } catch (e) { if (e.message === '密码错误') { this.password = ''; SafeStorage.removeItem('tgf_pwd'); } this.showToast('登录失败', e.message, 'error'); } finally { this.loading = false; } },
+                async initApp() { 
+                    const saved = SafeStorage.getItem('tgf_pwd'); 
+                    if (saved) { this.password = saved; await this.login(); }
+                    this.initAutoRefresh();
+                },
                 
+                initAutoRefresh() {
+                    // 每 10 秒刷新一次
+                    this.refreshInterval = setInterval(() => {
+                        if (this.authenticated && !this.loadingData && !document.hidden) {
+                            // 静默刷新 (不显示 loadingData 动画，避免闪烁)
+                            this.api('/api/stats').then(s => { if(s) this.stats = s; }).catch(()=>{});
+                        }
+                    }, 10000);
+                    
+                    // 页面可见性变化处理
+                    document.addEventListener("visibilitychange", () => {
+                        if (!document.hidden && this.authenticated) {
+                            this.fetchAllData(); // 切换回来时立即刷新一次
+                        }
+                    });
+                },
+
+                async login() { this.loading = true; try { const headers = { 'Authorization': 'Basic ' + btoa('admin:' + this.password) }; const res = await fetch('/api/rules', { headers }); if (res.status === 401) throw new Error('密码错误'); if (!res.ok) throw new Error(`连接失败 (${res.status})`); this.authenticated = true; SafeStorage.setItem('tgf_pwd', this.password); await this.fetchAllData(); this.showToast('登录成功'); } catch (e) { if (e.message === '密码错误') { this.password = ''; SafeStorage.removeItem('tgf_pwd'); } this.showToast('登录失败', e.message, 'error'); } finally { this.loading = false; } },
                 async api(url, method = 'GET', body = null) {
                     const headers = { 'Authorization': 'Basic ' + btoa('admin:' + this.password), 'Content-Type': 'application/json' };
                     const opts = { method, headers }; if (body) opts.body = JSON.stringify(body);
@@ -114,7 +126,6 @@
                         }
                     }
                 },
-                
                 async fetchAllData() {
                     this.loadingData = true;
                     try {
@@ -132,10 +143,9 @@
                         this.content_filter = cf; this.content_filter.meaningless_text = this.arrayToText(cf.meaningless_words);
                         this.replacements = rep; this.replacements_list = Object.entries(rep).map(([k,v]) => ({key:k, val:v}));
                         this.orderChanged = false;
-                    } catch (e) { this.showToast('数据加载失败: ' + e.message, '请点击右上角刷新', 'error'); } 
+                    } catch (e) { this.showToast('数据加载失败', e.message, 'error'); } 
                     finally { this.loadingData = false; }
                 },
-                
                 promptReload(msg) { this.showToast(msg, '请发送 /reload 以生效', 'success'); setTimeout(() => this.fetchAllData(), 1000); },
 
                 async saveSettings() { try { await this.api('/api/settings/update', 'POST', this.settings); this.promptReload('设置已保存'); } catch(e) { this.showToast('保存失败', e.message, 'error'); } },
@@ -148,13 +158,11 @@
                     const payload = this.buildRulePayload(this.newRule);
                     try { await this.api('/api/rules/add', 'POST', payload); this.newRule = {name:'', target:'', topic:'', all_kw:'', any_kw:'', files:''}; this.promptReload('规则已添加'); } catch(e) { this.showToast('添加失败', e.message, 'error'); }
                 },
-                
                 async saveEditedRule() {
                     if(!this.editRuleData.name || !this.editRuleData.target) return this.showToast('规则名和目标ID必填', '', 'error');
                     const payload = this.buildRulePayload(this.editRuleData);
                     try { const url = `/api/rules/update_single?name_to_replace=${encodeURIComponent(this.editRuleData.original_name)}`; await this.api(url, 'POST', payload); this.showEditModal = false; this.promptReload('规则已更新'); } catch(e) { this.showToast('更新失败', e.message, 'error'); }
                 },
-                
                 buildRulePayload(data) { return { name: data.name, target_identifier: data.target, topic_id: data.topic ? parseInt(data.topic) : null, all_keywords: this.textToArray(data.all_kw), any_keywords: this.textToArray(data.any_kw), file_name_patterns: this.textToArray(data.files) }; },
                 openEditModal(rule) { this.editRuleData = { name: rule.name, original_name: rule.name, target: rule.target_identifier, topic: rule.topic_id, all_kw: this.arrayToText(rule.all_keywords), any_kw: this.arrayToText(rule.any_keywords), files: this.arrayToText(rule.file_name_patterns) }; this.showEditModal = true; },
                 async removeRule(name) { if(!confirm('删除?')) return; try { await this.api('/api/rules/remove', 'POST', { name }); this.promptReload('已删除'); } catch(e) {} },
@@ -180,18 +188,11 @@
                     let hash = 0; for (let i = 0; i < initials.length; i++) hash = initials.charCodeAt(i) + ((hash << 5) - hash);
                     const colors = ['bg-blue-100 text-blue-600', 'bg-green-100 text-green-600', 'bg-purple-100 text-purple-600', 'bg-pink-100 text-pink-600', 'bg-yellow-100 text-yellow-600'];
                     const colorClass = colors[Math.abs(hash) % colors.length];
-                    
-                    let imgUrl = null;
-                    let username = '';
+                    let imgUrl = null; let username = '';
                     const idStr = String(source.identifier);
-                    if (idStr.startsWith('https://t.me/')) {
-                         const parts = idStr.split('/');
-                         username = parts[parts.length - 1] || parts[parts.length - 2];
-                    } else if (idStr.startsWith('@')) {
-                        username = idStr.substring(1);
-                    }
+                    if (idStr.startsWith('https://t.me/')) { const parts = idStr.split('/'); username = parts[parts.length - 1] || parts[parts.length - 2]; } 
+                    else if (idStr.startsWith('@')) { username = idStr.substring(1); }
                     if (username) imgUrl = `https://t.me/i/userpic/320/${username}.jpg`;
-
                     return { text: initials, class: colorClass, img: imgUrl, displayName: name };
                 }
             }
@@ -229,33 +230,42 @@
         <div class="md:hidden border-b overflow-x-auto flex px-4 gap-4" style="border-color: var(--border-color);"><template x-for="tab in tabs" :key="tab.id"><button @click="currentTab=tab.id" :class="currentTab===tab.id?'border-b-2 border-blue-500 text-blue-500':'text-secondary'" class="whitespace-nowrap text-sm py-3 font-medium" x-text="tab.name"></button></template></div>
 
         <main class="flex-grow max-w-7xl mx-auto w-full px-4 py-8 space-y-6">
-            <!-- 状态 (全部分离) -->
-            <div x-show="currentTab==='status'&&!loadingData" class="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-4">
-                <!-- 基础统计 -->
-                <div class="app-card p-6"><dt class="text-xs font-bold text-secondary uppercase">数据库去重</dt><dd class="mt-2 text-3xl font-bold" x-text="stats.dedup_hashes||0"></dd></div>
-                <div class="app-card p-6"><dt class="text-xs font-bold text-secondary uppercase">活跃监控源</dt><dd class="mt-2 text-3xl font-bold text-blue-600" x-text="stats.sources||0"></dd></div>
-                <div class="app-card p-6"><dt class="text-xs font-bold text-secondary uppercase">分发规则</dt><dd class="mt-2 text-3xl font-bold text-purple-600" x-text="stats.distribution_rules||0"></dd></div>
-                <div class="app-card p-6"><dt class="text-xs font-bold text-secondary uppercase">失效链接</dt><dd class="mt-2 text-3xl font-bold text-yellow-600" x-text="stats.invalid_links||0"></dd></div>
-                
-                <!-- 分离后的规则统计 -->
-                <div class="app-card p-6"><dt class="text-xs font-bold text-secondary uppercase">黑名单词条</dt><dd class="mt-2 text-3xl font-bold text-red-600" x-text="stats.blacklist_count||0"></dd></div>
-                <div class="app-card p-6"><dt class="text-xs font-bold text-secondary uppercase">白名单词条</dt><dd class="mt-2 text-3xl font-bold text-green-600" x-text="stats.whitelist_count||0"></dd></div>
-                <div class="app-card p-6"><dt class="text-xs font-bold text-secondary uppercase">内容过滤词</dt><dd class="mt-2 text-3xl font-bold text-indigo-500" x-text="stats.content_filter_count||0"></dd></div>
-                <div class="app-card p-6"><dt class="text-xs font-bold text-secondary uppercase">文本替换规则</dt><dd class="mt-2 text-3xl font-bold text-pink-500" x-text="stats.replacements_count||0"></dd></div>
-
-                <!-- 新增：程序状态 -->
-                <div class="app-card p-6 col-span-1 md:col-span-2 lg:col-span-1">
-                    <dt class="text-xs font-bold text-secondary uppercase">Bot 状态</dt>
-                    <dd class="mt-2 text-lg font-bold text-gray-800 dark:text-gray-200 truncate" x-text="stats.bot_status || '未启用'"></dd>
-                    <div class="text-xs text-muted mt-1" x-text="(stats.user_account_count||0) + ' 个用户账号在线'"></div>
+            <!-- 状态 (全新 Hero 布局 + 详细网格) -->
+            <div x-show="currentTab==='status'" class="space-y-6">
+                <!-- 顶部大卡片 (Hero Section) -->
+                <div class="grid grid-cols-1 md:grid-cols-3 gap-4">
+                    <div class="app-card p-6 flex flex-col justify-center items-center text-center border-l-4" :class="stats.bot_connected ? 'border-green-500' : 'border-red-500'">
+                        <div class="text-sm font-bold text-secondary uppercase mb-2">Bot 状态</div>
+                        <div class="text-xl font-bold flex items-center gap-2">
+                            <span class="w-3 h-3 rounded-full" :class="stats.bot_connected ? 'bg-green-500 animate-pulse' : 'bg-red-500'"></span>
+                            <span x-text="stats.bot_status || '检测中...'"></span>
+                        </div>
+                    </div>
+                    <div class="app-card p-6 flex flex-col justify-center items-center text-center border-l-4 border-blue-500">
+                        <div class="text-sm font-bold text-secondary uppercase mb-2">用户账号</div>
+                        <div class="text-3xl font-bold text-blue-600" x-text="(stats.user_account_count||0) + ' 个在线'"></div>
+                    </div>
+                    <div class="app-card p-6 flex flex-col justify-center items-center text-center border-l-4 border-purple-500">
+                        <div class="text-sm font-bold text-secondary uppercase mb-2">系统运行时间</div>
+                        <div class="text-2xl font-bold font-mono text-purple-600" x-text="stats.uptime || '0m'"></div>
+                    </div>
                 </div>
-                <div class="app-card p-6 col-span-1 md:col-span-2 lg:col-span-1">
-                    <dt class="text-xs font-bold text-secondary uppercase">系统运行时间</dt>
-                    <dd class="mt-2 text-xl font-bold font-mono text-gray-800 dark:text-gray-200" x-text="stats.uptime || '0s'"></dd>
+
+                <!-- 详细数据网格 -->
+                <div class="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-4">
+                    <div class="app-card p-6"><dt class="text-xs font-bold text-secondary uppercase">数据库去重</dt><dd class="mt-2 text-3xl font-bold" x-text="stats.dedup_hashes||0"></dd></div>
+                    <div class="app-card p-6"><dt class="text-xs font-bold text-secondary uppercase">活跃监控源</dt><dd class="mt-2 text-3xl font-bold text-blue-600" x-text="stats.sources||0"></dd></div>
+                    <div class="app-card p-6"><dt class="text-xs font-bold text-secondary uppercase">分发规则</dt><dd class="mt-2 text-3xl font-bold text-purple-600" x-text="stats.distribution_rules||0"></dd></div>
+                    <div class="app-card p-6"><dt class="text-xs font-bold text-secondary uppercase">失效链接</dt><dd class="mt-2 text-3xl font-bold text-yellow-600" x-text="stats.invalid_links||0"></dd></div>
+                    
+                    <div class="app-card p-6"><dt class="text-xs font-bold text-secondary uppercase">黑名单词条</dt><dd class="mt-2 text-3xl font-bold text-red-600" x-text="stats.blacklist_count||0"></dd></div>
+                    <div class="app-card p-6"><dt class="text-xs font-bold text-secondary uppercase">白名单词条</dt><dd class="mt-2 text-3xl font-bold text-green-600" x-text="stats.whitelist_count||0"></dd></div>
+                    <div class="app-card p-6"><dt class="text-xs font-bold text-secondary uppercase">内容过滤词</dt><dd class="mt-2 text-3xl font-bold text-indigo-500" x-text="stats.content_filter_count||0"></dd></div>
+                    <div class="app-card p-6"><dt class="text-xs font-bold text-secondary uppercase">文本替换规则</dt><dd class="mt-2 text-3xl font-bold text-pink-500" x-text="stats.replacements_count||0"></dd></div>
                 </div>
             </div>
 
-            <!-- 监控源 (维持现状) -->
+            <!-- 监控源 -->
             <div x-show="currentTab==='sources'&&!loadingData">
                 <div class="app-card p-6 mb-6 flex gap-2"><input x-model="newSource" @keyup.enter="addSource" placeholder="@Channel 或 Link" class="app-input md:w-64"><button @click="addSource" class="btn-primary">添加源</button></div>
                 <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
@@ -278,16 +288,12 @@
                 </div>
             </div>
 
-            <!-- 规则 (按钮颜色修复) -->
+            <!-- 规则 -->
             <div x-show="currentTab==='rules'&&!loadingData" class="space-y-6">
                 <div class="app-card p-4 border-l-4 border-yellow-500 bg-yellow-50 dark:bg-yellow-900/10 flex flex-col md:flex-row justify-between items-center gap-4"><div><span class="text-xs font-bold uppercase text-yellow-600 dark:text-yellow-400 tracking-wider">Fallback</span><div class="font-bold text-yellow-800 dark:text-yellow-200">默认转发目标 (未命中规则时)</div></div><div class="flex gap-2 w-full md:w-auto"><input x-model="settings.default_target" placeholder="默认目标 ID" class="app-input border-yellow-200 dark:border-yellow-700 bg-white dark:bg-zinc-900"><input x-model="settings.default_topic_id" type="number" placeholder="Topic" class="app-input w-24 border-yellow-200 dark:border-yellow-700 bg-white dark:bg-zinc-900"><button @click="saveDefaultTarget" class="px-4 py-2 rounded bg-yellow-600 hover:bg-yellow-700 text-white font-bold text-sm">保存</button></div></div>
                 <div class="app-card p-6"><h3 class="text-lg font-bold mb-4">添加分发规则</h3><div class="grid grid-cols-1 md:grid-cols-3 gap-4 mb-4"><input x-model="newRule.name" placeholder="规则名称" class="app-input"><input x-model="newRule.target" placeholder="目标 ID (-100...)" class="app-input"><input x-model="newRule.topic" type="number" placeholder="Topic (可选)" class="app-input"></div><div class="grid grid-cols-1 md:grid-cols-3 gap-4 mb-4"><textarea x-model="newRule.all_kw" rows="3" placeholder="[AND] 必须包含所有" class="app-input"></textarea><textarea x-model="newRule.any_kw" rows="3" placeholder="[OR] 包含任一" class="app-input"></textarea><textarea x-model="newRule.files" rows="3" placeholder="文件名正则 (*.apk)" class="app-input"></textarea></div><div class="flex justify-end"><button @click="addRule" class="btn-primary">保存规则</button></div></div>
                 <div class="flex justify-between items-center"><h3 class="font-bold text-secondary">规则列表 (拖拽排序)</h3><button x-show="orderChanged" @click="saveOrder" class="px-4 py-1 rounded bg-green-600 hover:bg-green-700 text-white font-bold text-sm animate-bounce">保存顺序</button></div>
-                <div class="space-y-3"><template x-for="(rule, index) in rules.distribution_rules" :key="rule.name"><div class="app-card p-4 draggable-source flex flex-row gap-4 relative group" draggable="true" @dragstart="dragStart($event, index)" @dragover="dragOver($event)" @drop="drop($event, index)" :class="{'dragging': draggingIndex === index}"><div class="flex items-center justify-center w-6 shrink-0 cursor-grab text-secondary self-center"><span class="text-xl opacity-50 hover:opacity-100">≡</span></div><div class="flex-grow min-w-0 py-1"><div class="flex items-center gap-2 mb-3"><span class="font-mono text-sm font-bold opacity-50 text-secondary" x-text="'#'+(index+1)"></span><h4 class="font-bold text-lg leading-tight truncate" x-text="rule.name"></h4></div><div class="flex flex-wrap gap-2 mb-3"><span class="badge badge-gray" x-text="'To: '+rule.target_identifier"></span><span x-show="rule.topic_id" class="badge badge-purple" x-text="'Topic: '+rule.topic_id"></span></div><div class="space-y-1 text-xs"><div x-show="rule.all_keywords?.length" class="flex gap-1 flex-wrap"><span class="text-muted font-bold">AND:</span><template x-for="k in rule.all_keywords"><span class="badge badge-blue py-0" x-text="k"></span></template></div><div x-show="rule.any_keywords?.length" class="flex gap-1 flex-wrap"><span class="text-muted font-bold">OR:</span><template x-for="k in rule.any_keywords"><span class="badge badge-purple py-0" x-text="k"></span></template></div><div x-show="rule.file_name_patterns?.length" class="flex gap-1 flex-wrap"><span class="text-muted font-bold">FILE:</span><template x-for="k in rule.file_name_patterns"><span class="badge badge-yellow py-0" x-text="k"></span></template></div></div></div><div class="flex flex-col gap-2 shrink-0 self-start mt-1 w-20">
-                    <!-- 修复：使用显式的高对比度颜色 -->
-                    <button @click="openEditModal(rule)" class="w-full py-1 rounded bg-blue-600 hover:bg-blue-700 text-white text-xs font-bold shadow-sm">编辑</button>
-                    <button @click="removeRule(rule.name)" class="w-full py-1 rounded bg-red-600 hover:bg-red-700 text-white text-xs font-bold shadow-sm">删除</button>
-                </div></div></template></div>
+                <div class="space-y-3"><template x-for="(rule, index) in rules.distribution_rules" :key="rule.name"><div class="app-card p-4 draggable-source flex flex-row gap-4 relative group" draggable="true" @dragstart="dragStart($event, index)" @dragover="dragOver($event)" @drop="drop($event, index)" :class="{'dragging': draggingIndex === index}"><div class="flex items-center justify-center w-6 shrink-0 cursor-grab text-secondary self-center"><span class="text-xl opacity-50 hover:opacity-100">≡</span></div><div class="flex-grow min-w-0 py-1"><div class="flex items-center gap-2 mb-3"><span class="font-mono text-sm font-bold opacity-50 text-secondary" x-text="'#'+(index+1)"></span><h4 class="font-bold text-lg leading-tight truncate" x-text="rule.name"></h4></div><div class="flex flex-wrap gap-2 mb-3"><span class="badge badge-gray" x-text="'To: '+rule.target_identifier"></span><span x-show="rule.topic_id" class="badge badge-purple" x-text="'Topic: '+rule.topic_id"></span></div><div class="space-y-1 text-xs"><div x-show="rule.all_keywords?.length" class="flex gap-1 flex-wrap"><span class="text-muted font-bold">AND:</span><template x-for="k in rule.all_keywords"><span class="badge badge-blue py-0" x-text="k"></span></template></div><div x-show="rule.any_keywords?.length" class="flex gap-1 flex-wrap"><span class="text-muted font-bold">OR:</span><template x-for="k in rule.any_keywords"><span class="badge badge-purple py-0" x-text="k"></span></template></div><div x-show="rule.file_name_patterns?.length" class="flex gap-1 flex-wrap"><span class="text-muted font-bold">FILE:</span><template x-for="k in rule.file_name_patterns"><span class="badge badge-yellow py-0" x-text="k"></span></template></div></div></div><div class="flex flex-col gap-2 shrink-0 self-start mt-1 w-20"><button @click="openEditModal(rule)" class="w-full py-1 rounded bg-blue-600 hover:bg-blue-700 text-white text-xs font-bold shadow-sm">编辑</button><button @click="removeRule(rule.name)" class="w-full py-1 rounded bg-red-600 hover:bg-red-700 text-white text-xs font-bold shadow-sm">删除</button></div></div></template></div>
             </div>
 
             <!-- 过滤与替换 -->
@@ -309,7 +315,7 @@
                 <div class="flex justify-between mb-4 border-b pb-4" style="border-color: var(--border-color);"><h3 class="font-bold">必发白名单</h3><button @click="saveWhitelist" class="btn-primary bg-green-600 hover:bg-green-700">保存</button></div><textarea x-model="whitelist.keywords" rows="8" class="app-input font-mono text-sm"></textarea>
             </div>
             
-            <div x-show="currentTab==='settings'&&!loadingData" class="app-card p-6 max-w-2xl mx-auto"><div class="flex justify-between items-center mb-6 pb-4 border-b" style="border-color: var(--border-color);"><h3 class="text-lg font-bold">系统核心设置</h3><button @click="saveSettings" class="btn-primary">保存设置</button></div><div class="space-y-6"><div><label class="block text-sm font-bold text-secondary mb-2">转发模式</label><div class="flex gap-4"><label class="flex items-center gap-2 cursor-pointer"><input type="radio" value="copy" x-model="settings.forwarding_mode" class="w-4 h-4"><span>复制 (Copy)</span></label><label class="flex items-center gap-2 cursor-pointer"><input type="radio" value="forward" x-model="settings.forwarding_mode" class="w-4 h-4"><span>转发 (Forward)</span></label></div></div><div><label class="block text-sm font-bold text-secondary mb-2">记录保留天数</label><div class="flex items-center gap-4"><input type="range" min="1" max="60" x-model="settings.dedup_retention_days" class="w-full h-2 bg-gray-200 rounded-lg appearance-none cursor-pointer dark:bg-gray-700"><span class="font-mono font-bold text-blue-600 w-12 text-right" x-text="settings.dedup_retention_days+'天'"></span></div></div><div class="grid grid-cols-1 md:grid-cols-2 gap-4"><label class="flex items-center justify-between p-3 border rounded-lg cursor-pointer hover:bg-gray-50 dark:hover:bg-zinc-800 transition" style="border-color: var(--border-color);"><span class="text-sm font-medium">只处理新消息</span><input type="checkbox" x-model="settings.forward_new_only" class="w-5 h-5"></label><label class="flex items-center justify-between p-3 border rounded-lg cursor-pointer hover:bg-gray-50 dark:hover:bg-zinc-800 transition" style="border-color: var(--border-color);"><span class="text-sm font-medium">源频道已读</span><input type="checkbox" x-model="settings.mark_as_read" class="w-5 h-5"></label><label class="flex items-center justify-between p-3 border rounded-lg cursor-pointer hover:bg-gray-50 dark:hover:bg-zinc-800 transition" style="border-color: var(--border-color);"><span class="text-sm font-medium">目标频道已读</span><input type="checkbox" x-model="settings.mark_target_as_read" class="w-5 h-5"></label></div></div></div>
+            <div x-show="currentTab==='settings'&&!loadingData" class="app-card p-6 max-w-2xl mx-auto"><div class="flex justify-between items-center mb-6 pb-4 border-b" style="border-color: var(--border-color);"><h3 class="text-lg font-bold">系统核心设置</h3><button @click="saveSettings" class="btn-primary">保存设置</button></div><div class="space-y-6"><div><label class="block text-sm font-bold text-secondary mb-2">转发模式</label><div class="flex gap-4"><label class="flex items-center gap-2 cursor-pointer"><input type="radio" value="copy" x-model="settings.forwarding_mode" class="w-4 h-4"><span>复制 (Copy)</span></label><label class="flex items-center gap-2 cursor-pointer"><input type="radio" value="forward" x-model="settings.forwarding_mode" class="w-4 h-4"><span>转发 (Forward)</span></label></div></div><div><label class="block text-sm font-bold text-secondary mb-2">去重记录保留天数</label><div class="flex items-center gap-4"><input type="range" min="1" max="60" x-model="settings.dedup_retention_days" class="w-full h-2 bg-gray-200 rounded-lg appearance-none cursor-pointer dark:bg-gray-700"><span class="font-mono font-bold text-blue-600 w-12 text-right" x-text="settings.dedup_retention_days+'天'"></span></div></div><div class="grid grid-cols-1 md:grid-cols-2 gap-4"><label class="flex items-center justify-between p-3 border rounded-lg cursor-pointer hover:bg-gray-50 dark:hover:bg-zinc-800 transition" style="border-color: var(--border-color);"><span class="text-sm font-medium">只处理新消息</span><input type="checkbox" x-model="settings.forward_new_only" class="w-5 h-5"></label><label class="flex items-center justify-between p-3 border rounded-lg cursor-pointer hover:bg-gray-50 dark:hover:bg-zinc-800 transition" style="border-color: var(--border-color);"><span class="text-sm font-medium">源频道已读</span><input type="checkbox" x-model="settings.mark_as_read" class="w-5 h-5"></label><label class="flex items-center justify-between p-3 border rounded-lg cursor-pointer hover:bg-gray-50 dark:hover:bg-zinc-800 transition" style="border-color: var(--border-color);"><span class="text-sm font-medium">目标频道已读</span><input type="checkbox" x-model="settings.mark_target_as_read" class="w-5 h-5"></label></div></div></div>
         </main>
     </div>
 

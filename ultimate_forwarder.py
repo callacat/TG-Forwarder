@@ -197,21 +197,36 @@ async def get_runtime_stats_func():
     """提供给 web_server 的回调，用于获取实时状态"""
     global bot_client, clients, START_TIME
     
-    uptime = datetime.now(timezone.utc) - START_TIME
-    # 格式化 uptime (e.g., "2 days, 3:04:05")
-    uptime_str = str(uptime).split('.')[0]
+    # 计算运行时间
+    uptime_delta = datetime.now(timezone.utc) - START_TIME
+    # 转换为友好的字符串格式 (例如 "2d 5h 30m")
+    days = uptime_delta.days
+    seconds = uptime_delta.seconds
+    hours = seconds // 3600
+    minutes = (seconds % 3600) // 60
     
-    bot_status = "未启用"
+    uptime_parts = []
+    if days > 0: uptime_parts.append(f"{days}d")
+    if hours > 0: uptime_parts.append(f"{hours}h")
+    uptime_parts.append(f"{minutes}m")
+    uptime_str = " ".join(uptime_parts)
+    
+    bot_connected = False
+    bot_status_text = "未启用"
     if bot_client:
         try:
-            me = await bot_client.get_me()
-            bot_status = f"@{me.username}"
+            if bot_client.is_connected():
+                bot_connected = True
+                bot_status_text = "已连接"
+            else:
+                bot_status_text = "断开连接"
         except:
-            bot_status = "离线"
+            bot_status_text = "异常"
 
     return {
         "uptime": uptime_str,
-        "bot_status": bot_status,
+        "bot_status": bot_status_text,
+        "bot_connected": bot_connected, # 布尔值方便前端着色
         "user_account_count": len(clients)
     }
 
@@ -261,13 +276,12 @@ async def run_forwarder(config: Config):
 
     if not config.forwarding.forward_new_only:
         logger.info("开始扫描历史消息...")
-        # 这里简化处理，实际上 resolved_source_ids 需要合并
         # await forwarder.process_history(resolved_source_ids) 
         pass
     else:
         logger.info("跳过历史扫描。")
 
-    # (新) 注册状态提供者
+    # 注册状态提供者
     web_server.set_stats_provider(get_runtime_stats_func)
 
     uvicorn_config = uvicorn.Config(web_server.app, host="0.0.0.0", port=8080, log_config=None)

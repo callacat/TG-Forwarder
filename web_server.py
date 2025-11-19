@@ -30,8 +30,7 @@ db_lock = asyncio.Lock()
 
 app = FastAPI(title="TG Forwarder Web UI")
 
-# --- 全局状态提供者钩子 (新) ---
-# 这允许 ultimate_forwarder.py 注入实时状态（如 Bot 状态、运行时间）
+# --- 全局状态提供者钩子 ---
 _stats_provider: Optional[Callable[[], Awaitable[Dict[str, Any]]]] = None
 
 def set_stats_provider(func):
@@ -112,7 +111,7 @@ async def get_stats(auth: bool = Depends(get_current_user)):
     try:
         db_stats = await database.get_db_stats()
         
-        # 获取运行时状态 (Uptime, Bot Status)
+        # 获取运行时状态
         runtime_stats = {}
         if _stats_provider:
             try:
@@ -142,7 +141,6 @@ async def get_stats(auth: bool = Depends(get_current_user)):
                 "replacements_count": rep_count
             }
             
-        # 合并所有统计数据
         return {**db_stats, **rule_stats, **runtime_stats}
     except Exception as e:
         logger.error(f"获取统计失败: {e}")
@@ -156,6 +154,7 @@ async def get_settings(auth: bool = Depends(get_current_user)):
 @app.post("/api/settings/update")
 async def update_settings(settings: SystemSettings, auth: bool = Depends(get_current_user)):
     rules_db.settings = settings
+    # 确保 dedup_retention_days 正确传递
     await database.set_dedup_retention(settings.dedup_retention_days)
     await save_rules_to_db()
     return {"status": "success", "message": "系统设置已更新。"}
