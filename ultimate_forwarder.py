@@ -32,13 +32,20 @@ DOCKER_CONTAINER_NAME = "tgf"
 CONFIG_PATH = "/app/config.yaml"
 START_TIME = datetime.now(timezone.utc)
 
+# --- 1. 现代化日志系统 (Loguru Integration) ---
+
 class InterceptHandler(logging.Handler):
+    """
+    将标准库 logging 模块的日志拦截并重定向到 Loguru。
+    """
     def emit(self, record):
+        # 获取对应的 Loguru 级别
         try:
             level = logger.level(record.levelname).name
         except ValueError:
             level = record.levelno
 
+        # 查找调用者的栈帧，以便 Loguru 能正确显示日志来源
         frame, depth = logging.currentframe(), 2
         while frame.f_code.co_filename == logging.__file__:
             frame = frame.f_back
@@ -47,13 +54,22 @@ class InterceptHandler(logging.Handler):
         logger.opt(depth=depth, exception=record.exc_info).log(level, record.getMessage())
 
 def setup_logging(app_level: str = "INFO", telethon_level: str = "WARNING"):
+    """配置 Loguru 接管所有日志，并设置格式"""
+    
+    # 1. 移除标准库 root logger 的所有 handler (防止重复打印)
     logging.root.handlers = [InterceptHandler()]
     logging.root.setLevel(app_level)
 
-    for _log in ['uvicorn', 'uvicorn.error', 'fastapi']:
+    # 2. 移除 Uvicorn 和 FastAPI 默认的 handler，并将它们重定向到 InterceptHandler
+    # 注意：这必须在 uvicorn.run 之前或配置时完成
+    for _log in ['uvicorn', 'uvicorn.error', 'uvicorn.access', 'fastapi']:
         _logger = logging.getLogger(_log)
         _logger.handlers = [InterceptHandler()]
+        _logger.propagate = False # 禁止向上传播，避免二次打印
 
+    # 3. 配置 Loguru
+    # format: 定义日志的颜色和结构
+    # sink: 输出目标 (sys.stdout)
     config = {
         "handlers": [
             {
@@ -68,9 +84,18 @@ def setup_logging(app_level: str = "INFO", telethon_level: str = "WARNING"):
         ]
     }
     logger.configure(**config)
+
+    # 4. 单独设置第三方库的日志级别
     logging.getLogger('telethon').setLevel(telethon_level)
     logging.getLogger('hpack').setLevel(logging.WARNING) 
+    
+    # 5. 屏蔽 Uvicorn 的 access log 中过于频繁的健康检查 (可选)
+    # logging.getLogger("uvicorn.access").setLevel(logging.WARNING)
+    
     logger.success(f"日志系统初始化完成 (App: {app_level}, Telethon: {telethon_level})")
+
+
+# --- 2. 核心逻辑 ---
 
 def load_config(path):
     global DOCKER_CONTAINER_NAME
@@ -120,7 +145,6 @@ async def initialize_clients(config: Config):
             
             await client.start()
             
-            # 验证是否真的登录成功
             if not await client.is_user_authorized():
                  logger.error(f"❌ 账号 {acc.session_name} 未授权 (可能 Session 失效)。跳过此账号。")
                  await client.disconnect()
@@ -151,8 +175,6 @@ async def initialize_bot(config: Config):
 
     logger.info("正在启动 Bot 服务...")
     try:
-        # Bot 使用第一个账号的 API ID/Hash，如果没有可用账号配置，则可能无法初始化
-        # 这里假设 config 中至少配置了 API ID/Hash，即使账号登录失败
         api_id = config.accounts[0].api_id
         api_hash = config.accounts[0].api_hash
 
@@ -166,7 +188,6 @@ async def initialize_bot(config: Config):
         me = await bot_client.get_me()
         logger.success(f"✅ Bot 登录成功: @{me.username}")
 
-        # 即使 forwarder 为 None (用户账号全挂)，Bot 也可以提供部分服务 (如 /status, /reload)
         if not link_checker and config.link_checker.enabled and clients:
              link_checker = LinkChecker(config, clients[0]) 
 
@@ -240,11 +261,9 @@ async def get_runtime_stats_func():
 async def run_forwarder(config: Config):
     global forwarder, link_checker
     
-    # 1. 初始化所有组件 (容错模式)
     await initialize_clients(config)
     await initialize_bot(config)
     
-    # 2. 如果有可用用户账号，加载规则和转发核心
     if clients:
         main_client = clients[0]
         await resolve_identifiers(main_client, config.sources, "config.yaml") 
@@ -275,16 +294,13 @@ async def run_forwarder(config: Config):
         
         if not config.forwarding.forward_new_only:
             logger.info("开始扫描历史消息...")
-            # await forwarder.process_history(...)
             pass
         else:
             logger.info("跳过历史扫描。")
     else:
-        # 即使没有用户账号，也要加载规则以便 Web UI 显示
         await web_server.load_rules_from_db(config)
         logger.warning("无可用用户账号，转发核心未启动。Web UI 仅提供查看功能。")
 
-    # 3. 定时任务
     scheduler = AsyncIOScheduler(timezone="UTC")
     if config.link_checker and config.link_checker.enabled and clients:
         if not link_checker: link_checker = LinkChecker(config, clients[0])
@@ -296,23 +312,28 @@ async def run_forwarder(config: Config):
             logger.error(f"LinkChecker Cron 错误: {e}")
     scheduler.start()
 
-    # 4. 启动 Web 服务
     web_server.set_stats_provider(get_runtime_stats_func)
-    uvicorn_config = uvicorn.Config(web_server.app, host="0.0.0.0", port=8080, log_config=None)
+
+    # 关键修复：log_config=None 是必须的，否则 uvicorn 会重新初始化 logging
+    # 同时在 setup_logging 中已经处理了 handler 重定向
+    uvicorn_config = uvicorn.Config(
+        web_server.app, 
+        host="0.0.0.0", 
+        port=8080, 
+        log_config=None, # 禁用 uvicorn 默认日志配置
+        access_log=False # 如果你想完全关闭访问日志，可以设为 False；或者保留 True 通过 Loguru 输出
+    )
     server = uvicorn.Server(uvicorn_config)
     
     logger.success("🚀 系统启动完成，Web UI: http://localhost:8080")
     
-    # 5. 维持运行
     tasks = [server.serve()]
     if clients:
-        # 只要主客户端在线就维持
         tasks.append(clients[0].run_until_disconnected())
     
     if bot_client and bot_client.is_connected():
         tasks.append(bot_client.run_until_disconnected())
         
-    # 如果所有客户端都离线，保持 Web Server 运行
     if len(tasks) == 1: 
         logger.warning("⚠️ 没有活跃的 Telegram 客户端连接，仅运行 Web Server。")
         
@@ -348,7 +369,9 @@ async def reload_config_func():
     logger.warning("🔄 正在执行热重载...")
     try:
         new_config = load_config(CONFIG_PATH)
-        setup_logging(new_config.logging_level.app, new_config.logging_level.telethon)
+        # 重新配置 logging 可能会导致 handler 重复，这里可以选择跳过，或者先清理
+        # setup_logging(new_config.logging_level.app, new_config.logging_level.telethon)
+        
         await web_server.load_rules_from_db(new_config)
         
         if clients:
