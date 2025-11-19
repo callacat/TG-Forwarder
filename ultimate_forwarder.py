@@ -3,11 +3,10 @@ import os
 import asyncio
 import argparse
 import yaml
-import logging  # 仅用于拦截标准库日志
+import logging
 from typing import List, Dict
 from datetime import datetime, timezone
 
-# (新) 现代化日志库
 from loguru import logger
 
 from telethon import TelegramClient, events, errors
@@ -17,7 +16,6 @@ import uvicorn
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.triggers.cron import CronTrigger
 
-# 导入项目模块
 import database
 import web_server
 from models import Config, SourceConfig
@@ -32,9 +30,7 @@ forwarder = None
 link_checker = None
 DOCKER_CONTAINER_NAME = "tgf"
 CONFIG_PATH = "/app/config.yaml"
-START_TIME = datetime.now(timezone.utc) # 记录启动时间
-
-# --- 1. 现代化日志系统 (Loguru Integration) ---
+START_TIME = datetime.now(timezone.utc)
 
 class InterceptHandler(logging.Handler):
     def emit(self, record):
@@ -76,9 +72,6 @@ def setup_logging(app_level: str = "INFO", telethon_level: str = "WARNING"):
     logging.getLogger('hpack').setLevel(logging.WARNING) 
     logger.success(f"日志系统初始化完成 (App: {app_level}, Telethon: {telethon_level})")
 
-
-# --- 2. 核心逻辑 ---
-
 def load_config(path):
     global DOCKER_CONTAINER_NAME
     logger.info(f"正在加载配置: {path}")
@@ -100,6 +93,7 @@ def load_config(path):
         sys.exit(1)
 
 async def initialize_clients(config: Config):
+    """初始化用户客户端，容错模式"""
     global clients
     clients.clear()
     logger.info(f"正在初始化 {len(config.accounts)} 个用户账号...")
@@ -122,23 +116,30 @@ async def initialize_clients(config: Config):
             client.session_name_for_forwarder = acc.session_name
             
             if not session_exists:
-                logger.warning(f"⚠️ 账号 {acc.session_name} 未登录。")
-                logger.warning(">>> 请在终端 (docker attach) 输入手机号和验证码 <<<")
+                logger.warning(f"⚠️ 账号 {acc.session_name} 未登录。请在控制台交互式登录。")
             
             await client.start()
+            
+            # 验证是否真的登录成功
+            if not await client.is_user_authorized():
+                 logger.error(f"❌ 账号 {acc.session_name} 未授权 (可能 Session 失效)。跳过此账号。")
+                 await client.disconnect()
+                 continue
+                 
             me = await client.get_me()
-            logger.success(f"账号 {i+1} 登录成功: {me.first_name} (@{me.username})")
+            logger.success(f"✅ 账号 {i+1} 登录成功: {me.first_name} (@{me.username})")
             clients.append(client)
+            
         except errors.SessionPasswordNeededError:
-            logger.error(f"账号 {acc.session_name} 需要两步验证密码。请在控制台输入。")
+            logger.error(f"❌ 账号 {acc.session_name} 需要两步验证密码。请手动处理。跳过。")
         except Exception as e:
-            logger.error(f"账号 {acc.session_name} 启动失败: {e}")
+            logger.error(f"❌ 账号 {acc.session_name} 启动失败: {e}。跳过。")
     
     if not clients:
-        logger.critical("没有可用的用户账号，程序退出。")
-        sys.exit(1)
+        logger.warning("⚠️ 没有任何可用的用户账号！转发功能将无法工作，但 Web 面板和 Bot (如果可用) 仍将运行。")
 
 async def initialize_bot(config: Config):
+    """初始化 Bot，容错模式"""
     global bot_client, forwarder, link_checker
     
     if not config.bot_service or not config.bot_service.enabled:
@@ -150,28 +151,37 @@ async def initialize_bot(config: Config):
 
     logger.info("正在启动 Bot 服务...")
     try:
+        # Bot 使用第一个账号的 API ID/Hash，如果没有可用账号配置，则可能无法初始化
+        # 这里假设 config 中至少配置了 API ID/Hash，即使账号登录失败
+        api_id = config.accounts[0].api_id
+        api_hash = config.accounts[0].api_hash
+
         bot_client = TelegramClient(
             None, 
-            config.accounts[0].api_id, 
-            config.accounts[0].api_hash,
+            api_id, 
+            api_hash,
             proxy=config.proxy.get_telethon_proxy() if config.proxy else None
         )
         await bot_client.start(bot_token=config.bot_service.bot_token)
         me = await bot_client.get_me()
-        logger.success(f"Bot 登录成功: @{me.username}")
+        logger.success(f"✅ Bot 登录成功: @{me.username}")
 
-        if not link_checker and config.link_checker.enabled:
+        # 即使 forwarder 为 None (用户账号全挂)，Bot 也可以提供部分服务 (如 /status, /reload)
+        if not link_checker and config.link_checker.enabled and clients:
              link_checker = LinkChecker(config, clients[0]) 
 
         bot_service = BotService(config, bot_client, forwarder, link_checker, reload_config_func)
         await bot_service.register_commands()
 
     except Exception as e:
-        logger.error(f"Bot 启动失败: {e}")
+        logger.error(f"❌ Bot 启动失败: {e}。Web 面板仍可使用。")
         bot_client = None
 
 async def resolve_identifiers(client: TelegramClient, source_list: List[SourceConfig], config_desc: str) -> List[int]:
     resolved_ids = []
+    if not client:
+        return []
+        
     logger.info(f"正在解析 {config_desc} 中的 {len(source_list)} 个源...")
     for s_config in source_list:
         identifier = s_config.identifier
@@ -190,14 +200,10 @@ async def resolve_identifiers(client: TelegramClient, source_list: List[SourceCo
             logger.error(f"无法解析源 '{identifier}' ({config_desc}): {e}")
     return list(set(resolved_ids))
 
-# --- 3. 业务逻辑 ---
-
-# (新) 状态提供函数 - 优化时间格式
 async def get_runtime_stats_func():
-    """提供给 web_server 的回调，用于获取实时状态"""
+    """状态回调函数"""
     global bot_client, clients, START_TIME
     
-    # 计算运行时间
     uptime_delta = datetime.now(timezone.utc) - START_TIME
     days = uptime_delta.days
     seconds = uptime_delta.seconds
@@ -210,7 +216,6 @@ async def get_runtime_stats_func():
     if hours > 0: uptime_parts.append(f"{hours}时")
     if minutes > 0: uptime_parts.append(f"{minutes}分")
     uptime_parts.append(f"{secs}秒")
-    
     uptime_str = "".join(uptime_parts) if uptime_parts else "0秒"
     
     bot_connected = False
@@ -235,39 +240,54 @@ async def get_runtime_stats_func():
 async def run_forwarder(config: Config):
     global forwarder, link_checker
     
+    # 1. 初始化所有组件 (容错模式)
     await initialize_clients(config)
-    main_client = clients[0] 
-    
-    await resolve_identifiers(main_client, config.sources, "config.yaml") 
-    await web_server.load_rules_from_db(config)
-    await resolve_identifiers(main_client, web_server.rules_db.sources, "rules_db.json")
-
-    forwarder = UltimateForwarder(config, clients)
-    await forwarder.resolve_targets()
-    
-    @main_client.on(events.NewMessage())
-    async def handle_new_message(event):
-        if event.message.grouped_id: return 
-        await forwarder.process_message(event)
-        if forwarder.config.forwarding.mark_as_read:
-            await event.mark_read()
-
-    @main_client.on(events.Album())
-    async def handle_album(event):
-        main_message = next((m for m in event.messages if m.text), event.messages[0])
-        main_event = events.NewMessage.Event(message=main_message)
-        main_event.chat_id = main_message.chat_id
-        main_event.chat = await event.get_chat()
-        await forwarder.process_message(main_event, all_messages_in_group=event.messages)
-        if forwarder.config.forwarding.mark_as_read:
-            await main_event.mark_read()
-
-    logger.success("事件监听器注册完毕。")
     await initialize_bot(config)
+    
+    # 2. 如果有可用用户账号，加载规则和转发核心
+    if clients:
+        main_client = clients[0]
+        await resolve_identifiers(main_client, config.sources, "config.yaml") 
+        await web_server.load_rules_from_db(config)
+        await resolve_identifiers(main_client, web_server.rules_db.sources, "rules_db.json")
 
+        forwarder = UltimateForwarder(config, clients)
+        await forwarder.resolve_targets()
+        
+        @main_client.on(events.NewMessage())
+        async def handle_new_message(event):
+            if event.message.grouped_id: return 
+            await forwarder.process_message(event)
+            if forwarder.config.forwarding.mark_as_read:
+                await event.mark_read()
+
+        @main_client.on(events.Album())
+        async def handle_album(event):
+            main_message = next((m for m in event.messages if m.text), event.messages[0])
+            main_event = events.NewMessage.Event(message=main_message)
+            main_event.chat_id = main_message.chat_id
+            main_event.chat = await event.get_chat()
+            await forwarder.process_message(main_event, all_messages_in_group=event.messages)
+            if forwarder.config.forwarding.mark_as_read:
+                await main_event.mark_read()
+
+        logger.success("转发核心事件监听器注册完毕。")
+        
+        if not config.forwarding.forward_new_only:
+            logger.info("开始扫描历史消息...")
+            # await forwarder.process_history(...)
+            pass
+        else:
+            logger.info("跳过历史扫描。")
+    else:
+        # 即使没有用户账号，也要加载规则以便 Web UI 显示
+        await web_server.load_rules_from_db(config)
+        logger.warning("无可用用户账号，转发核心未启动。Web UI 仅提供查看功能。")
+
+    # 3. 定时任务
     scheduler = AsyncIOScheduler(timezone="UTC")
-    if config.link_checker and config.link_checker.enabled:
-        if not link_checker: link_checker = LinkChecker(config, main_client)
+    if config.link_checker and config.link_checker.enabled and clients:
+        if not link_checker: link_checker = LinkChecker(config, clients[0])
         try:
             trigger = CronTrigger.from_crontab(config.link_checker.schedule)
             scheduler.add_job(link_checker.run, trigger, name="link_checker")
@@ -276,23 +296,26 @@ async def run_forwarder(config: Config):
             logger.error(f"LinkChecker Cron 错误: {e}")
     scheduler.start()
 
-    if not config.forwarding.forward_new_only:
-        logger.info("开始扫描历史消息...")
-        # await forwarder.process_history(resolved_source_ids) 
-        pass
-    else:
-        logger.info("跳过历史扫描。")
-
-    # 注册状态提供者
+    # 4. 启动 Web 服务
     web_server.set_stats_provider(get_runtime_stats_func)
-
     uvicorn_config = uvicorn.Config(web_server.app, host="0.0.0.0", port=8080, log_config=None)
     server = uvicorn.Server(uvicorn_config)
     
     logger.success("🚀 系统启动完成，Web UI: http://localhost:8080")
     
-    tasks = [main_client.run_until_disconnected(), server.serve()]
-    if bot_client: tasks.append(bot_client.run_until_disconnected())
+    # 5. 维持运行
+    tasks = [server.serve()]
+    if clients:
+        # 只要主客户端在线就维持
+        tasks.append(clients[0].run_until_disconnected())
+    
+    if bot_client and bot_client.is_connected():
+        tasks.append(bot_client.run_until_disconnected())
+        
+    # 如果所有客户端都离线，保持 Web Server 运行
+    if len(tasks) == 1: 
+        logger.warning("⚠️ 没有活跃的 Telegram 客户端连接，仅运行 Web Server。")
+        
     await asyncio.gather(*tasks)
 
 async def run_link_checker(config: Config):
@@ -300,11 +323,17 @@ async def run_link_checker(config: Config):
     if not config.link_checker or not config.link_checker.enabled: return
     await database.init_db()
     await initialize_clients(config)
-    link_checker = LinkChecker(config, clients[0])
-    await link_checker.run()
+    if clients:
+        link_checker = LinkChecker(config, clients[0])
+        await link_checker.run()
+    else:
+        logger.error("无可用账号，无法运行链接检测。")
 
 async def export_dialogs(config: Config):
     await initialize_clients(config)
+    if not clients:
+        logger.error("无可用账号，无法导出对话。")
+        return
     client = clients[0]
     dialogs = await client.get_dialogs()
     print("\n" + "="*40)
@@ -321,9 +350,12 @@ async def reload_config_func():
         new_config = load_config(CONFIG_PATH)
         setup_logging(new_config.logging_level.app, new_config.logging_level.telethon)
         await web_server.load_rules_from_db(new_config)
-        await resolve_identifiers(clients[0], web_server.rules_db.sources, "rules_db.json")
-        if forwarder: await forwarder.reload(new_config)
-        if link_checker: link_checker.reload(new_config)
+        
+        if clients:
+             await resolve_identifiers(clients[0], web_server.rules_db.sources, "rules_db.json")
+             if forwarder: await forwarder.reload(new_config)
+             if link_checker: link_checker.reload(new_config)
+        
         logger.success("✅ 热重载成功！")
         return "配置热重载成功。"
     except Exception as e:
