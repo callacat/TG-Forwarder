@@ -7,8 +7,8 @@ import secrets
 from fastapi import FastAPI, HTTPException, Request, Depends 
 from fastapi.security import HTTPBasic, HTTPBasicCredentials 
 from fastapi.responses import HTMLResponse, FileResponse
-from fastapi.openapi.docs import get_swagger_ui_html, get_redoc_html # 新增导入
-from fastapi.openapi.utils import get_openapi # 新增导入
+from fastapi.openapi.docs import get_swagger_ui_html, get_redoc_html 
+from fastapi.openapi.utils import get_openapi 
 from typing import List, Optional, Dict, Any, Callable, Awaitable
 from pydantic import BaseModel 
 
@@ -30,17 +30,15 @@ RULES_DB_PATH = "/app/data/rules_db.json"
 rules_db: RulesDatabase = RulesDatabase() 
 db_lock = asyncio.Lock() 
 
-# 1. 禁用默认文档路由，以便我们要么完全接管，要么加上认证
 app = FastAPI(
     title="TG Forwarder Web UI",
     description="TG 终极转发器管理面板",
     version="2.5",
-    docs_url=None, # 禁用默认 /docs
-    redoc_url=None, # 禁用默认 /redoc
-    openapi_url=None # 禁用默认 /openapi.json (稍后手动添加)
+    docs_url=None, 
+    redoc_url=None, 
+    openapi_url=None 
 )
 
-# --- 全局状态提供者钩子 ---
 _stats_provider: Optional[Callable[[], Awaitable[Dict[str, Any]]]] = None
 
 def set_stats_provider(func):
@@ -115,31 +113,24 @@ async def save_rules_to_db():
     async with db_lock:
         await _save_rules_to_db_internal() 
 
-# --- 2. 手动添加受保护的文档路由 ---
-
 @app.get("/docs", include_in_schema=False)
 async def get_swagger_documentation(username: str = Depends(get_current_user)):
-    """受密码保护的 Swagger UI"""
     return get_swagger_ui_html(openapi_url="/openapi.json", title="API 文档")
 
 @app.get("/redoc", include_in_schema=False)
 async def get_redoc_documentation(username: str = Depends(get_current_user)):
-    """受密码保护的 ReDoc"""
     return get_redoc_html(openapi_url="/openapi.json", title="API 文档")
 
 @app.get("/openapi.json", include_in_schema=False)
 async def get_open_api_endpoint(username: str = Depends(get_current_user)):
-    """受密码保护的 OpenAPI JSON Schema"""
     return get_openapi(title=app.title, version=app.version, routes=app.routes)
 
-
-# --- 统计 API ---
+# --- 统计 API (确保包含所有字段) ---
 @app.get("/api/stats")
 async def get_stats(auth: str = Depends(get_current_user)):
     try:
         db_stats = await database.get_db_stats()
         
-        # 获取运行时状态
         runtime_stats = {}
         if _stats_provider:
             try:
@@ -174,7 +165,6 @@ async def get_stats(auth: str = Depends(get_current_user)):
         logger.error(f"获取统计失败: {e}")
         return {}
 
-# --- 设置 API ---
 @app.get("/api/settings", response_model=SystemSettings)
 async def get_settings(auth: str = Depends(get_current_user)):
     return rules_db.settings
@@ -190,7 +180,6 @@ async def update_settings(settings: SystemSettings, auth: str = Depends(get_curr
 async def get_dedup_legacy(auth: str = Depends(get_current_user)):
     return {"dedup_retention_days": rules_db.settings.dedup_retention_days}
 
-# --- 规则与黑白名单 API ---
 @app.get("/api/rules", response_model=RulesDatabase)
 async def get_all_rules(auth: str = Depends(get_current_user)):
     return rules_db
@@ -218,13 +207,11 @@ async def add_rule(rule: TargetDistributionRule, auth: str = Depends(get_current
 @app.post("/api/rules/update_single")
 async def update_single_rule(rule: TargetDistributionRule, name_to_replace: str = "", auth: str = Depends(get_current_user)):
     target_name = name_to_replace if name_to_replace else rule.name
-    
     for index, r in enumerate(rules_db.distribution_rules):
         if r.name == target_name:
             rules_db.distribution_rules[index] = rule
             await save_rules_to_db()
             return {"status": "success", "message": "规则已更新"}
-    
     rules_db.distribution_rules.append(rule)
     await save_rules_to_db()
     return {"status": "success", "message": "规则不存在，已作为新规则添加"}
@@ -237,12 +224,10 @@ async def reorder_rules(data: ReorderRequest, auth: str = Depends(get_current_us
     name_map = {r.name: r for r in rules_db.distribution_rules}
     new_list = []
     for name in data.names:
-        if name in name_map:
-            new_list.append(name_map[name])
+        if name in name_map: new_list.append(name_map[name])
     processed_names = set(data.names)
     for r in rules_db.distribution_rules:
-        if r.name not in processed_names:
-            new_list.append(r)
+        if r.name not in processed_names: new_list.append(r)
     rules_db.distribution_rules = new_list
     await save_rules_to_db()
     return {"status": "success", "message": "规则顺序已保存"}
