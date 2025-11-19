@@ -12,12 +12,17 @@ WORKDIR /app
 # 复制依赖定义文件
 COPY requirements.txt .
 
+# --- 修复关键点 ---
+# 在 Builder 阶段显式设置 VIRTUAL_ENV 和 PATH
+# 这样 uv pip install 会自动检测并安装到该虚拟环境中，无需 --python 参数
+ENV VIRTUAL_ENV=/opt/venv
+ENV PATH="/opt/venv/bin:$PATH"
+
 # 创建虚拟环境并安装依赖
-# 1. 创建虚拟环境 /opt/venv
-# 2. 使用 --python /opt/venv 显式指定安装目标，强制 uv 安装到虚拟环境
-#    (这是修复 ModuleNotFoundError 的关键)
+# 1. uv venv 创建环境
+# 2. uv pip install 自动安装到上述 ENV 指定的环境中
 RUN uv venv /opt/venv && \
-    uv pip install --no-cache -r requirements.txt --python /opt/venv
+    uv pip install --no-cache -r requirements.txt
 
 # 阶段 2: 运行环境 (Runtime)
 FROM python:3.13-slim-bookworm
@@ -33,7 +38,7 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
 
 WORKDIR /app
 
-# 安装运行时系统工具 (curl 用于调试，clean 清理缓存)
+# 安装运行时系统工具
 RUN apt-get update && \
     apt-get install -y --no-install-recommends curl && \
     rm -rf /var/lib/apt/lists/*
@@ -53,5 +58,4 @@ RUN mkdir -p /app/data && chmod -R 755 /app/data
 VOLUME /app/data
 
 # 启动命令
-# 由于 PATH 已设置，python 会自动使用 /opt/venv/bin/python
 CMD ["python", "ultimate_forwarder.py", "run", "-c", "/app/config.yaml"]
