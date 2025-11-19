@@ -2,7 +2,8 @@
 import logging
 import time 
 import os 
-from telethon import TelegramClient, events
+import asyncio
+from telethon import TelegramClient, events, Button
 from telethon.tl.types import Message
 from typing import Callable, Awaitable
 from datetime import datetime, timezone 
@@ -14,8 +15,8 @@ from telethon.tl.types import (
     BotCommandScopeDefault
 )
 
-# (新) v9.1：导入 database
 import database
+import web_server # 引入 web_server 以获取实时规则统计
 
 from loguru import logger
 
@@ -31,19 +32,15 @@ class BotService:
 
     def is_admin(self, event: events.NewMessage.Event) -> bool:
         """检查发件人是否为管理员"""
+        if event.is_group and event.sender_id is None:
+            return False
         
-        if event.is_group:
-            if event.sender_id is None:
-                logger.warning(f"忽略来自群组 {event.chat_id} 的匿名管理员命令。请以个人身份发送命令。")
-                return False
-        
+        # 动态获取最新的管理员 ID (如果配置支持热重载)
+        current_admin_ids = self.admin_ids
         if self.forwarder and self.forwarder.config.bot_service:
             current_admin_ids = self.forwarder.config.bot_service.admin_user_ids
-        else:
-            current_admin_ids = self.admin_ids 
 
         if event.sender_id not in current_admin_ids:
-            logger.warning(f"未授权的访问: 用户 {event.sender_id} 尝试执行命令。")
             return False
         return True
 
@@ -53,161 +50,151 @@ class BotService:
         # --- /start ---
         @self.bot.on(events.NewMessage(pattern='/start'))
         async def start_handler(event: events.NewMessage.Event):
-            if not self.is_admin(event):
-                if event.is_private:
-                    await event.reply("❌ 你无权访问此 Bot。")
-                return
+            if not self.is_admin(event): return
             
             await event.reply(
-                "**TG 终极转发器 Bot 已启动**\n\n"
-                "这是一个私有 Bot，用于控制转发服务。\n\n"
-                "**可用命令:**\n"
-                "`/status` - (新) 查看服务和数据库统计。\n"
-                "`/reload` - 热重载 `config.yaml` 和 `rules_db.json`。\n" 
-                "`/run_checklinks` - 手动触发一次失效链接检测。\n"
-                "`/export_sources` - 导出 *config.yaml* 中的源频道 ID。"
+                "**🤖 TG 终极转发器控制台**\n\n"
+                "Web 面板已就绪，你可以通过 Bot 进行快捷运维。\n\n"
+                "**常用命令:**\n"
+                "`/status` - 查看详细运行状态\n"
+                "`/reload` - 重载所有配置文件\n" 
+                "`/check` - 启动失效链接检测\n"
+                "`/ids` - 导出源频道 ID 列表"
             )
 
-        # --- /status ---
+        # --- /status (升级版) ---
         @self.bot.on(events.NewMessage(pattern='/status'))
         async def status_handler(event: events.NewMessage.Event):
             if not self.is_admin(event): return
 
+            # 1. 运行时间
             uptime = datetime.now(timezone.utc) - self.start_time
-            uptime_str = str(uptime).split('.')[0] # 移除微秒
+            days = uptime.days
+            hours, rem = divmod(uptime.seconds, 3600)
+            minutes, seconds = divmod(rem, 60)
+            uptime_str = f"{days}天 {hours}小时 {minutes}分"
 
-            client_status = "未知"
+            # 2. 客户端状态
+            client_status = "❌ 无可用账号"
             if self.forwarder and self.forwarder.clients:
-                client_count = len(self.forwarder.clients)
+                count = len(self.forwarder.clients)
+                flood_clients = [c.session_name_for_forwarder for c in self.forwarder.clients 
+                                 if self.forwarder.client_flood_wait.get(c.session_name_for_forwarder, 0) > time.time()]
                 
-                flood_clients = []
-                for client in self.forwarder.clients:
-                    session_key = client.session_name_for_forwarder 
-                    if self.forwarder.client_flood_wait.get(session_key, 0) > time.time():
-                        flood_clients.append(session_key)
-
                 if flood_clients:
-                    client_status = f"⚠️ {client_count} 个客户端运行中 ( {len(flood_clients)} 个正在 FloodWait: {', '.join(flood_clients)} )"
+                    client_status = f"⚠️ {count} 个在线 ({len(flood_clients)} 个 FloodWait)"
                 else:
-                    client_status = f"✅ {client_count} 个客户端运行中 (全部正常)"
-            
-            # (新) v9.1：获取数据库统计
+                    client_status = f"✅ {count} 个在线 (状态良好)"
+
+            # 3. 数据库与规则统计 (与 Web 端对齐)
             try:
                 db_stats = await database.get_db_stats()
+                
+                # 从内存中获取规则统计
+                bl = web_server.rules_db.ad_filter
+                bl_count = len(bl.keywords_substring or []) + len(bl.keywords_word or []) + len(bl.file_name_keywords or []) + len(bl.patterns or [])
+                wl_count = len(web_server.rules_db.whitelist.keywords or [])
+                
+                cf_count = 0
+                if web_server.rules_db.content_filter and web_server.rules_db.content_filter.meaningless_words:
+                    cf_count = len(web_server.rules_db.content_filter.meaningless_words)
+                
+                rep_count = len(web_server.rules_db.replacements or {})
+                rule_count = len(web_server.rules_db.distribution_rules)
+                source_count = len(web_server.rules_db.sources)
+
                 stats_msg = (
-                    f"**数据库统计 (SQLite):**\n"
-                    f"  - 去重哈希: `{db_stats.get('dedup_hashes', 'N/A')}` 条\n"
-                    f"  - 频道进度: `{db_stats.get('forward_progress_channels', 'N/A')}` 个\n"
-                    f"  - 失效链接: `{db_stats.get('invalid_links', 'N/A')}` 条"
+                    f"**📊 核心指标**\n"
+                    f"• 运行时间: `{uptime_str}`\n"
+                    f"• 用户账号: {client_status}\n"
+                    f"• 数据库去重: `{db_stats.get('dedup_hashes', 0)}` 条\n"
+                    f"• 失效链接: `{db_stats.get('invalid_links', 0)}` 个\n\n"
+                    f"**🛡 规则统计**\n"
+                    f"• 监控源: `{source_count}` | 分发规则: `{rule_count}`\n"
+                    f"• 黑名单: `{bl_count}` | 白名单: `{wl_count}`\n"
+                    f"• 过滤词: `{cf_count}` | 替换词: `{rep_count}`"
                 )
             except Exception as e:
-                logger.error(f"获取 /status 统计失败: {e}")
-                stats_msg = "**数据库统计:** ❌ 获取失败"
+                logger.error(f"获取 Bot 统计失败: {e}")
+                stats_msg = f"❌ 获取统计数据失败: {e}"
 
-            await event.reply(
-                "**TG 终极转发器状态**\n\n"
-                f"**服务状态:** ✅ 运行中\n"
-                f"**已运行时间:** {uptime_str}\n"
-                f"**用户账号:** {client_status}\n\n"
-                f"{stats_msg}"
-            )
+            # 发送带按钮的消息 (未来可扩展功能)
+            await event.reply(stats_msg)
 
         # --- /reload ---
         @self.bot.on(events.NewMessage(pattern='/reload'))
         async def reload_handler(event: events.NewMessage.Event):
             if not self.is_admin(event): return
             
-            await event.reply("🔄 正在热重载 `config.yaml` 和 `rules_db.json`...")
+            msg = await event.reply("🔄 正在重新加载配置和规则数据库...")
             try:
+                start_ts = time.time()
                 result_msg = await self.reload_config()
-                await event.reply(result_msg)
+                duration = round(time.time() - start_ts, 2)
+                
+                await msg.edit(f"✅ **重载完成** ({duration}s)\n\n{result_msg}")
             except Exception as e:
-                logger.error(f"热重载时发生意外错误: {e}")
-                await event.reply(f"❌ 热重载时发生意外错误: {e}")
+                logger.error(f"热重载失败: {e}")
+                await msg.edit(f"❌ **重载失败**\n\n错误信息: `{e}`")
 
-        # --- /run_checklinks ---
-        @self.bot.on(events.NewMessage(pattern='/run_checklinks'))
+        # --- /check (原 /run_checklinks) ---
+        @self.bot.on(events.NewMessage(pattern='/check'))
         async def checklinks_handler(event: events.NewMessage.Event):
             if not self.is_admin(event): return
 
             if not self.link_checker:
-                await event.reply("❌ 链接检测器未启用或未初始化。")
+                await event.reply("❌ 链接检测器未启用。请检查配置。")
                 return
                 
-            await event.reply("⌛️ 正在启动失效链接检测... (这可能需要几分钟)")
+            msg = await event.reply("🕵️‍♂️ **开始检测失效链接...**\n这可能需要几分钟，请稍候。")
             try:
                 await self.link_checker.run()
-                await event.reply("✅ 失效链接检测完成。")
+                # 再次获取统计以显示结果
+                db_stats = await database.get_db_stats()
+                invalid_count = db_stats.get('invalid_links', 0)
+                await msg.edit(f"✅ **检测完成**\n\n当前数据库中共有 `{invalid_count}` 个失效链接记录。")
             except Exception as e:
-                logger.error(f"运行链接检测时出错: {e}")
-                await event.reply(f"❌ 运行链接检测时出错: {e}")
+                logger.error(f"链接检测出错: {e}")
+                await msg.edit(f"❌ 检测过程中出错: {e}")
 
-        # --- /export_sources ---
-        @self.bot.on(events.NewMessage(pattern='/export_sources'))
+        # --- /ids (原 /export_sources) ---
+        @self.bot.on(events.NewMessage(pattern='/ids'))
         async def export_sources_handler(event: events.NewMessage.Event):
             if not self.is_admin(event): return
 
-            if not self.forwarder or not self.forwarder.config.sources:
-                await event.reply("❌ 未找到 *config.yaml* 中已配置的源。")
+            # 优先从 Web 数据库读取，因为那里是最新的
+            sources = web_server.rules_db.sources
+            if not sources:
+                await event.reply("📭 当前没有配置任何监控源。")
                 return
             
-            output = "**✅ *config.yaml* 中的源频道 (用于迁移)**\n\n"
-            output += "`config.yaml` 中的标识符 | 解析后的数字 ID\n"
-            output += "--------------------------------------\n"
+            output = "**📋 监控源列表 (ID 映射)**\n\n"
             
-            count = 0
-            for s_config in self.forwarder.config.sources:
-                if s_config.resolved_id:
-                    output += f"`{s_config.identifier}` | `{s_config.resolved_id}`\n"
-                    count += 1
-                else:
-                    output += f"`{s_config.identifier}` | ⚠️ *未解析 (请尝试 /reload)*\n"
+            for s in sources:
+                name = s.cached_title or s.identifier
+                status = "✅" if s.resolved_id else "⚠️"
+                id_str = f"`{s.resolved_id}`" if s.resolved_id else "*未解析*"
+                
+                output += f"{status} **{name}**\n"
+                output += f"└ ID: {id_str}\n\n"
             
-            output += f"\n共计: {count} 个已解析的源。"
             await event.reply(output)
 
-        # --- 自动设置 Bot 命令列表 ---
+        # --- 自动设置 Bot 命令菜单 ---
         try:
-            logger.info("正在为 Bot 设置命令列表...")
-            
-            en_commands = [
-                BotCommand(command="start", description="Show welcome message and help"),
-                BotCommand(command="status", description="Check service and database status"),
-                BotCommand(command="reload", description="Reload the config.yaml and rules_db.json files"),
-                BotCommand(command="run_checklinks", description="Manually trigger a link check"),
-                BotCommand(command="export_sources", description="Export resolved source channel IDs (from config.yaml)")
+            commands = [
+                BotCommand("status", "查看详细运行仪表盘"),
+                BotCommand("reload", "重载配置 (Web修改后点此)"),
+                BotCommand("ids", "显示监控源的真实 ID"),
+                BotCommand("check", "立即运行失效链接检测"),
+                BotCommand("start", "显示帮助信息")
             ]
             
-            zh_commands = [
-                BotCommand(command="start", description="显示欢迎和帮助信息"),
-                BotCommand(command="status", description="查看服务和数据库状态"),
-                BotCommand(command="reload", description="热重载 config.yaml 和 rules_db.json 配置文件"),
-                BotCommand(command="run_checklinks", description="手动触发一次失效链接检测"),
-                BotCommand(command="export_sources", description="导出已解析的源频道 ID (来自 config.yaml)")
-            ]
-            
-            scope = BotCommandScopeDefault()
-            
-            logger.info(f"--- 正在设置 Default (默认) 作用域的命令 ---")
-            
             await self.bot(SetBotCommandsRequest(
-                scope=scope,
-                lang_code="", 
-                commands=en_commands
+                scope=BotCommandScopeDefault(),
+                lang_code="",
+                commands=commands
             ))
-
-            await self.bot(SetBotCommandsRequest(
-                scope=scope,
-                lang_code="en",
-                commands=en_commands
-            ))
-            
-            await self.bot(SetBotCommandsRequest(
-                scope=scope,
-                lang_code="zh",
-                commands=zh_commands
-            ))
-
-            logger.info("✅ Bot 命令列表设置成功 (Default Scope)。")
+            logger.info("✅ Bot 命令菜单已自动同步。")
         except Exception as e:
-            logger.warning(f"⚠️ 无法设置 Bot 命令列表: {e} (这不影响 Bot 运行)")
+            logger.warning(f"无法设置 Bot 菜单: {e}")
