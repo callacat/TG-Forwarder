@@ -3,645 +3,491 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-    <title>TG 终极转发器</title>
-    
-    <!-- 字体: Inter & JetBrains Mono -->
-    <link rel="preconnect" href="https://fonts.googleapis.com">
-    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;700&display=swap" rel="stylesheet">
-    
-    <!-- Tailwind CSS -->
-    <script src="https://cdn.tailwindcss.com"></script>
-    <script>
-        tailwind.config = {
-            darkMode: 'class',
-            theme: {
-                extend: {
-                    fontFamily: {
-                        sans: ['Inter', 'sans-serif'],
-                        mono: ['JetBrains Mono', 'monospace'],
-                    },
-                    colors: {
-                        // Apple-style gray scale
-                        surface: {
-                            50: '#f9fafb', 100: '#f3f4f6', 200: '#e5e7eb', 300: '#d1d5db',
-                            400: '#9ca3af', 500: '#6b7280', 600: '#4b5563', 700: '#374151',
-                            800: '#1f2937', 900: '#111827', 950: '#030712',
-                        },
-                        // Status colors (iOS System Colors)
-                        apple: {
-                            blue: '#007AFF', green: '#34C759', red: '#FF3B30',
-                            orange: '#FF9500', yellow: '#FFCC00', purple: '#AF52DE',
-                            teal: '#5AC8FA', pink: '#FF2D55', gray: '#8E8E93'
-                        }
-                    },
-                    animation: {
-                        'pulse-slow': 'pulse 4s cubic-bezier(0.4, 0, 0.6, 1) infinite',
-                        'scale-in': 'scaleIn 0.3s ease-out',
-                        'float': 'float 6s ease-in-out infinite',
-                    },
-                    keyframes: {
-                        scaleIn: { '0%': { transform: 'scale(0.95)', opacity: '0' }, '100%': { transform: 'scale(1)', opacity: '1' } },
-                        float: { '0%, 100%': { transform: 'translateY(0)' }, '50%': { transform: 'translateY(-5px)' } }
-                    }
-                }
-            }
-        }
-    </script>
-
+    <title>TG Forwarder Pro</title>
+    <link rel="preconnect" href="https://rsms.me/">
+    <link rel="stylesheet" href="https://rsms.me/inter/inter.css">
+    <link href="https://unpkg.com/tailwindcss@2.2.19/dist/tailwind.min.css" rel="stylesheet">
     <style>
-        /* --- 核心样式重置 --- */
-        body {
-            transition: background-color 0.5s ease, color 0.5s ease;
+        :root {
+            --bg-primary: #f5f5f7; --bg-card: rgba(255, 255, 255, 0.7); --text-main: #1d1d1f; --text-sec: #86868b;
+            --accent: #007aff; --success: #34c759; --danger: #ff3b30; --warning: #ff9500;
+            --border: rgba(0,0,0,0.05); --shadow: 0 4px 20px rgba(0,0,0,0.05);
         }
-
-        /* --- Glassmorphism 卡片样式 (支持日间/夜间) --- */
-        .glass-panel {
-            /* Default (Light Mode) */
-            background: rgba(255, 255, 255, 0.7);
-            backdrop-filter: blur(20px);
-            -webkit-backdrop-filter: blur(20px);
-            border: 1px solid rgba(0, 0, 0, 0.05);
-            box-shadow: 0 10px 30px -10px rgba(0, 0, 0, 0.1);
+        .dark {
+            --bg-primary: #000000; --bg-card: rgba(28, 28, 30, 0.6); --text-main: #f5f5f7; --text-sec: #86868b;
+            --accent: #0a84ff; --success: #30d158; --danger: #ff453a; --warning: #ff9f0a;
+            --border: rgba(255,255,255,0.1); --shadow: 0 4px 30px rgba(0,0,0,0.3);
         }
-        .dark .glass-panel {
-            /* Dark Mode */
-            background: rgba(30, 30, 32, 0.6);
-            border: 1px solid rgba(255, 255, 255, 0.08);
-            box-shadow: 0 25px 50px -12px rgba(0, 0, 0, 0.5);
-        }
-
-        .glass-card {
-            /* Default (Light Mode) */
-            background: rgba(255, 255, 255, 0.6);
-            backdrop-filter: blur(12px);
-            -webkit-backdrop-filter: blur(12px);
-            border: 1px solid rgba(0, 0, 0, 0.05);
-            border-radius: 1.25rem; /* rounded-2xl/3xl */
-            transition: all 0.4s cubic-bezier(0.4, 0, 0.2, 1);
-            position: relative;
-            overflow: hidden;
-            box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.05);
-        }
-        .dark .glass-card {
-            /* Dark Mode */
-            background: rgba(40, 40, 45, 0.4);
-            border: 1px solid rgba(255, 255, 255, 0.05);
-            box-shadow: none;
-        }
-
-        /* 交互卡片：鼠标悬停效果 */
-        .glass-card.interactive { cursor: pointer; }
-        .glass-card.interactive:hover {
-            transform: translateY(-4px) scale(1.02);
-            /* Light Mode Hover */
-            background: rgba(255, 255, 255, 0.9);
-            box-shadow: 0 20px 25px -5px rgba(0, 0, 0, 0.1), 0 10px 10px -5px rgba(0, 0, 0, 0.04);
-        }
-        .dark .glass-card.interactive:hover {
-            /* Dark Mode Hover */
-            background: rgba(60, 60, 65, 0.6);
-            border-color: rgba(255, 255, 255, 0.15);
-            box-shadow: 0 20px 40px -5px rgba(0, 0, 0, 0.4);
-        }
-        .glass-card:active { transform: translateY(-2px) scale(0.99); }
-
-        /* 状态指示灯 */
-        .status-dot { width: 8px; height: 8px; border-radius: 50%; box-shadow: 0 0 0 0 rgba(52, 199, 89, 0.7); animation: pulse-green 2s infinite; }
-        .status-dot.offline { background-color: #FF3B30; box-shadow: 0 0 0 0 rgba(255, 59, 48, 0.7); animation: pulse-red 2s infinite; }
-        @keyframes pulse-green { 0% { box-shadow: 0 0 0 0 rgba(52, 199, 89, 0.7); } 70% { box-shadow: 0 0 0 6px rgba(52, 199, 89, 0); } 100% { box-shadow: 0 0 0 0 rgba(52, 199, 89, 0); } }
-        @keyframes pulse-red { 0% { box-shadow: 0 0 0 0 rgba(255, 59, 48, 0.7); } 70% { box-shadow: 0 0 0 6px rgba(255, 59, 48, 0); } 100% { box-shadow: 0 0 0 0 rgba(255, 59, 48, 0); } }
-
-        /* 数字滚动动画 */
-        .counter-val { font-variant-numeric: tabular-nums; transition: color 0.3s; }
-        .counter-val.updating { color: #007AFF; }
-        .dark .counter-val.updating { color: #5AC8FA; }
-
-        /* 控件样式 */
-        .app-input, .form-textarea { 
-            width: 100%; padding: 0.6rem 1rem; border-radius: 0.75rem;
-            background: rgba(255,255,255,0.5); border: 1px solid rgba(0,0,0,0.1);
-            color: #111827; outline: none; transition: 0.2s;
-        }
-        .dark .app-input, .dark .form-textarea {
-            background: rgba(30,30,30,0.5); border: 1px solid rgba(255,255,255,0.1); color: #f3f4f6;
-        }
-        .app-input:focus { border-color: #007AFF; background: #fff; box-shadow: 0 0 0 3px rgba(0,122,255,0.15); }
-        .dark .app-input:focus { border-color: #0A84FF; background: #1f2937; }
+        body { background-color: var(--bg-primary); color: var(--text-main); font-family: 'Inter', sans-serif; transition: background 0.5s ease; }
         
-        /* 按钮 - 使用 Tailwind Utility 类，这里仅定义基础行为 */
-        .btn-base {
-            padding: 0.5rem 1.2rem; border-radius: 999px; font-weight: 600; font-size: 0.9rem;
-            transition: 0.2s; display: inline-flex; align-items: center; justify-content: center;
-            box-shadow: 0 2px 5px rgba(0,0,0,0.1);
+        /* Glassmorphism */
+        .glass {
+            background: var(--bg-card); backdrop-filter: blur(20px); -webkit-backdrop-filter: blur(20px);
+            border: 1px solid var(--border); border-radius: 18px; box-shadow: var(--shadow);
+            transition: transform 0.2s, box-shadow 0.2s;
         }
-        .btn-base:hover { transform: translateY(-1px); box-shadow: 0 4px 12px rgba(0,0,0,0.15); }
-        .btn-base:active { transform: translateY(1px); }
-        .btn-sm { padding: 0.25rem 0.75rem; border-radius: 0.5rem; font-weight: 600; font-size: 0.75rem; cursor: pointer; border: none; transition: 0.2s; display: inline-flex; align-items: center; justify-content: center; width: 100%; height: 2rem; }
-
-        /* Badge */
-        .badge { padding: 0.15rem 0.5rem; border-radius: 0.375rem; font-size: 0.75rem; font-weight: 600; margin-right: 0.25rem; margin-bottom: 0.25rem; display: inline-block; }
-        .badge-blue { background-color: #eff6ff; color: #1d4ed8; } .dark .badge-blue { background-color: #172554; color: #93c5fd; }
-        .badge-purple { background-color: #f3e8ff; color: #7e22ce; } .dark .badge-purple { background-color: #3b0764; color: #d8b4fe; }
-        .badge-yellow { background-color: #fefce8; color: #a16207; } .dark .badge-yellow { background-color: #422006; color: #facc15; }
-        .badge-pink { background-color: #fce7f3; color: #be185d; } .dark .badge-pink { background-color: #500724; color: #f472b6; }
-        .badge-gray { background-color: #f3f4f6; color: #374151; } .dark .badge-gray { background-color: #27272a; color: #e5e7eb; }
-
-        /* Scrollbar & Misc */
-        body::-webkit-scrollbar { display: none; }
-        .login-overlay { background: rgba(0,0,0,0.6); backdrop-filter: blur(15px); -webkit-backdrop-filter: blur(15px); }
-        [x-cloak] { display: none !important; }
-        .draggable-source { cursor: grab; } .draggable-source:active { cursor: grabbing; }
-        .dragging { opacity: 0.5; border: 2px dashed #007AFF; }
+        .glass-hover:hover { transform: scale(1.02); box-shadow: 0 8px 30px rgba(0,0,0,0.12); cursor: pointer; z-index: 10; }
+        .glass-hover:active { transform: scale(0.98); }
+        
+        /* Controls */
+        .input-field {
+            width: 100%; padding: 10px 16px; border-radius: 12px; border: 1px solid var(--border);
+            background: rgba(120, 120, 128, 0.1); color: var(--text-main); outline: none; transition: 0.2s;
+        }
+        .input-field:focus { background: transparent; border-color: var(--accent); box-shadow: 0 0 0 2px rgba(0,122,255,0.3); }
+        
+        .btn {
+            padding: 8px 20px; border-radius: 99px; font-weight: 600; border: none; cursor: pointer; transition: 0.2s;
+            display: inline-flex; align-items: center; justify-content: center; gap: 6px;
+        }
+        .btn-primary { background: var(--accent); color: white; }
+        .btn-primary:hover { opacity: 0.9; transform: translateY(-1px); }
+        .btn-danger { background: rgba(255, 59, 48, 0.1); color: var(--danger); }
+        .btn-danger:hover { background: rgba(255, 59, 48, 0.2); }
+        
+        /* Animations */
+        .pulse-dot { width: 8px; height: 8px; border-radius: 50%; background: var(--success); box-shadow: 0 0 0 0 rgba(52, 199, 89, 0.7); animation: pulse 2s infinite; }
+        @keyframes pulse { 0% { box-shadow: 0 0 0 0 rgba(52, 199, 89, 0.4); } 70% { box-shadow: 0 0 0 6px rgba(52, 199, 89, 0); } 100% { box-shadow: 0 0 0 0 rgba(52, 199, 89, 0); } }
+        
+        /* Layout */
+        [x-cloak] { display: none; }
+        .page-enter { animation: slideUp 0.4s cubic-bezier(0.16, 1, 0.3, 1); }
+        @keyframes slideUp { from { opacity: 0; transform: translateY(20px); } to { opacity: 1; transform: translateY(0); } }
     </style>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/alpinejs/3.13.5/cdn.min.js" defer></script>
 </head>
-<body x-data="app()" x-init="initApp()" class="bg-surface-50 text-surface-900 dark:bg-surface-950 dark:text-white min-h-screen font-sans antialiased selection:bg-apple-blue selection:text-white overflow-x-hidden transition-colors duration-500">
+<body x-data="app()" x-init="init()" class="min-h-screen flex flex-col">
 
-    <!-- 背景氛围光 (双模式适配) -->
-    <div class="fixed inset-0 z-0 pointer-events-none overflow-hidden transition-opacity duration-1000">
-        <!-- 夜间模式光效 -->
-        <div class="absolute top-[-20%] left-[-10%] w-[800px] h-[800px] bg-apple-blue/5 dark:bg-apple-blue/10 rounded-full blur-[120px] animate-pulse-slow"></div>
-        <div class="absolute bottom-[-20%] right-[-10%] w-[600px] h-[600px] bg-apple-purple/5 dark:bg-apple-purple/10 rounded-full blur-[120px] animate-pulse-slow" style="animation-delay: 2s;"></div>
+    <!-- Background Glow -->
+    <div class="fixed inset-0 pointer-events-none overflow-hidden">
+        <div class="absolute -top-20 -left-20 w-96 h-96 bg-blue-500/20 rounded-full blur-3xl opacity-30 animate-pulse"></div>
+        <div class="absolute top-40 right-0 w-72 h-72 bg-purple-500/20 rounded-full blur-3xl opacity-20"></div>
     </div>
 
-    <!-- 登录遮罩 -->
-    <div x-show="!authenticated" x-transition.opacity class="fixed inset-0 z-50 flex items-center justify-center login-overlay">
-        <div class="glass-panel p-10 rounded-3xl w-full max-w-sm text-center shadow-2xl animate-scale-in">
-            <div class="w-16 h-16 bg-gradient-to-br from-apple-blue to-apple-purple rounded-2xl flex items-center justify-center mx-auto mb-6 shadow-lg text-white text-3xl font-bold">🔒</div>
-            <h2 class="text-2xl font-bold mb-2">安全验证</h2>
+    <!-- Login Overlay -->
+    <div x-show="!auth" class="fixed inset-0 z-50 flex items-center justify-center bg-black/50 backdrop-blur-md" x-transition.opacity>
+        <div class="glass p-8 w-full max-w-sm text-center">
+            <div class="text-4xl mb-4">🔒</div>
+            <h2 class="text-2xl font-bold mb-2">Forwarder Pro</h2>
+            <p class="text-sm text-gray-500 mb-6">验证身份以继续</p>
             <form @submit.prevent="login">
-                <input type="password" x-model="password" class="app-input mb-6 text-center tracking-widest" placeholder="••••••••" required>
-                <button type="submit" :disabled="loading" class="btn-base w-full py-3 text-lg bg-apple-blue hover:bg-blue-600 text-white shadow-lg hover:shadow-blue-500/30">
-                    <span x-show="!loading">解锁</span><span x-show="loading" class="animate-spin">◌</span>
-                </button>
+                <input type="password" x-model="password" class="input-field text-center tracking-widest text-lg mb-4" placeholder="••••••" required>
+                <button class="btn btn-primary w-full py-3">解锁控制台</button>
             </form>
         </div>
     </div>
 
-    <!-- 主界面 -->
-    <div x-show="authenticated" x-cloak class="relative z-10 max-w-7xl mx-auto p-6 md:p-10 min-h-screen flex flex-col">
+    <!-- App Content -->
+    <div x-show="auth" x-cloak class="relative z-10 max-w-6xl mx-auto w-full p-6 flex-grow flex flex-col">
         
-        <!-- 顶部导航 -->
-        <header class="flex flex-col md:flex-row justify-between items-start md:items-center mb-10 gap-4 animate-scale-in">
-            <div>
-                <h1 class="text-3xl font-bold tracking-tight flex items-center gap-3">
-                    <div class="w-8 h-8 bg-gradient-to-tr from-apple-blue to-apple-teal rounded-lg shadow-lg"></div>
-                    <span class="bg-clip-text text-transparent bg-gradient-to-r from-surface-900 to-surface-500 dark:from-white dark:to-surface-400">Forwarder Pro</span>
-                </h1>
+        <!-- Navbar -->
+        <header class="flex justify-between items-center mb-8">
+            <div class="flex items-center gap-3 cursor-pointer" @click="tab='status'">
+                <div class="w-10 h-10 rounded-xl bg-gradient-to-tr from-blue-500 to-purple-600 flex items-center justify-center text-white font-bold text-lg shadow-lg">TG</div>
+                <div>
+                    <h1 class="font-bold text-xl leading-none">终极转发器</h1>
+                    <span class="text-xs text-gray-500 font-mono">V2.6 PRO</span>
+                </div>
             </div>
-            
-            <nav class="glass-panel p-1.5 rounded-full flex gap-1 overflow-x-auto max-w-full self-start md:self-auto no-scrollbar shadow-lg">
-                <template x-for="tab in tabs" :key="tab.id">
-                    <button @click="switchTab(tab.id)" 
-                            :class="currentTab === tab.id ? 'bg-white dark:bg-surface-700 text-surface-900 dark:text-white shadow-md' : 'text-surface-500 hover:text-surface-900 dark:hover:text-surface-200'"
-                            class="px-4 py-1.5 rounded-full text-xs font-bold transition-all whitespace-nowrap"
-                            x-text="tab.name">
-                    </button>
-                </template>
-            </nav>
-
-            <div class="flex items-center gap-3">
-                <button @click="fetchAllData(true)" class="glass-panel w-10 h-10 rounded-full flex items-center justify-center hover:scale-110 transition-transform shadow-md text-surface-600 dark:text-surface-300" title="刷新数据">
-                    <span class="text-lg transition-transform duration-700" :class="{'rotate-180': loadingData}">↻</span>
-                </button>
-                <button @click="toggleTheme()" class="glass-panel w-10 h-10 rounded-full flex items-center justify-center hover:scale-110 transition-transform shadow-md text-surface-600 dark:text-surface-300" title="切换主题">
-                    <span x-show="theme === 'light'">☀️</span>
-                    <span x-show="theme === 'dark'">🌙</span>
-                    <span x-show="theme === 'system'">💻</span>
+            <div class="flex gap-2">
+                <button @click="refresh(true)" class="w-10 h-10 rounded-full glass flex items-center justify-center hover:bg-white/10 transition" title="刷新"><span class="text-xl" :class="{'animate-spin': loading}">↻</span></button>
+                <button @click="toggleTheme" class="w-10 h-10 rounded-full glass flex items-center justify-center hover:bg-white/10 transition">
+                    <span x-show="theme=='light'">☀️</span><span x-show="theme=='dark'">🌙</span>
                 </button>
             </div>
         </header>
 
-        <!-- Tab: 状态概览 (仪表盘) -->
-        <div x-show="currentTab === 'status'" x-transition:enter="transition ease-out duration-300 transform" x-transition:enter-start="opacity-0 scale-95" x-transition:enter-end="opacity-100 scale-100">
+        <!-- Tab: Dashboard (Status) -->
+        <div x-show="tab==='status'" class="page-enter space-y-6">
             
-            <!-- 顶部 3 大卡片 -->
-            <section class="grid grid-cols-1 md:grid-cols-3 gap-6 mb-8">
-                <!-- Bot 状态 -->
-                <div @click="switchTab('settings')" class="glass-card p-6 flex flex-col justify-between h-40 group interactive">
-                    <div class="flex justify-between items-start">
-                        <div class="p-3 rounded-2xl bg-surface-100 dark:bg-surface-800 text-apple-blue animate-float"><svg class="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 10V3L4 14h7v7l9-11h-7z"></path></svg></div>
-                        <div class="flex items-center gap-2 px-3 py-1 rounded-full bg-surface-50 dark:bg-surface-900/50 border border-black/5 dark:border-white/10">
-                            <div class="status-dot bg-apple-green" :class="{'offline': !stats.bot_connected}"></div>
-                            <span class="text-xs font-bold tracking-wider" :class="stats.bot_connected ? 'text-apple-green' : 'text-apple-red'" x-text="stats.bot_status || 'Checking...'"></span>
+            <!-- Hero Cards -->
+            <div class="grid grid-cols-1 md:grid-cols-3 gap-4">
+                <!-- Bot Status -->
+                <div @click="tab='settings'" class="glass glass-hover p-6 flex flex-col justify-between h-32 relative overflow-hidden group">
+                    <div class="flex justify-between items-start z-10">
+                        <div class="flex items-center gap-2">
+                            <div class="pulse-dot" :class="{'bg-red-500 shadow-red-500/50': !stats.bot_connected}"></div>
+                            <span class="font-bold text-sm uppercase tracking-wide" :class="stats.bot_connected?'text-green-500':'text-red-500'" x-text="stats.bot_status||'Checking...'"></span>
                         </div>
+                        <span class="text-2xl opacity-50">🤖</span>
                     </div>
-                    <div>
-                        <h3 class="text-xs font-bold text-surface-400 uppercase tracking-wider mb-1">Bot 状态</h3>
-                        <div class="text-xl font-bold truncate text-surface-900 dark:text-white">Telegram Bot</div>
+                    <div class="z-10">
+                        <div class="text-xs text-gray-500 uppercase font-semibold">Bot 实例</div>
+                        <div class="text-lg font-bold truncate">Telegram Bot</div>
                     </div>
-                    <!-- 微光背景 -->
-                    <div class="absolute -right-10 -bottom-10 w-32 h-32 bg-apple-blue opacity-0 group-hover:opacity-20 blur-[40px] transition-opacity duration-500"></div>
+                    <div class="absolute right-0 bottom-0 w-24 h-24 bg-green-500/10 rounded-full blur-2xl group-hover:bg-green-500/20 transition"></div>
                 </div>
 
-                <!-- 用户账号 -->
-                <div @click="switchTab('settings')" class="glass-card p-6 flex flex-col justify-between h-40 group interactive">
-                    <div class="flex justify-between items-start">
-                        <div class="p-3 rounded-2xl bg-surface-100 dark:bg-surface-800 text-apple-purple animate-float" style="animation-delay: 0.5s"><svg class="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 4.354a4 4 0 110 5.292M15 21H3v-1a6 6 0 0112 0v1zm0 0h6v-1a6 6 0 00-9-5.197M13 7a4 4 0 11-8 0 4 4 0 018 0z"></path></svg></div>
-                        <span class="text-xs font-mono text-surface-400">SESSION</span>
+                <!-- User Accounts -->
+                <div @click="tab='settings'" class="glass glass-hover p-6 flex flex-col justify-between h-32 relative overflow-hidden group">
+                    <div class="flex justify-between items-start z-10">
+                        <span class="font-bold text-sm text-blue-500 uppercase tracking-wide">在线会话</span>
+                        <span class="text-2xl opacity-50">👥</span>
                     </div>
-                    <div>
-                        <h3 class="text-xs font-bold text-surface-400 uppercase tracking-wider mb-1">在线用户</h3>
-                        <div class="flex items-baseline gap-1 text-surface-900 dark:text-white">
-                            <span class="text-3xl font-bold counter-val" x-text="stats.user_account_count || 0">0</span>
-                            <span class="text-sm text-surface-500">Active</span>
-                        </div>
+                    <div class="z-10">
+                        <div class="text-3xl font-bold font-mono" x-text="stats.user_account_count||0">0</div>
+                        <div class="text-xs text-gray-500">Active Accounts</div>
                     </div>
-                    <div class="absolute -right-10 -bottom-10 w-32 h-32 bg-apple-purple opacity-0 group-hover:opacity-20 blur-[40px] transition-opacity duration-500"></div>
+                    <div class="absolute right-0 bottom-0 w-24 h-24 bg-blue-500/10 rounded-full blur-2xl group-hover:bg-blue-500/20 transition"></div>
                 </div>
 
-                <!-- 运行时间 -->
-                <div @click="switchTab('settings')" class="glass-card p-6 flex flex-col justify-between h-40 group interactive">
-                    <div class="flex justify-between items-start">
-                        <div class="p-3 rounded-2xl bg-surface-100 dark:bg-surface-800 text-apple-orange animate-float" style="animation-delay: 1s"><svg class="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z"></path></svg></div>
-                        <span class="text-xs font-mono text-surface-400">UPTIME</span>
+                <!-- Uptime -->
+                <div class="glass glass-hover p-6 flex flex-col justify-between h-32 relative overflow-hidden group">
+                    <div class="flex justify-between items-start z-10">
+                        <span class="font-bold text-sm text-purple-500 uppercase tracking-wide">运行时间</span>
+                        <span class="text-2xl opacity-50">⏱</span>
                     </div>
-                    <div>
-                        <h3 class="text-xs font-bold text-surface-400 uppercase tracking-wider mb-1">系统运行</h3>
-                        <div class="text-lg font-bold font-mono text-surface-900 dark:text-white truncate" x-text="stats.uptime || '0s'">...</div>
+                    <div class="z-10">
+                        <div class="text-lg font-bold font-mono" x-text="stats.uptime||'0s'">...</div>
+                        <div class="text-xs text-gray-500">System Uptime</div>
                     </div>
-                    <div class="absolute -right-10 -bottom-10 w-32 h-32 bg-apple-orange opacity-0 group-hover:opacity-20 blur-[40px] transition-opacity duration-500"></div>
+                    <div class="absolute right-0 bottom-0 w-24 h-24 bg-purple-500/10 rounded-full blur-2xl group-hover:bg-purple-500/20 transition"></div>
                 </div>
-            </section>
+            </div>
 
-            <!-- 功能导航卡片 (8个网格，点击跳转) -->
-            <section class="grid grid-cols-2 md:grid-cols-4 gap-4 md:gap-6">
-                
-                <!-- 监控源 -->
-                <div @click="switchTab('sources')" class="glass-card p-5 group interactive">
-                    <div class="flex justify-between mb-4"><span class="text-[10px] font-bold text-apple-blue uppercase tracking-widest">活跃监控源</span><div class="w-2 h-2 rounded-full bg-apple-blue"></div></div>
-                    <div class="text-3xl font-bold text-surface-900 dark:text-white mb-1 counter-val" x-text="stats.sources||0">0</div>
-                    <div class="text-xs text-surface-500">Active Channels</div>
+            <!-- Navigation Grid -->
+            <div class="grid grid-cols-2 md:grid-cols-4 gap-4">
+                <!-- Source -->
+                <div @click="tab='sources'" class="glass glass-hover p-5 flex flex-col gap-2">
+                    <div class="flex justify-between"><span class="text-xs font-bold text-gray-500">监控源</span><span class="text-blue-500">📡</span></div>
+                    <div class="text-2xl font-bold" x-text="stats.sources||0"></div>
                 </div>
-
-                <!-- 分发规则 -->
-                <div @click="switchTab('rules')" class="glass-card p-5 group interactive">
-                    <div class="flex justify-between mb-4"><span class="text-[10px] font-bold text-apple-purple uppercase tracking-widest">分发规则</span><div class="w-2 h-2 rounded-full bg-apple-purple"></div></div>
-                    <div class="text-3xl font-bold text-surface-900 dark:text-white mb-1 counter-val" x-text="stats.distribution_rules||0">0</div>
-                    <div class="text-xs text-surface-500">Routing Logic</div>
+                <!-- Rules -->
+                <div @click="tab='rules'" class="glass glass-hover p-5 flex flex-col gap-2">
+                    <div class="flex justify-between"><span class="text-xs font-bold text-gray-500">分发规则</span><span class="text-purple-500">🔀</span></div>
+                    <div class="text-2xl font-bold" x-text="stats.distribution_rules||0"></div>
                 </div>
-
-                <!-- 内容过滤 -->
-                <div @click="switchTab('filter_replace')" class="glass-card p-5 group interactive">
-                    <div class="flex justify-between mb-4"><span class="text-[10px] font-bold text-apple-teal uppercase tracking-widest">内容过滤</span><div class="w-2 h-2 rounded-full bg-apple-teal"></div></div>
-                    <div class="text-3xl font-bold text-surface-900 dark:text-white mb-1 counter-val" x-text="stats.content_filter_count||0">0</div>
-                    <div class="text-xs text-surface-500">Filter Words</div>
+                <!-- Blacklist -->
+                <div @click="tab='blacklist'" class="glass glass-hover p-5 flex flex-col gap-2">
+                    <div class="flex justify-between"><span class="text-xs font-bold text-gray-500">黑名单</span><span class="text-red-500">⛔</span></div>
+                    <div class="text-2xl font-bold" x-text="stats.blacklist_count||0"></div>
                 </div>
-                
-                <!-- 文本替换 -->
-                <div @click="switchTab('filter_replace')" class="glass-card p-5 group interactive">
-                    <div class="flex justify-between mb-4"><span class="text-[10px] font-bold text-apple-pink uppercase tracking-widest">文本替换</span><div class="w-2 h-2 rounded-full bg-apple-pink"></div></div>
-                    <div class="text-3xl font-bold text-surface-900 dark:text-white mb-1 counter-val" x-text="stats.replacements_count||0">0</div>
-                    <div class="text-xs text-surface-500">Regex Rules</div>
+                <!-- Whitelist -->
+                <div @click="tab='whitelist'" class="glass glass-hover p-5 flex flex-col gap-2">
+                    <div class="flex justify-between"><span class="text-xs font-bold text-gray-500">白名单</span><span class="text-green-500">✅</span></div>
+                    <div class="text-2xl font-bold" x-text="stats.whitelist_count||0"></div>
                 </div>
-
-                <!-- 黑名单 -->
-                <div @click="switchTab('blacklist')" class="glass-card p-5 group interactive">
-                    <div class="flex justify-between mb-4"><span class="text-[10px] font-bold text-apple-red uppercase tracking-widest">黑名单词条</span><div class="w-2 h-2 rounded-full bg-apple-red"></div></div>
-                    <div class="text-3xl font-bold text-surface-900 dark:text-white mb-1 counter-val" x-text="stats.blacklist_count||0">0</div>
-                    <div class="text-xs text-surface-500">Blocked Terms</div>
+                <!-- Filters -->
+                <div @click="tab='filter_replace'" class="glass glass-hover p-5 flex flex-col gap-2">
+                    <div class="flex justify-between"><span class="text-xs font-bold text-gray-500">过滤词汇</span><span class="text-indigo-500">🧹</span></div>
+                    <div class="text-2xl font-bold" x-text="stats.content_filter_count||0"></div>
                 </div>
-
-                <!-- 白名单 -->
-                <div @click="switchTab('whitelist')" class="glass-card p-5 group interactive">
-                    <div class="flex justify-between mb-4"><span class="text-[10px] font-bold text-apple-green uppercase tracking-widest">白名单词条</span><div class="w-2 h-2 rounded-full bg-apple-green"></div></div>
-                    <div class="text-3xl font-bold text-surface-900 dark:text-white mb-1 counter-val" x-text="stats.whitelist_count||0">0</div>
-                    <div class="text-xs text-surface-500">Priority Terms</div>
+                <!-- Replace -->
+                <div @click="tab='filter_replace'" class="glass glass-hover p-5 flex flex-col gap-2">
+                    <div class="flex justify-between"><span class="text-xs font-bold text-gray-500">文本替换</span><span class="text-pink-500">📝</span></div>
+                    <div class="text-2xl font-bold" x-text="stats.replacements_count||0"></div>
                 </div>
-                
-                <!-- 数据库 -->
-                <div class="glass-card p-5 group interactive">
-                    <div class="flex justify-between mb-4"><span class="text-[10px] font-bold text-surface-500 uppercase tracking-widest">数据库去重</span><div class="w-2 h-2 rounded-full bg-surface-400"></div></div>
-                    <div class="text-3xl font-bold text-surface-900 dark:text-white mb-1 counter-val" x-text="stats.dedup_hashes||0">0</div>
-                    <div class="text-xs text-surface-500">Cached Hashes</div>
+                <!-- Dedup -->
+                <div class="glass p-5 flex flex-col gap-2 opacity-80">
+                    <div class="flex justify-between"><span class="text-xs font-bold text-gray-500">已去重</span><span class="text-gray-400">💾</span></div>
+                    <div class="text-2xl font-bold" x-text="stats.dedup_hashes||0"></div>
                 </div>
-
-                <!-- 失效链接 -->
-                <div class="glass-card p-5 group interactive">
-                    <div class="flex justify-between mb-4"><span class="text-[10px] font-bold text-apple-yellow uppercase tracking-widest">失效链接</span><div class="w-2 h-2 rounded-full bg-apple-yellow"></div></div>
-                    <div class="text-3xl font-bold text-surface-900 dark:text-white mb-1 counter-val" x-text="stats.invalid_links||0">0</div>
-                    <div class="text-xs text-surface-500">Dead Links Found</div>
+                <!-- Dead Links -->
+                <div class="glass p-5 flex flex-col gap-2 opacity-80">
+                    <div class="flex justify-between"><span class="text-xs font-bold text-gray-500">失效链接</span><span class="text-yellow-500">⚠️</span></div>
+                    <div class="text-2xl font-bold" x-text="stats.invalid_links||0"></div>
                 </div>
-            </section>
+            </div>
         </div>
 
-        <!-- Tab: 监控源 -->
-        <div x-show="currentTab === 'sources'" x-cloak x-transition:enter="transition ease-out duration-300" x-transition:enter-start="opacity-0 translate-y-4" x-transition:enter-end="opacity-100 translate-y-0">
-            <div class="glass-card p-6 mb-8 flex gap-3">
-                <input x-model="newSource" @keyup.enter="addSource" type="text" placeholder="@频道用户名 或 https://t.me/..." class="app-input flex-grow">
-                <button @click="addSource" class="btn-base bg-apple-blue text-white hover:bg-blue-600 shadow-lg">添加源</button>
+        <!-- Tab: Sources -->
+        <div x-show="tab==='sources'" class="page-enter">
+            <div class="glass p-4 mb-4 flex gap-2 sticky top-0 z-20 backdrop-blur-xl bg-opacity-80">
+                <button @click="tab='status'" class="btn bg-gray-200 dark:bg-gray-700 text-sm">←</button>
+                <input x-model="newSource" @keyup.enter="addSource" placeholder="输入频道链接或 @username" class="input-field flex-grow">
+                <button @click="addSource" class="btn btn-primary">添加</button>
             </div>
-            <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
-                <template x-for="s in rules.sources" :key="s.identifier">
-                    <div class="glass-card p-4 flex items-center gap-4 group">
-                        <div class="w-12 h-12 rounded-2xl flex items-center justify-center font-bold text-lg shrink-0 overflow-hidden shadow-md relative" :class="getAvatar(s).class">
-                             <span x-show="!getAvatar(s).img" x-text="getAvatar(s).text"></span>
-                             <img x-show="getAvatar(s).img" :src="getAvatar(s).img" class="absolute inset-0 w-full h-full object-cover" alt="">
+            <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
+                <template x-for="s in data.sources" :key="s.identifier">
+                    <div class="glass p-4 flex items-center gap-4 group">
+                        <div class="w-12 h-12 rounded-full bg-gradient-to-br from-blue-400 to-blue-600 flex items-center justify-center text-white font-bold text-lg shadow-lg" x-text="getAvatar(s.identifier)"></div>
+                        <div class="flex-grow min-w-0">
+                            <div class="font-bold truncate" x-text="s.cached_title || s.identifier"></div>
+                            <div class="text-xs text-gray-500 font-mono truncate" x-text="s.resolved_id || 'Pending ID...'"></div>
                         </div>
-                        <div class="flex-grow overflow-hidden">
-                            <div class="font-bold text-sm truncate text-surface-900 dark:text-white" x-text="getAvatar(s).displayName"></div>
-                            <div class="text-xs font-mono text-surface-500 truncate mt-0.5" x-text="'ID: ' + (s.resolved_id || 'Pending...')"></div>
-                        </div>
-                        <button @click="removeSource(s.identifier)" class="text-surface-400 hover:text-apple-red p-2 transition-colors"><svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16"></path></svg></button>
+                        <button @click="removeSource(s.identifier)" class="btn-danger w-8 h-8 rounded-full flex items-center justify-center opacity-0 group-hover:opacity-100 transition">✕</button>
                     </div>
                 </template>
             </div>
         </div>
 
-        <!-- Tab: 转发规则 -->
-        <div x-show="currentTab === 'rules'" x-cloak x-transition:enter="transition ease-out duration-300" x-transition:enter-start="opacity-0 translate-y-4" x-transition:enter-end="opacity-100 translate-y-0">
+        <!-- Tab: Rules -->
+        <div x-show="tab==='rules'" class="page-enter space-y-6">
+            <div class="flex items-center gap-4 mb-4">
+                <button @click="tab='status'" class="btn bg-gray-200 dark:bg-gray-700 text-sm">← 返回</button>
+                <h2 class="text-xl font-bold">分发规则</h2>
+            </div>
             
-            <div class="glass-card p-6 mb-6 border-l-4 border-apple-yellow">
-                <h3 class="text-xs font-bold text-apple-yellow uppercase tracking-widest mb-3">默认转发目标 (Fallback)</h3>
+            <!-- Default Target -->
+            <div class="glass p-6 border-l-4 border-yellow-500">
+                <h3 class="text-xs font-bold text-yellow-500 uppercase mb-2">默认转发目标 (Fallback)</h3>
                 <div class="flex gap-3">
-                    <input x-model="settings.default_target" placeholder="默认目标 ID (-100...)" class="app-input">
-                    <input x-model="settings.default_topic_id" type="number" placeholder="Topic ID" class="app-input w-32">
-                    <button @click="saveDefaultTarget" class="btn-base bg-apple-yellow text-black hover:bg-yellow-400 shadow-sm">保存</button>
+                    <input x-model="settings.default_target" placeholder="Target ID" class="input-field">
+                    <input x-model="settings.default_topic_id" placeholder="Topic ID" type="number" class="input-field w-32">
+                    <button @click="saveSettings" class="btn btn-primary bg-yellow-500 hover:bg-yellow-600">保存</button>
                 </div>
             </div>
 
-            <div class="glass-card p-6 mb-8">
-                <h3 class="font-bold mb-4 text-lg text-surface-900 dark:text-white">新建规则</h3>
-                <div class="grid grid-cols-1 md:grid-cols-3 gap-4 mb-4">
-                    <input x-model="newRule.name" placeholder="规则名称" class="app-input">
-                    <input x-model="newRule.target" placeholder="目标 ID" class="app-input">
-                    <input x-model="newRule.topic" type="number" placeholder="Topic (可选)" class="app-input">
+            <!-- Add Rule -->
+            <div class="glass p-6">
+                <h3 class="font-bold mb-4">新建规则</h3>
+                <div class="grid grid-cols-1 md:grid-cols-3 gap-3 mb-3">
+                    <input x-model="newRule.name" placeholder="规则名称" class="input-field">
+                    <input x-model="newRule.target" placeholder="Target ID" class="input-field">
+                    <input x-model="newRule.topic" placeholder="Topic ID" type="number" class="input-field">
                 </div>
-                <div class="grid grid-cols-1 md:grid-cols-3 gap-4 mb-6">
-                    <textarea x-model="newRule.all_kw" rows="3" placeholder="[AND] 必须包含所有" class="form-textarea"></textarea>
-                    <textarea x-model="newRule.any_kw" rows="3" placeholder="[OR] 包含任一" class="form-textarea"></textarea>
-                    <textarea x-model="newRule.files" rows="3" placeholder="文件名正则 (*.apk)" class="form-textarea"></textarea>
+                <div class="grid grid-cols-1 md:grid-cols-3 gap-3 mb-4">
+                    <input x-model="newRule.all_kw" placeholder="[AND] 关键词 (空格分隔)" class="input-field">
+                    <input x-model="newRule.any_kw" placeholder="[OR] 关键词 (空格分隔)" class="input-field">
+                    <input x-model="newRule.files" placeholder="文件名正则 (*.apk)" class="input-field">
                 </div>
-                <div class="flex justify-end"><button @click="addRule" class="btn-base bg-apple-blue text-white hover:bg-blue-600 shadow-lg">添加规则</button></div>
+                <button @click="addRule" class="btn btn-primary w-full">添加规则</button>
             </div>
 
-            <div class="flex justify-between items-center mb-4">
-                <h3 class="font-bold text-surface-500">规则列表 (拖拽排序)</h3>
-                <button x-show="orderChanged" @click="saveOrder" class="btn-base bg-apple-green text-white animate-bounce shadow-lg">保存顺序</button>
-            </div>
-
+            <!-- Rule List -->
             <div class="space-y-3">
-                <template x-for="(rule, index) in rules.distribution_rules" :key="rule.name">
-                    <div class="glass-card p-4 draggable-source flex items-start gap-4 relative group hover:border-apple-blue/30"
-                         draggable="true" @dragstart="dragStart($event, index)" @dragover="dragOver($event)" @drop="drop($event, index)" 
-                         :class="{'dragging': draggingIndex === index}">
-                        
-                        <div class="flex flex-col items-center justify-center w-8 pt-1 text-surface-400 cursor-grab">
-                            <span class="text-xl">≡</span>
-                            <span class="text-xs font-mono font-bold" x-text="'#'+(index+1)"></span>
-                        </div>
-                        
-                        <div class="flex-grow">
-                            <div class="flex items-center gap-3 mb-2">
-                                <h4 class="font-bold text-lg text-surface-900 dark:text-white" x-text="rule.name"></h4>
-                                <span class="text-xs px-2 py-0.5 rounded bg-surface-200 dark:bg-surface-700 text-surface-600 dark:text-surface-300 font-mono" x-text="rule.target_identifier"></span>
-                                <span x-show="rule.topic_id" class="text-xs px-2 py-0.5 rounded bg-apple-purple/10 text-apple-purple font-mono" x-text="'Topic: '+rule.topic_id"></span>
+                <template x-for="(rule, idx) in data.distribution_rules" :key="idx">
+                    <div class="glass p-4 flex flex-col md:flex-row gap-4 items-center group">
+                        <div class="w-8 text-center font-mono text-gray-400 font-bold" x-text="'#'+(idx+1)"></div>
+                        <div class="flex-grow w-full">
+                            <div class="flex justify-between items-start">
+                                <h4 class="font-bold text-lg" x-text="rule.name"></h4>
+                                <div class="flex gap-2 opacity-0 group-hover:opacity-100 transition">
+                                    <button @click="openEdit(rule)" class="text-blue-500 text-sm font-bold px-2">编辑</button>
+                                    <button @click="removeRule(rule.name)" class="text-red-500 text-sm font-bold px-2">删除</button>
+                                </div>
                             </div>
-                            <div class="flex flex-wrap gap-2 text-xs">
-                                <template x-for="k in rule.all_keywords"><span class="badge badge-blue" x-text="k"></span></template>
-                                <template x-for="k in rule.any_keywords"><span class="badge badge-purple" x-text="k"></span></template>
-                                <template x-for="k in rule.file_name_patterns"><span class="badge badge-yellow" x-text="k"></span></template>
+                            <div class="flex gap-2 mt-1 mb-2">
+                                <span class="px-2 py-0.5 rounded bg-gray-100 dark:bg-gray-800 text-xs font-mono" x-text="rule.target_identifier"></span>
+                                <span x-show="rule.topic_id" class="px-2 py-0.5 rounded bg-purple-500/10 text-purple-500 text-xs font-mono" x-text="'T:'+rule.topic_id"></span>
                             </div>
-                        </div>
-                        
-                        <div class="flex flex-col gap-2 shrink-0 w-20">
-                            <button @click="openEditModal(rule)" class="btn-sm bg-blue-500 text-white hover:bg-blue-600 shadow-sm">编辑</button>
-                            <button @click="removeRule(rule.name)" class="btn-sm bg-red-500 text-white hover:bg-red-600 shadow-sm">删除</button>
+                            <div class="text-xs text-gray-500 space-x-2">
+                                <span x-show="rule.all_keywords.length">AND: <span x-text="rule.all_keywords.join(', ')"></span></span>
+                                <span x-show="rule.any_keywords.length">OR: <span x-text="rule.any_keywords.join(', ')"></span></span>
+                            </div>
                         </div>
                     </div>
                 </template>
             </div>
         </div>
 
-        <!-- Tab: 过滤与替换 -->
-        <div x-show="currentTab === 'filter_replace'" x-cloak class="grid grid-cols-1 md:grid-cols-2 gap-6">
-            <div class="glass-card p-6">
-                <div class="flex justify-between items-center mb-6 pb-4 border-b border-surface-200 dark:border-white/10">
-                    <div class="flex items-center gap-3">
-                        <div class="p-2 bg-apple-teal/10 rounded-lg text-apple-teal"><svg class="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 11H5m14 0a2 2 0 012 2v6a2 2 0 01-2 2H5a2 2 0 01-2-2v-6a2 2 0 012-2m14 0V9a2 2 0 00-2-2M5 11V9a2 2 0 012-2m0 0V5a2 2 0 012-2h6a2 2 0 012 2v2M7 7h10"></path></svg></div>
-                        <h3 class="font-bold text-lg text-surface-900 dark:text-white">内容过滤</h3>
-                    </div>
-                    <label class="relative inline-flex items-center cursor-pointer">
-                        <input type="checkbox" class="sr-only peer" x-model="content_filter.enable">
-                        <div class="w-11 h-6 bg-surface-300 peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-gray-300 after:border after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-apple-green"></div>
-                    </label>
-                </div>
-                <div class="space-y-4">
-                    <div>
-                        <label class="text-xs font-bold text-surface-500 uppercase mb-1 block">最小有效长度</label>
-                        <input type="number" x-model="content_filter.min_meaningful_length" class="app-input">
-                    </div>
-                    <div>
-                        <label class="text-xs font-bold text-surface-500 uppercase mb-1 block">无意义词汇 (每行一个)</label>
-                        <textarea x-model="content_filter.meaningless_text" rows="5" class="form-textarea font-mono text-sm"></textarea>
-                    </div>
-                    <button @click="saveContentFilter" class="btn-base bg-apple-teal text-white hover:bg-teal-500 w-full shadow-lg">保存配置</button>
-                </div>
+        <!-- Tab: Filter/Replace, Blacklist, Whitelist, Settings (Simplified structure for brevity, logic same) -->
+        <div x-show="['blacklist','whitelist','filter_replace','settings'].includes(tab)" class="page-enter">
+            <div class="flex items-center gap-4 mb-6">
+                <button @click="tab='status'" class="btn bg-gray-200 dark:bg-gray-700 text-sm">← 返回仪表盘</button>
+                <h2 class="text-xl font-bold capitalize" x-text="tabNameMap[tab]"></h2>
             </div>
             
-            <div class="glass-card p-6">
-                <div class="flex justify-between items-center mb-6 pb-4 border-b border-surface-200 dark:border-white/10">
-                    <div class="flex items-center gap-3">
-                        <div class="p-2 bg-apple-purple/10 rounded-lg text-apple-purple"><svg class="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z"></path></svg></div>
-                        <h3 class="font-bold text-lg text-surface-900 dark:text-white">文本替换</h3>
+            <!-- Blacklist -->
+            <div x-show="tab==='blacklist'" class="glass p-6">
+                 <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
+                     <div><label class="text-xs font-bold text-gray-500">中文匹配</label><textarea x-model="blacklist.substring" rows="5" class="input-field mt-1"></textarea></div>
+                     <div><label class="text-xs font-bold text-gray-500">英文全词</label><textarea x-model="blacklist.word" rows="5" class="input-field mt-1"></textarea></div>
+                 </div>
+                 <button @click="saveBlacklist" class="btn btn-primary mt-4 w-full bg-red-500 hover:bg-red-600">保存黑名单</button>
+            </div>
+
+            <!-- Whitelist -->
+            <div x-show="tab==='whitelist'" class="glass p-6">
+                <textarea x-model="whitelist.keywords" rows="10" class="input-field" placeholder="每行一个关键词..."></textarea>
+                <button @click="saveWhitelist" class="btn btn-primary mt-4 w-full bg-green-500 hover:bg-green-600">保存白名单</button>
+            </div>
+
+            <!-- Filter & Replace -->
+            <div x-show="tab==='filter_replace'" class="space-y-6">
+                <div class="glass p-6">
+                    <h3 class="font-bold mb-3">内容过滤</h3>
+                    <div class="flex gap-4 mb-3 items-center">
+                        <span class="text-sm">启用:</span> <input type="checkbox" x-model="content_filter.enable" class="w-5 h-5">
+                        <span class="text-sm ml-4">最小长度:</span> <input type="number" x-model="content_filter.min_meaningful_length" class="input-field w-24 py-1">
                     </div>
-                    <button @click="saveReplacements" class="btn-sm bg-apple-purple text-white hover:bg-purple-600 w-auto px-4 shadow-sm">保存规则</button>
+                    <textarea x-model="content_filter.meaningless_text" rows="3" class="input-field" placeholder="无意义词汇 (每行一个)"></textarea>
+                    <button @click="saveContentFilter" class="btn btn-primary mt-3 w-full">保存过滤配置</button>
                 </div>
-                <div class="space-y-3 max-h-[400px] overflow-y-auto pr-2">
-                    <template x-for="(item, idx) in replacements_list" :key="idx">
-                        <div class="flex gap-2 items-center">
-                            <input x-model="item.key" class="app-input py-1.5 text-sm" placeholder="原文本">
-                            <span class="text-surface-400">→</span>
-                            <input x-model="item.val" class="app-input py-1.5 text-sm" placeholder="新文本">
-                            <button @click="removeRepRow(idx)" class="text-surface-400 hover:text-apple-red px-2">×</button>
-                        </div>
-                    </template>
-                    <button @click="addRepRow" class="w-full py-2 border-2 border-dashed border-surface-300 dark:border-surface-700 rounded-lg text-surface-500 hover:border-apple-blue hover:text-apple-blue transition font-bold text-sm">+ 添加替换规则</button>
+                <div class="glass p-6">
+                    <h3 class="font-bold mb-3">文本替换</h3>
+                    <div class="space-y-2 mb-3">
+                        <template x-for="(r, i) in replacements_list" :key="i">
+                            <div class="flex gap-2">
+                                <input x-model="r.key" class="input-field py-1" placeholder="原文本">
+                                <span class="self-center">→</span>
+                                <input x-model="r.val" class="input-field py-1" placeholder="新文本">
+                                <button @click="replacements_list.splice(i,1)" class="text-red-500 px-2">×</button>
+                            </div>
+                        </template>
+                    </div>
+                    <button @click="replacements_list.push({key:'',val:''})" class="text-sm text-blue-500 font-bold">+ 添加规则</button>
+                    <button @click="saveReplacements" class="btn btn-primary mt-3 w-full">保存替换配置</button>
                 </div>
             </div>
-        </div>
 
-        <!-- Tab: 黑名单 -->
-        <div x-show="currentTab === 'blacklist'" x-cloak class="glass-card p-6">
-            <div class="flex justify-between mb-6 border-b border-surface-200 dark:border-white/10 pb-4"><h3 class="font-bold text-lg text-apple-red">⛔ 广告黑名单</h3><button @click="saveBlacklist" class="btn-base bg-apple-red text-white hover:bg-red-600 shadow-lg">保存更改</button></div>
-            <div class="grid grid-cols-1 md:grid-cols-2 gap-6"><div class="space-y-2"><label class="text-xs font-bold text-surface-500 uppercase">中文/部分匹配</label><textarea x-model="blacklist.substring" rows="6" class="form-textarea font-mono text-xs"></textarea></div><div class="space-y-2"><label class="text-xs font-bold text-surface-500 uppercase">英文/全词匹配</label><textarea x-model="blacklist.word" rows="6" class="form-textarea font-mono text-xs"></textarea></div><div class="space-y-2"><label class="text-xs font-bold text-surface-500 uppercase">文件名过滤</label><textarea x-model="blacklist.file" rows="6" class="form-textarea font-mono text-xs"></textarea></div><div class="space-y-2"><label class="text-xs font-bold text-surface-500 uppercase">正则表达式</label><textarea x-model="blacklist.regex" rows="6" class="form-textarea font-mono text-xs"></textarea></div></div>
-        </div>
-
-        <!-- Tab: 白名单 -->
-        <div x-show="currentTab === 'whitelist'" x-cloak class="glass-card p-6 border-t-4 border-apple-green">
-            <div class="flex justify-between mb-6 border-b border-surface-200 dark:border-white/10 pb-4"><h3 class="font-bold text-lg text-apple-green">✅ 必发白名单</h3><button @click="saveWhitelist" class="btn-base bg-apple-green text-white hover:bg-green-600 shadow-lg">保存更改</button></div>
-            <textarea x-model="whitelist.keywords" rows="10" class="form-textarea font-mono text-sm" placeholder="每行一个关键词..."></textarea>
-        </div>
-
-        <!-- Tab: 设置 -->
-        <div x-show="currentTab === 'settings'" x-cloak class="glass-card p-8 max-w-2xl mx-auto">
-            <h3 class="text-xl font-bold mb-8 text-surface-900 dark:text-white">系统核心设置</h3>
-            <div class="space-y-8">
+            <!-- Settings -->
+            <div x-show="tab==='settings'" class="glass p-8 max-w-2xl mx-auto space-y-6">
                 <div>
-                    <label class="block text-sm font-bold text-surface-500 mb-3">转发模式</label>
+                    <label class="block text-sm font-bold text-gray-500 mb-2">转发模式</label>
                     <div class="grid grid-cols-2 gap-4">
-                        <label class="cursor-pointer h-full">
-                            <input type="radio" value="copy" x-model="settings.forwarding_mode" class="sr-only peer">
-                            <div class="h-full flex items-center justify-center p-4 rounded-xl border-2 border-surface-200 dark:border-surface-700 peer-checked:border-apple-blue peer-checked:bg-apple-blue/10 transition-all font-bold text-surface-700 dark:text-surface-300 text-center">
-                                复制模式 (Copy)
-                            </div>
-                        </label>
-                        <label class="cursor-pointer h-full">
-                            <input type="radio" value="forward" x-model="settings.forwarding_mode" class="sr-only peer">
-                            <div class="h-full flex items-center justify-center p-4 rounded-xl border-2 border-surface-200 dark:border-surface-700 peer-checked:border-apple-blue peer-checked:bg-apple-blue/10 transition-all font-bold text-surface-700 dark:text-surface-300 text-center">
-                                转发模式 (Forward)
-                            </div>
-                        </label>
+                        <div @click="settings.forwarding_mode='copy'" :class="settings.forwarding_mode=='copy'?'border-blue-500 bg-blue-500/10 text-blue-500':''" class="border-2 border-transparent bg-gray-100 dark:bg-gray-800 p-4 rounded-xl text-center font-bold cursor-pointer transition">Copy (复制)</div>
+                        <div @click="settings.forwarding_mode='forward'" :class="settings.forwarding_mode=='forward'?'border-blue-500 bg-blue-500/10 text-blue-500':''" class="border-2 border-transparent bg-gray-100 dark:bg-gray-800 p-4 rounded-xl text-center font-bold cursor-pointer transition">Forward (转发)</div>
                     </div>
                 </div>
-                
-                <div><label class="block text-sm font-bold text-surface-500 mb-3">去重记录保留天数</label><div class="flex items-center gap-4 bg-surface-100 dark:bg-surface-800 p-4 rounded-xl"><input type="range" min="1" max="60" x-model="settings.dedup_retention_days" class="flex-grow h-2 bg-surface-300 rounded-lg appearance-none cursor-pointer accent-apple-blue"><span class="font-mono font-bold text-apple-blue w-16 text-right" x-text="settings.dedup_retention_days+' 天'"></span></div></div>
-                <div class="space-y-4 text-surface-700 dark:text-surface-300"><label class="flex items-center justify-between p-4 rounded-xl bg-surface-100 dark:bg-surface-800 cursor-pointer"><span class="font-medium">只处理新消息</span><input type="checkbox" x-model="settings.forward_new_only" class="w-5 h-5 accent-apple-blue rounded"></label><label class="flex items-center justify-between p-4 rounded-xl bg-surface-100 dark:bg-surface-800 cursor-pointer"><span class="font-medium">源频道自动已读</span><input type="checkbox" x-model="settings.mark_as_read" class="w-5 h-5 accent-apple-blue rounded"></label><label class="flex items-center justify-between p-4 rounded-xl bg-surface-100 dark:bg-surface-800 cursor-pointer"><span class="font-medium">目标频道自动已读</span><input type="checkbox" x-model="settings.mark_target_as_read" class="w-5 h-5 accent-apple-blue rounded"></label></div>
-                <button @click="saveSettings" class="btn-base bg-apple-blue text-white hover:bg-blue-600 w-full py-3 text-lg shadow-lg">保存所有设置</button>
+                <div>
+                    <label class="block text-sm font-bold text-gray-500 mb-2">去重记录保留 (天)</label>
+                    <input type="range" min="1" max="60" x-model="settings.dedup_retention_days" class="w-full accent-blue-500">
+                    <div class="text-right font-mono text-blue-500 font-bold" x-text="settings.dedup_retention_days"></div>
+                </div>
+                <div class="space-y-3">
+                    <label class="flex items-center justify-between p-3 bg-gray-50 dark:bg-gray-800 rounded-lg"><span class="font-medium">只处理新消息</span><input type="checkbox" x-model="settings.forward_new_only" class="w-5 h-5"></label>
+                    <label class="flex items-center justify-between p-3 bg-gray-50 dark:bg-gray-800 rounded-lg"><span class="font-medium">源频道自动已读</span><input type="checkbox" x-model="settings.mark_as_read" class="w-5 h-5"></label>
+                    <label class="flex items-center justify-between p-3 bg-gray-50 dark:bg-gray-800 rounded-lg"><span class="font-medium">目标频道自动已读</span><input type="checkbox" x-model="settings.mark_target_as_read" class="w-5 h-5"></label>
+                </div>
+                <button @click="saveSettings" class="btn btn-primary w-full py-3 text-lg">保存系统设置</button>
             </div>
         </div>
-
-    </div>
-
-    <!-- Toast -->
-    <div class="fixed top-6 right-6 z-50 flex flex-col gap-2 pointer-events-none">
-        <template x-for="t in toasts" :key="t.id">
-            <div x-show="t.visible" x-transition:enter="transition ease-out duration-300 transform" x-transition:enter-start="translate-x-full opacity-0" x-transition:enter-end="translate-x-0 opacity-100" x-transition:leave="transition ease-in duration-200" x-transition:leave-start="opacity-100" x-transition:leave-end="opacity-0 translate-x-full" class="glass-panel px-4 py-3 rounded-xl shadow-2xl flex items-center gap-3 pointer-events-auto border-l-4 min-w-[250px]" :class="t.type==='success'?'border-apple-green':(t.type==='error'?'border-apple-red':'border-apple-blue')"><div :class="t.type==='success'?'text-apple-green':(t.type==='error'?'text-apple-red':'text-apple-blue')" class="text-lg">●</div><div><div class="font-bold text-sm text-surface-900 dark:text-white" x-text="t.title"></div><div class="text-xs text-surface-500" x-text="t.message"></div></div></div>
-        </template>
     </div>
 
     <!-- Edit Modal -->
-    <div x-show="showEditModal" x-transition.opacity class="fixed inset-0 z-50 flex items-center justify-center login-overlay">
-        <div class="glass-panel p-8 rounded-3xl w-full max-w-3xl m-4 relative shadow-2xl" @click.outside="showEditModal = false">
-            <div class="flex justify-between items-center mb-6"><h3 class="text-2xl font-bold text-surface-900 dark:text-white">编辑规则</h3><button @click="showEditModal = false" class="p-2 rounded-full hover:bg-surface-200 dark:hover:bg-surface-700 transition text-surface-500">✕</button></div>
-            <div class="grid grid-cols-1 md:grid-cols-3 gap-4 mb-4"><input x-model="editRuleData.name" placeholder="规则名称" class="app-input"><input x-model="editRuleData.target" placeholder="目标 ID" class="app-input"><input x-model="editRuleData.topic" type="number" placeholder="Topic" class="app-input"></div>
-            <div class="grid grid-cols-1 md:grid-cols-3 gap-4 mb-8"><textarea x-model="editRuleData.all_kw" rows="6" class="form-textarea" placeholder="[AND] 关键词"></textarea><textarea x-model="editRuleData.any_kw" rows="6" class="form-textarea" placeholder="[OR] 关键词"></textarea><textarea x-model="editRuleData.files" rows="6" class="form-textarea" placeholder="文件名"></textarea></div>
-            <div class="flex justify-end gap-3"><button @click="showEditModal = false" class="px-6 py-2 rounded-full border border-surface-300 dark:border-surface-600 hover:bg-surface-100 dark:hover:bg-surface-800 transition font-bold text-surface-600 dark:text-surface-300">取消</button><button @click="saveEditedRule" class="btn-base bg-apple-blue text-white hover:bg-blue-600 shadow-lg">保存修改</button></div>
+    <div x-show="editModal" class="fixed inset-0 z-50 flex items-center justify-center bg-black/50 backdrop-blur-sm" x-transition.opacity>
+        <div class="glass p-8 w-full max-w-2xl relative">
+            <h3 class="text-2xl font-bold mb-6">编辑规则</h3>
+            <div class="grid grid-cols-3 gap-4 mb-4">
+                <input x-model="editRule.name" placeholder="名称" class="input-field">
+                <input x-model="editRule.target" placeholder="Target ID" class="input-field">
+                <input x-model="editRule.topic" placeholder="Topic" class="input-field">
+            </div>
+            <div class="grid grid-cols-3 gap-4 mb-6">
+                <textarea x-model="editRule.all_kw" class="input-field h-24" placeholder="AND Keywords"></textarea>
+                <textarea x-model="editRule.any_kw" class="input-field h-24" placeholder="OR Keywords"></textarea>
+                <textarea x-model="editRule.files" class="input-field h-24" placeholder="Files"></textarea>
+            </div>
+            <div class="flex justify-end gap-3">
+                <button @click="editModal=false" class="btn bg-gray-200 dark:bg-gray-700 text-gray-600 dark:text-gray-300">取消</button>
+                <button @click="doSaveRule" class="btn btn-primary">保存</button>
+            </div>
         </div>
     </div>
 
     <script>
-        const SafeStorage = { getItem(k) { try { return localStorage.getItem(k); } catch(e) { return null; } }, setItem(k, v) { try { localStorage.setItem(k, v); } catch(e) {} }, removeItem(k) { try { localStorage.removeItem(k); } catch(e) {} } };
-        
+        const api = {
+            get: async (url) => (await fetch(url, { headers: { 'Authorization': 'Basic ' + btoa('admin:' + localStorage.getItem('pwd')) } })).json(),
+            post: async (url, data) => (await fetch(url, { method: 'POST', headers: { 'Authorization': 'Basic ' + btoa('admin:' + localStorage.getItem('pwd')), 'Content-Type': 'application/json' }, body: JSON.stringify(data) })).json()
+        };
+
         function app() {
             return {
-                authenticated: false, password: '', loading: false, loadingData: false,
-                theme: 'dark', 
-                currentTab: 'status',
-                stats: {}, rules: { sources: [], distribution_rules: [] },
-                settings: { dedup_retention_days: 30, forwarding_mode: 'copy', forward_new_only: true, mark_as_read: false, mark_target_as_read: false, default_target: '', default_topic_id: null },
-                blacklist: { substring: '', word: '', file: '', regex: '' }, whitelist: { keywords: '' },
-                content_filter: { enable: true, meaningless_words: [], min_meaningful_length: 5 },
-                replacements: {}, replacements_list: [],
-                draggingIndex: null, orderChanged: false,
-                showEditModal: false, editRuleData: {},
-                newSource: '', newRule: { name: '', target: '', topic: '', all_kw: '', any_kw: '', files: '' }, toasts: [],
-                refreshInterval: null,
+                auth: false, password: '', loading: false, theme: 'dark', tab: 'status', editModal: false,
+                stats: {}, data: { sources: [], distribution_rules: [] }, settings: {},
+                blacklist: {substring:'', word:'', file:'', regex:''}, whitelist: {keywords:''}, 
+                content_filter: {enable:true, meaningless_text:'', min_meaningful_length:5},
+                replacements_list: [],
+                newSource: '', newRule: {name:'', target:'', topic:'', all_kw:'', any_kw:'', files:''},
+                editRule: {}, editOriginalName: '',
                 
-                tabs: [
-                    { id: 'status', name: '状态概览' }, { id: 'sources', name: '监控源' }, 
-                    { id: 'rules', name: '转发规则' }, { id: 'filter_replace', name: '过滤与替换' },
-                    { id: 'blacklist', name: '黑名单' }, { id: 'whitelist', name: '白名单' },
-                    { id: 'settings', name: '系统设置' }
-                ],
+                tabNameMap: {'blacklist':'黑名单', 'whitelist':'白名单', 'filter_replace':'过滤与替换', 'settings':'系统设置'},
 
-                // --- Utils ---
-                arrayToText(arr) { return (arr || []).join('\n'); },
-                textToArray(text) { if (!text) return []; return text.split('\n').map(s => s.trim()).filter(Boolean); },
-                getAvatar(source) {
-                    const name = source.cached_title || source.identifier || '?';
-                    const initials = name.substring(0, 2).toUpperCase();
-                    let hash = 0; for (let i = 0; i < initials.length; i++) hash = initials.charCodeAt(i) + ((hash << 5) - hash);
-                    const colors = ['bg-apple-blue text-white', 'bg-apple-green text-white', 'bg-apple-purple text-white', 'bg-apple-pink text-white', 'bg-apple-orange text-white'];
-                    const colorClass = colors[Math.abs(hash) % colors.length];
-                    let imgUrl = null; let username = '';
-                    const idStr = String(source.identifier);
-                    if (idStr.startsWith('https://t.me/')) { const parts = idStr.split('/'); username = parts[parts.length - 1] || parts[parts.length - 2]; } 
-                    else if (idStr.startsWith('@')) { username = idStr.substring(1); }
-                    if (username) imgUrl = `https://t.me/i/userpic/320/${username}.jpg`;
-                    return { text: initials, class: colorClass, img: imgUrl, displayName: name };
-                },
-                
-                // --- Theme Logic ---
-                applyTheme(theme) {
-                    const root = document.documentElement;
-                    const isDark = theme === 'dark' || (theme === 'system' && window.matchMedia('(prefers-color-scheme: dark)').matches);
-                    if (isDark) root.classList.add('dark'); else root.classList.remove('dark');
-                    this.theme = theme;
-                },
-
-                toggleTheme() { 
-                    const modes = ['light', 'dark', 'system'];
-                    const nextIndex = (modes.indexOf(this.theme) + 1) % modes.length;
-                    const nextTheme = modes[nextIndex];
-                    this.applyTheme(nextTheme);
-                    SafeStorage.setItem('theme', nextTheme); 
-                },
-
-                switchTab(id) { this.currentTab = id; },
-                showToast(t, m='', type='success') { const id = Date.now(); this.toasts.push({id, title:t, message:m, type, visible:true}); setTimeout(()=>this.toasts.find(x=>x.id===id).visible=false, 3000); },
-                
-                // --- Core ---
-                async initApp() { 
-                    const savedTheme = SafeStorage.getItem('theme') || 'system';
-                    this.applyTheme(savedTheme);
-
-                    window.matchMedia('(prefers-color-scheme: dark)').addEventListener('change', e => {
-                        if (this.theme === 'system') this.applyTheme('system');
-                    });
-
-                    const savedPwd = SafeStorage.getItem('tgf_pwd'); 
-                    if (savedPwd) { this.password = savedPwd; await this.login(); }
+                async init() {
+                    const saved = localStorage.getItem('pwd');
+                    this.theme = localStorage.getItem('theme') || 'dark';
+                    this.applyTheme();
+                    if (saved) { this.password = saved; await this.login(); }
                     
-                    setInterval(() => { if (this.authenticated && !document.hidden) this.fetchAllData(false); }, 5000);
-                },
-                
-                async login() { this.loading = true; try { const headers = { 'Authorization': 'Basic ' + btoa('admin:' + this.password) }; const res = await fetch('/api/rules', { headers }); if (res.status === 401) throw new Error('密码错误'); if (!res.ok) throw new Error(`连接失败 (${res.status})`); this.authenticated = true; SafeStorage.setItem('tgf_pwd', this.password); await this.fetchAllData(); this.showToast('欢迎回来', '系统已就绪'); } catch (e) { if (e.message === '密码错误') { this.password = ''; SafeStorage.removeItem('tgf_pwd'); } this.showToast('登录失败', e.message, 'error'); } finally { this.loading = false; } },
-                async api(url, method = 'GET', body = null) {
-                    const headers = { 'Authorization': 'Basic ' + btoa('admin:' + this.password), 'Content-Type': 'application/json' };
-                    const opts = { method, headers }; if (body) opts.body = JSON.stringify(body);
-                    const res = await fetch(url, opts); if (!res.ok) throw new Error(`API Error: ${res.status}`); return await res.json();
-                },
-                
-                async fetchAllData(showLoading = false) {
-                    if(showLoading) this.loadingData = true;
-                    try {
-                        const [rules, stats, sysSettings, bl, wl, cf, rep] = await Promise.all([
-                            this.api('/api/rules'), this.api('/api/stats'), this.api('/api/settings'),
-                            this.api('/api/blacklist'), this.api('/api/whitelist'),
-                            this.api('/api/content_filter'), this.api('/api/replacements')
-                        ]);
-                        this.rules = rules; this.stats = stats || {}; this.settings = sysSettings;
-                        this.blacklist.substring = this.arrayToText(bl.keywords_substring);
-                        this.blacklist.word = this.arrayToText(bl.keywords_word);
-                        this.blacklist.file = this.arrayToText(bl.file_name_keywords);
-                        this.blacklist.regex = this.arrayToText(bl.patterns);
-                        this.whitelist.keywords = this.arrayToText(wl.keywords);
-                        this.content_filter = cf; this.content_filter.meaningless_text = this.arrayToText(cf.meaningless_words);
-                        this.replacements = rep; this.replacements_list = Object.entries(rep).map(([k,v]) => ({key:k, val:v}));
-                    } catch (e) { if(showLoading) this.showToast('数据同步失败', e.message, 'error'); } 
-                    finally { if(showLoading) this.loadingData = false; }
+                    // Auto refresh
+                    setInterval(() => { if(this.auth && !document.hidden) this.refresh(false); }, 5000);
                 },
 
-                // --- Actions ---
-                promptReload(msg) { this.showToast(msg, '请在 Bot 发送 /reload 生效', 'success'); setTimeout(() => this.fetchAllData(true), 1000); },
-                async saveSettings() { try { await this.api('/api/settings/update', 'POST', this.settings); this.promptReload('配置已保存'); } catch(e) { this.showToast('保存失败', e.message, 'error'); } },
-                async saveDefaultTarget() { try { await this.api('/api/settings/update', 'POST', this.settings); this.promptReload('默认目标已更新'); } catch(e) { this.showToast('保存失败', e.message, 'error'); } },
-                async addSource() { try { await this.api('/api/sources/add', 'POST', { identifier: this.newSource }); this.newSource = ''; this.promptReload('监控源已添加'); } catch(e) { this.showToast('添加失败', e.message, 'error'); } },
-                async removeSource(id) { if (!confirm('确认删除?')) return; try { await this.api('/api/sources/remove', 'POST', { identifier: id }); this.promptReload('已删除'); } catch(e) {} },
-                async addRule() { const payload = this.buildRulePayload(this.newRule); try { await this.api('/api/rules/add', 'POST', payload); this.newRule = {name:'', target:'', topic:'', all_kw:'', any_kw:'', files:''}; this.promptReload('规则已添加'); } catch(e) { this.showToast('添加失败', e.message, 'error'); } },
-                async saveEditedRule() { const payload = this.buildRulePayload(this.editRuleData); try { const url = `/api/rules/update_single?name_to_replace=${encodeURIComponent(this.editRuleData.original_name)}`; await this.api(url, 'POST', payload); this.showEditModal = false; this.promptReload('规则已更新'); } catch(e) { this.showToast('更新失败', e.message, 'error'); } },
-                buildRulePayload(data) { return { name: data.name, target_identifier: data.target, topic_id: data.topic ? parseInt(data.topic) : null, all_keywords: this.textToArray(data.all_kw), any_keywords: this.textToArray(data.any_kw), file_name_patterns: this.textToArray(data.files) }; },
-                openEditModal(rule) { this.editRuleData = { name: rule.name, original_name: rule.name, target: rule.target_identifier, topic: rule.topic_id, all_kw: this.arrayToText(rule.all_keywords), any_kw: this.arrayToText(rule.any_keywords), files: this.arrayToText(rule.file_name_patterns) }; this.showEditModal = true; },
-                async removeRule(name) { if(!confirm('删除?')) return; try { await this.api('/api/rules/remove', 'POST', { name }); this.promptReload('已删除'); } catch(e) {} },
-                dragStart(e, idx) { this.draggingIndex = idx; e.dataTransfer.effectAllowed = 'move'; }, dragOver(e) { e.preventDefault(); }, drop(e, dropIdx) { const dragIdx = this.draggingIndex; if (dragIdx === null || dragIdx === dropIdx) return; const item = this.rules.distribution_rules.splice(dragIdx, 1)[0]; this.rules.distribution_rules.splice(dropIdx, 0, item); this.draggingIndex = null; this.orderChanged = true; },
-                async saveOrder() { try { const names = this.rules.distribution_rules.map(r => r.name); await this.api('/api/rules/reorder', 'POST', {names}); this.promptReload('顺序已保存'); this.orderChanged = false; } catch(e) { this.showToast('保存失败', e.message, 'error'); } },
-                async saveBlacklist() { try { const payload = { enable: true, keywords_substring: this.textToArray(this.blacklist.substring), keywords_word: this.textToArray(this.blacklist.word), file_name_keywords: this.textToArray(this.blacklist.file), patterns: this.textToArray(this.blacklist.regex) }; await this.api('/api/blacklist/update', 'POST', payload); this.promptReload('黑名单已更新'); } catch(e) { this.showToast('保存失败', '', 'error'); } },
-                async saveWhitelist() { try { await this.api('/api/whitelist/update', 'POST', { enable: true, keywords: this.textToArray(this.whitelist.keywords) }); this.promptReload('白名单已更新'); } catch(e) {} },
-                async saveContentFilter() { try { const payload = { enable: this.content_filter.enable, min_meaningful_length: parseInt(this.content_filter.min_meaningful_length), meaningless_words: this.textToArray(this.content_filter.meaningless_text) }; await this.api('/api/content_filter/update', 'POST', payload); this.promptReload('配置已更新'); } catch(e) { this.showToast('保存失败', '', 'error'); } },
-                async saveReplacements() { try { const repMap = {}; this.replacements_list.forEach(i => { if(i.key) repMap[i.key] = i.val; }); await this.api('/api/replacements/update', 'POST', repMap); this.promptReload('规则已更新'); } catch(e) { this.showToast('保存失败', '', 'error'); } },
-                addRepRow() { this.replacements_list.push({key:'', val:''}); }, removeRepRow(idx) { this.replacements_list.splice(idx, 1); },
+                applyTheme() { document.documentElement.className = this.theme; },
+                toggleTheme() { this.theme = this.theme === 'dark' ? 'light' : 'dark'; localStorage.setItem('theme', this.theme); this.applyTheme(); },
+
+                async login() {
+                    this.loading = true;
+                    try {
+                        await api.get('/api/rules'); // Test auth
+                        this.auth = true;
+                        localStorage.setItem('pwd', this.password);
+                        await this.refresh(true);
+                    } catch(e) { alert('Login Failed'); localStorage.removeItem('pwd'); }
+                    this.loading = false;
+                },
+
+                async refresh(full=false) {
+                    if(full) this.loading = true;
+                    try {
+                        const [s, r, sett, bl, wl, cf, rep] = await Promise.all([
+                            api.get('/api/stats'), api.get('/api/rules'), api.get('/api/settings'),
+                            api.get('/api/blacklist'), api.get('/api/whitelist'), 
+                            api.get('/api/content_filter'), api.get('/api/replacements')
+                        ]);
+                        this.stats = s; this.data = r; this.settings = sett;
+                        
+                        // Map complex objects to flat strings for textareas
+                        const join = (arr) => (arr||[]).join('\n');
+                        this.blacklist = { substring: join(bl.keywords_substring), word: join(bl.keywords_word), file: join(bl.file_name_keywords), regex: join(bl.patterns) };
+                        this.whitelist.keywords = join(wl.keywords);
+                        this.content_filter = { ...cf, meaningless_text: join(cf.meaningless_words) };
+                        this.replacements_list = Object.entries(rep).map(([k,v]) => ({key:k, val:v}));
+                        
+                    } catch(e) { console.error(e); }
+                    if(full) this.loading = false;
+                },
+                
+                getAvatar(id) { return (id||'?').substring(0,2).toUpperCase(); },
+                
+                // Actions
+                async addSource() { await api.post('/api/sources/add', { identifier: this.newSource }); this.newSource=''; this.refresh(); },
+                async removeSource(id) { if(confirm('Del?')) { await api.post('/api/sources/remove', { identifier: id }); this.refresh(); } },
+                
+                async addRule() { 
+                    const payload = this.fmtRule(this.newRule); 
+                    await api.post('/api/rules/add', payload); 
+                    this.newRule = {name:'', target:'', topic:'', all_kw:'', any_kw:'', files:''}; 
+                    this.refresh(); 
+                },
+                
+                openEdit(rule) {
+                    const join = (arr) => (arr||[]).join('\n');
+                    this.editRule = { 
+                        name: rule.name, target: rule.target_identifier, topic: rule.topic_id,
+                        all_kw: join(rule.all_keywords), any_kw: join(rule.any_keywords), files: join(rule.file_name_patterns)
+                    };
+                    this.editOriginalName = rule.name;
+                    this.editModal = true;
+                },
+                
+                async doSaveRule() {
+                    const payload = this.fmtRule(this.editRule);
+                    await api.post(`/api/rules/update_single?name_to_replace=${encodeURIComponent(this.editOriginalName)}`, payload);
+                    this.editModal = false;
+                    this.refresh();
+                },
+                
+                async removeRule(name) { if(confirm('Del?')) { await api.post('/api/rules/remove', {name}); this.refresh(); } },
+                
+                fmtRule(d) {
+                    const split = (s) => (s||'').split('\n').map(x=>x.trim()).filter(x=>x);
+                    return {
+                        name: d.name, target_identifier: d.target, topic_id: parseInt(d.topic)||null,
+                        all_keywords: split(d.all_kw), any_keywords: split(d.any_kw), file_name_patterns: split(d.files)
+                    };
+                },
+
+                async saveBlacklist() {
+                    const split = (s) => (s||'').split('\n').map(x=>x.trim()).filter(x=>x);
+                    const payload = { enable:true, keywords_substring: split(this.blacklist.substring), keywords_word: split(this.blacklist.word), file_name_keywords: split(this.blacklist.file), patterns: split(this.blacklist.regex) };
+                    await api.post('/api/blacklist/update', payload); this.refresh();
+                },
+                async saveWhitelist() {
+                    await api.post('/api/whitelist/update', { enable:true, keywords: (this.whitelist.keywords||'').split('\n').filter(x=>x) }); this.refresh();
+                },
+                async saveContentFilter() {
+                    const payload = { ...this.content_filter, meaningless_words: (this.content_filter.meaningless_text||'').split('\n').filter(x=>x) };
+                    await api.post('/api/content_filter/update', payload); this.refresh();
+                },
+                async saveReplacements() {
+                    const map = {}; this.replacements_list.forEach(x => { if(x.key) map[x.key] = x.val; });
+                    await api.post('/api/replacements/update', map); this.refresh();
+                },
+                async saveSettings() {
+                    await api.post('/api/settings/update', this.settings); this.refresh();
+                }
             }
         }
     </script>
