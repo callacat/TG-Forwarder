@@ -192,43 +192,67 @@ class BotService:
             
             await event.reply(output)
 
-        # --- 自动设置 Bot 命令菜单 (修复：中文支持) ---
+        # --- 自动设置 Bot 命令菜单 (修复：防止重复设置 & 语言代码错误) ---
         try:
-            logger.info("正在同步 Bot 命令菜单...")
-            
-            # 英文命令 (默认)
-            en_commands = [
-                BotCommand("status", "Show system dashboard"),
-                BotCommand("reload", "Reload configuration"),
-                BotCommand("ids", "Show source channel IDs"),
-                BotCommand("check", "Run link checker"),
-                BotCommand("start", "Show help message")
-            ]
-            
-            # 中文命令
-            zh_commands = [
-                BotCommand("status", "查看详细运行仪表盘"),
-                BotCommand("reload", "重载配置 (Web修改后点此)"),
-                BotCommand("ids", "显示监控源的真实 ID"),
-                BotCommand("check", "立即运行失效链接检测"),
-                BotCommand("start", "显示帮助信息")
-            ]
-            
-            # 设置默认命令
-            await self.bot(SetBotCommandsRequest(
-                scope=BotCommandScopeDefault(),
-                lang_code="",
-                commands=en_commands
-            ))
+            # 生成当前 Bot 的 Token 签名 (简单的哈希标识)
+            # 逻辑：如果 Token 变了，或者首次运行，才去设置菜单
+            if not self.config.bot_token:
+                return
 
-            # 设置中文命令 (针对 zh-hans, zh-hant, zh 等变体)
-            for lang in ['zh', 'zh-hans', 'zh-hant']:
+            current_token_sig = self.config.bot_token[:10] + "***" + self.config.bot_token[-5:]
+            
+            # 从数据库获取上次设置菜单的 Bot 签名
+            stored_data = await database.get_config_json("bot_command_setup")
+            stored_sig = stored_data.get("token_signature", "")
+
+            # 只有当签名不匹配（新Bot或从未设置过）时才执行
+            if stored_sig != current_token_sig:
+                logger.info(f"检测到 Bot 变更 (或首次运行)，正在初始化命令菜单...")
+                
+                # 英文命令 (默认)
+                en_commands = [
+                    BotCommand("status", "Show system dashboard"),
+                    BotCommand("reload", "Reload configuration"),
+                    BotCommand("ids", "Show source channel IDs"),
+                    BotCommand("check", "Run link checker"),
+                    BotCommand("start", "Show help message")
+                ]
+                
+                # 中文命令
+                zh_commands = [
+                    BotCommand("status", "查看详细运行仪表盘"),
+                    BotCommand("reload", "重载配置 (Web修改后点此)"),
+                    BotCommand("ids", "显示监控源的真实 ID"),
+                    BotCommand("check", "立即运行失效链接检测"),
+                    BotCommand("start", "显示帮助信息")
+                ]
+                
+                # 1. 设置默认命令 (Global)
                 await self.bot(SetBotCommandsRequest(
                     scope=BotCommandScopeDefault(),
-                    lang_code=lang,
-                    commands=zh_commands
+                    lang_code="",
+                    commands=en_commands
                 ))
 
-            logger.info("✅ Bot 命令菜单已同步 (含中文支持)。")
+                # 2. 设置中文命令
+                # Telegram 对 lang_code 校验严格，某些代码可能报错，这里逐个尝试并忽略错误
+                # 常见的有效代码: zh-hans, zh-hant, zh
+                for lang in ['zh', 'zh-hans', 'zh-hant']:
+                    try:
+                        await self.bot(SetBotCommandsRequest(
+                            scope=BotCommandScopeDefault(),
+                            lang_code=lang,
+                            commands=zh_commands
+                        ))
+                    except Exception as e:
+                        # 仅记录 Debug，防止刷屏干扰
+                        logger.debug(f"设置 Bot 菜单语言 '{lang}' 失败 (可忽略): {e}")
+
+                # 3. 更新数据库状态
+                await database.save_config_json("bot_command_setup", {"token_signature": current_token_sig})
+                logger.success("✅ Bot 命令菜单已成功同步。")
+            else:
+                logger.info("Bot 命令菜单已是最新，跳过设置。")
+
         except Exception as e:
-            logger.warning(f"无法设置 Bot 菜单: {e}")
+            logger.warning(f"Bot 命令菜单同步过程出现异常 (不影响核心功能): {e}")

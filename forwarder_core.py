@@ -172,8 +172,10 @@ class UltimateForwarder:
                 "hash_source": message.id
             }
 
-            if self._should_filter(msg_data['text'], msg_data['media']):
-                logger.info(f"消息 {message.id} 被过滤。")
+            # 过滤检查 (返回原因和关键词)
+            filter_reason, filter_keyword = self._should_filter(msg_data['text'], msg_data['media'])
+            if filter_reason:
+                logger.info(f"消息 {message.id} 被过滤。原因: {filter_reason} | 关键词: {filter_keyword}")
                 return 
 
             if await self._is_duplicate(msg_data, f"{numeric_chat_id}/{message.id}"):
@@ -225,7 +227,8 @@ class UltimateForwarder:
     def _compile_word_patterns(self, keywords: List[str]) -> List[re.Pattern]:
         return [re.compile(r'\b' + re.escape(kw) + r'\b', re.IGNORECASE) for kw in keywords]
 
-    def _should_filter(self, text: str, media: Any) -> Optional[str]: 
+    def _should_filter(self, text: str, media: Any) -> Tuple[Optional[str], Optional[str]]: 
+        """检查消息是否应该被过滤，返回 (原因, 匹配的关键词)"""
         text = text or ""
         text_lower = text.lower()
         
@@ -233,34 +236,51 @@ class UltimateForwarder:
         ad_filter = web_server.rules_db.ad_filter
         content_filter = web_server.rules_db.content_filter
         
+        # 1. 白名单检查 (最高优先级)
         if whitelist and whitelist.enable:
             if any(kw.lower() in text_lower for kw in (whitelist.keywords or [])):
-                return None 
+                return None, None 
 
+        # 2. 广告黑名单检查
         if ad_filter and ad_filter.enable:
-            if any(kw.lower() in text_lower for kw in (ad_filter.keywords_substring or [])):
-                return "Blacklist (Substring)"
-            for p in self.ad_keyword_word_patterns:
-                if p.search(text): return "Blacklist (Word)"
-            for p in self.ad_patterns:
-                if p.search(text): return "Blacklist (Regex)"
+            # 子字符串匹配
+            if ad_filter.keywords_substring:
+                for kw in ad_filter.keywords_substring:
+                    if kw.lower() in text_lower:
+                        return "Blacklist (Substring)", kw
             
+            # 全词匹配 (Regex Word Boundary)
+            for p in self.ad_keyword_word_patterns:
+                match = p.search(text)
+                if match: 
+                    return "Blacklist (Word)", match.group(0)
+            
+            # 正则表达式匹配
+            for p in self.ad_patterns:
+                match = p.search(text)
+                if match: 
+                    return "Blacklist (Regex)", p.pattern
+            
+            # 文件名匹配
             if ad_filter.file_name_keywords and media and isinstance(media, MessageMediaDocument):
                  doc = media.document
                  if doc:
                     file_name = next((attr.file_name for attr in doc.attributes if hasattr(attr, 'file_name')), None)
                     if file_name:
-                        if any(kw.lower() in file_name.lower() for kw in ad_filter.file_name_keywords):
-                            return "Blacklist (Filename)"
+                        for kw in ad_filter.file_name_keywords:
+                            if kw.lower() in file_name.lower():
+                                return "Blacklist (Filename)", kw
 
+        # 3. 内容质量过滤
         if content_filter and content_filter.enable:
-            if not text and not media: return "Empty"
+            if not text and not media: 
+                return "Empty", "No Content"
             if text_lower in ([w.lower() for w in content_filter.meaningless_words] or []):
-                return "Meaningless"
+                return "Meaningless", text
             if not media and len(text.strip()) < content_filter.min_meaningful_length:
-                return "Too Short"
+                return "Too Short", f"Len: {len(text.strip())}"
 
-        return None 
+        return None, None
 
     def _get_message_hash(self, message_data: Dict[str, Any]) -> Optional[str]:
         if not self.config.deduplication.enable: return None
