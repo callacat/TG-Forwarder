@@ -1,146 +1,189 @@
-# TG Ultimate Forwarder - 终极 Telegram 转发器
+# TG Ultimate Forwarder (TG 终极转发器)
 
-本项目融合了 [fish2018/tgforwarder](https://github.com/fish2018/TGForwarder) 和 [ccrsrg/tg_zf](https://github.com/CCRSRG/TG_ZF) 的核心优势，并加入了话题分发、多模式转发、相册处理、智能 `copy` 模式以及更多健壮性功能，旨在提供一个稳定、强大且高度可配置的 Telegram 内容聚合工具。
+这是一个功能强大、高度可配置的 Telegram 消息转发与聚合工具。它融合了多账号轮询、智能防重复、高级过滤规则、Web 可视化管理界面以及 Telegram Bot 交互控制等现代化功能。
 
-# ✨ 核心功能
+本项目旨在解决传统转发器功能单一、配置繁琐、容易触发风控等痛点，提供企业级的转发稳定性。
 
-* **多账号支持**: 使用多个账号轮换转发，有效规避 FloodWait 和账号限制。
-* **多源监控**: 可在 `config.yaml` 中配置任意多个源频道。
-* **灵活的标识符**: 源和目标均支持数字ID (-100...)、用户名 (@username) 和链接 (https://t.me/...)。
-* **智能 `copy` 模式 (v5.2)**: 真正的“复制”模式，**完全去除“转发自...”**。
-    * **智能 Markdown**：在 `copy` 模式下，纯文本消息的 Markdown 链接 (`[]()`) 会被保留；带文件的消息会安全发送，避免 API 崩溃。
-* **相册 (Album) 支持 (v4.6)**: 完整转发多图/多文件消息，不再拆分成多条。
-* **高级内容过滤 (v6.0)**:
-    * **全词匹配**: `ad_filter.keywords_word` (如 "ad")，用于英文，避免误伤 "download"。
-    * **子字符串匹配**: 新增 `ad_filter.keywords_substring`，(如 "发财娱乐")，用于中文、词组。
-    * **文件名过滤**: (新) `ad_filter.file_name_keywords` 支持根据文件名（如 "芒果VPN.apk"）过滤广告文件。
-    * **正则表达式**: `ad_filter.patterns` 仍用于高级正则匹配。
-    * **优先级**: 清晰的过滤优先级： 白名单 (高) > 黑名单 (中) > 默认通过 (低)。
-* **精准分发 (v5.0)**:
-    * **话题分发**: 根据关键词将消息精准分发到目标群组的 **不同话题 (Topics)** 中。
-    * **文件名匹配**: 支持 `file_name_patterns: ["*.apk", "*.exe"]` 规则，用于按文件类型分发。
-    * **匹配逻辑**: `(满足所有 all_keywords) AND (满足任一 any_keywords OR 满足任一 file_types OR 满足任一 file_name_patterns)`
-* **Bot 交互控制 (v5.1)**:
-    * 通过私聊或群组（需为管理员且非匿名）实时管理转发器。
-    * `/status`: 查看服务运行状态和账号健康度（包括 FloodWait）。
-    * `/reload`: 热重载 `config.yaml`，无需重启 Docker 容器即可应用新规则。
-    * `/export_sources`: (新) 精确导出你配置的源频道及其解析后的数字 ID。
-    * `/run_checklinks`: 手动触发一次失效链接检测。
-* **健壮性设计**:
-    * **内容去重**: 基于消息哈希防止重复转发。
-    * **断点续传**: 自动记录每个频道的转发进度，重启后不丢失。
-    * **强迫症选项 (v5.6)**:
-        * `mark_as_read: true`: 自动将*源*频道标记为已读。
-        * `mark_target_as_read: true`: 自动将*目标*（非话题）群组标记为已读。
-    * **稳定的依赖**: `Dockerfile` 会自动升级 `pip`，`requirements.txt` 使用稳定的 `apscheduler v3` 版本，避免依赖崩溃。
-* **内容替换 (v5.0)**:
-    * 在消息*发送前*才执行替换，避免了替换内容（如 `**`）干扰过滤规则。
+---
 
-# 🚀 部署指南 (Docker)
+## ✨ 核心亮点
 
-这是最简单、最推荐的部署方式。
+### 1. 强大的转发核心
+- **多账号轮换**: 支持配置多个用户账号 (`User Client`)，转发时自动轮询，有效降低单个账号触发 FloodWait 的风险。
+- **智能 Copy 模式**: 也就是“无痕转发”。支持纯文本、多媒体、相册 (Album) 的完美复制，去除“转发自...”标签。
+- **断点续传与去重**: 基于 SQLite 数据库记录转发进度和消息哈希，重启不丢失进度，且能防止重复消息发送。
+- **话题 (Topic) 分发**: 完美支持 Telegram Forum 功能，可根据规则将消息分发到同一个群组的不同话题中。
 
-1.  **准备配置文件**:
-    * 在你的服务器上创建一个目录，例如` ~/tg_forwarder`。
-    * `mkdir -p ~/tg_forwarder/data` (此目录用于存放 `.session` 登录文件和数据库)
-    * 将 `config_template.yaml` 复制到该目录，并重命名为 `config.yaml`。`
+### 2. 可视化 Web 管理面板
+- **实时仪表盘**: 查看运行时间、在线账号数、消息处理统计、失效链接统计等。
+- **在线配置**: 通过网页直接添加/删除监控源、修改转发规则、编辑黑白名单。
+- **热重载**: 修改配置后，通过 Web 或 Bot 指令即可热重载，无需重启容器。
+- **安全验证**: 内置登录验证，保护你的配置信息。
 
-2.  **创建你的 Bot**:
-    * 私聊 @BotFather，发送 `/newbot`，按提示创建你的 Bot，获取 `bot_token`。
-    * 私聊 @userinfobot，查看回复，获取你自己的 `Id` (一串数字)。
+### 3. 交互式 Bot 控制
+- **运维指令**: 支持 `/status` (状态)、`/reload` (重载)、`/check` (查死链) 等指令。
+- **ID 获取**: 通过 `/ids` 指令快速获取监控源的真实 ID，无需繁琐的手动查询。
 
-3.  **编辑** `config.yaml`:
-    * `docker_container_name`: 填入你下一步 `docker run` 时 `--name` 参数指定的名字 (例如 `tgf`)。
-    * `bot_service`: 填入你刚获取的 `bot_token` 和 `admin_user_ids` (填你自己的数字 ID)。
-    * `accounts`: 填入你的 `api_id, api_hash` 和 `session_name` (例如 `account_1`)。
-    * `sources` / `targets`: 填入你要监控和转发的频道/群组 ID。
+### 4. 高级过滤与处理
+- **多维度过滤**: 支持正则 (`Regex`)、全词匹配、子字符串匹配、文件名匹配。
+- **内容替换**: 在发送前对文本进行替换（如去除广告标签）。
+- **死链检测**: 定时扫描目标频道，检测并标记/删除包含失效网盘链接（百度/阿里/夸克等）的消息。
 
-4.  **运行 Docker 容器**:
-    * (重要) 你必须使用你自己的 Docker Hub 用户名，或者使用 `docker build` 自行构建。
-    * 假设你的镜像是 `dswang2233/tgf:latest`：
+---
 
-    ```bash
-    docker run -d \
-      -it \
-      --name tgf \
-      -v ~/tg_forwarder/config.yaml:/app/config.yaml \
-      -v ~/tg_forwarder/data:/app/data \
-      --restart always \
-      dswang2233/tgf:latest
-    ```
+## 🛠 环境要求
 
-5.  **首次登录 (交互式)**:
-    * 容器启动后，它会在日志中打印 "请在控制台输入手机号..."
-    * 运行 `docker attach tgf` (这里的 `tgf` 必须与你 `--name` 和 `config.yaml` 中设置的一致)。
-    * 你现在进入了容器的交互模式。
-    * 按照提示输入你的**手机号** (例如 `+861234567890`)，按回车。
-    * 输入收到的**验证码**，按回车。
-    * 如果设置了**两步验证密码**，输入密码，按回车。
-    * 登录成功后，你会看到程序开始正常运行。
-    * 按 `Ctrl+P` 然后按 `Ctrl+Q` 来分离 (Detach) 终端，**千万不要按 `Ctrl+C`** (这会停止容器)。
-    * 你的登录文件 (`.session`) 现已保存在 `~/tg_forwarder/data` 目录中，下次重启容器将自动登录。
+- **Docker** (推荐)
+- 或者 Python 3.13+ (如果你选择源码部署)
+- Telegram API ID & Hash (获取自 [my.telegram.org](https://my.telegram.org))
+- Telegram Bot Token (获取自 [@BotFather](https://t.me/BotFather))
 
-# ⚙️ 配置文件陷阱 (必读)
+---
 
-* **`replacements` (内容替换)**:
-    * **正确用法** (删除 "#ad"):
-        ```yaml
-        replacements:
-          "#ad": ""
-        ```
-    * **危险用法** (不要用!):
-        ```yaml
-        replacements:
-          "": "#ad"  # 错误! 这会把 "hi" 变成 "#ah#ai#a"
-        ```
+## 🚀 Docker 快速部署 (推荐)
 
-* **`ad_filter` (广告过滤)**:
-    * `keywords:`: 使用**全词匹配**。`"ad"` 只会匹配单词 "ad"，不会匹配 "download"。
-    * `patterns:`: 使用**正则表达式**。
+### 1. 准备目录与配置
+创建一个部署目录，并准备 `config.yaml` 文件。
 
-* **`distribution_rules` (分发规则)**:
-    * 逻辑是： `(ALL keywords) AND (ANY keywords OR ANY file_types OR ANY file_name_patterns)`
-    * 如果你想**仅凭**文件名（如 `*.apk`）就转发，请确保 `all_keywords` 列表为空 `[]` 或直接删除该行。
-    * **示例**:
-        ```yaml
-        distribution_rules:
-          # 规则 1: 仅凭 .apk 文件名就匹配
-          - name: "APK 文件"
-            file_name_patterns: ["*.apk"]
-            target_identifier: -1009876543210 
-            topic_id: 11
-          
-          # 规则 2: 必须同时包含 "win" 和 .exe
-          - name: "Windows 软件"
-            all_keywords: ["win"]
-            file_name_patterns: ["*.exe", "*.msi"]
-            target_identifier: -1009876543210 
-            topic_id: 10
-        ```
+```bash
+mkdir -p ~/tg-forwarder/data
+cd ~/tg-forwarder
+# 下载或创建 config.yaml (参考下文配置详解)
+```
 
-# ❓ 故障排查 (Troubleshooting)
+### 2. 启动容器
+使用构建好的镜像启动。
 
-### Q: 为什么我的某个频道收不到消息？（无日志）
+```bash
+docker run -d \
+  -it \
+  --name tgf \
+  -p 8080:8080 \
+  -v $(pwd)/config.yaml:/app/config.yaml \
+  -v $(pwd)/data:/app/data \
+  --restart always \
+  dswang2233/tg-forwarder:latest
+```
 
-**这是最常见的问题：静默失败。** 你的工具人账号能看到消息，但程序日志里什么都没有。
+> **注意**: `-p 8080:8080` 用于暴露 Web UI 端口，`-it` 用于首次交互式登录。
 
-这通常意味着 Telegram 服务器**没有向你的程序推送更新**。
+### 3. 首次登录
+容器启动后，需要进行交互式登录以生成 Session 文件。
 
-* **原因 1 (90% 的可能): 频道被静音/归档**
-    * 你的工具人账号（`accounts` 里的第一个号）在它的 Telegram 客户端上（手机或电脑）**静音 (Mute)** 或 **归档 (Archive)** 了这个源频道。
-    * Telegram 服务器因此认为你“不关心”这个频道的实时更新，于是停止了向 API 推送。
-    * **✅ 解决方案:** 登录你的工具人账号，找到那个源频道，**“取消静音” (Unmute)** 并 **“取消归档” (Unarchive)**。
+```bash
+docker attach tgf
+```
 
-* **原因 2 (10% 的可能): 账户被节流**
-    * 你的工具人账号加入了*太多*高流量（刷屏）的频道。
-    * Telegram 服务器不堪重负，停止了对你账户的实时推送，降级为“延迟通知”，导致 `events.NewMessage` 处理器静默失败。
-    * **✅ 解决方案:** 登录你的工具人账号，退出（Leave）那些你**不需要转发**的、但非常吵闹的频道，减轻服务器负担。
+按照提示输入你的手机号（带国家代码，如 `+86...`）和验证码。登录成功后，按 `Ctrl+P` 然后 `Ctrl+Q` 退出挂载，**不要按 Ctrl+C**。
 
-* **如何确认？ (高级排错)**
-    * 编辑 `ultimate_forwarder.py` 文件。
-    * 将 `logging.getLogger('telethon').setLevel(logging.WARNING)` 改为 `logging.INFO`。
-    * 重启容器，查看 `docker logs tgf`。
-    * 如果你在源频道发消息时，日志里**没有**看到 `UpdateNewChannelMessage` 或 `Got difference...`，就说明 Telegram 服务器确实没有给你推送更新。
+---
+
+## ⚙️ 配置文件详解 (config.yaml)
+
+```yaml
+# 容器名称，用于日志提示
+docker_container_name: "tgf"
+
+# 日志级别: INFO / DEBUG / WARNING
+logging_level:
+  app: "INFO"
+  telethon: "WARNING"
+
+# Web UI 登录密码 (强烈建议修改)
+web_ui:
+  password: "your_secure_password"
+
+# Bot 服务配置 (用于运维)
+bot_service:
+  enabled: true
+  bot_token: "123456:ABC-DEF..."
+  admin_user_ids: [123456789] # 你的 TG ID，只有管理员能使用 Bot
+
+# 用户账号 (用于转发消息)
+accounts:
+  - api_id: 123456
+    api_hash: "abcdef..."
+    session_name: "user_1"
+    enabled: true
+
+# 监控源配置
+sources:
+  - identifier: -1001234567890 # 支持 ID、@username 或 https://t.me/link
+    forward_new_only: true     # 是否仅转发新消息
+
+# 转发目标与分发规则
+targets:
+  default_target: -1009876543210 # 默认转发到的频道 ID
+  default_topic_id: null       # 默认话题 ID (可选)
+  
+  # 分发规则 (优先级从上到下)
+  distribution_rules:
+    - name: "安卓应用"
+      file_name_patterns: ["*.apk", "*.xapk"]
+      target_identifier: -1009876543210
+      topic_id: 101            # 转发到特定话题
+
+# 转发行为设置
+forwarding:
+  mode: "copy"           # copy (无痕复制) 或 forward (普通转发)
+  forward_new_only: true # 启动时是否忽略历史消息
+  mark_as_read: false    # 是否自动已读源频道
+
+# 广告/垃圾信息过滤
+ad_filter:
+  enable: true
+  keywords_substring: ["加微信", "赌博"] # 中文模糊匹配
+  keywords_word: ["ad", "promo"]       # 英文全词匹配
+  file_name_keywords: ["宣传.pdf"]      # 文件名过滤
+
+# 死链检测器
+link_checker:
+  enabled: true
+  mode: "edit"           # log (仅记录), edit (标记消息), delete (删除消息)
+  schedule: "0 3 * * *"  # 每天凌晨 3 点运行 (Cron 表达式)
+```
+
+---
+
+## 🖥 Web UI 使用说明
+
+访问 `http://你的IP:8080` 进入管理后台。
+
+- **Dashboard**: 查看系统运行状态、数据库统计、规则命中情况。
+- **在线配置**: 通过网页直接添加/删除监控源、修改转发规则、编辑黑白名单。
+- **热重载**: 修改配置后，通过 Web 或 Bot 指令即可热重载，无需重启容器。
+- **安全验证**: 内置登录验证，保护你的配置信息。
+
+---
+
+## 🤖 Bot 指令说明
+
+对你的 Bot 发送以下指令（需在 `config.yaml` 中配置管理员 ID）：
+
+- `/status`: 查看详细的系统运行仪表盘（运行时间、FloodWait 状态、数据库统计）。
+- `/reload`: 热重载配置文件和规则数据库（Web 修改配置后需执行此操作）。
+- `/ids`: 导出当前所有监控源的名称及其解析后的 ID。
+- `/check`: 立即手动触发一次死链检测任务。
+
+---
+
+## ❓ 常见问题
+
+**Q: 为什么配置了频道却收不到消息？**
+
+**A:**
+
+    * 确保你的 User Client（用户账号）已经加入了该频道。
+    * 检查该频道是否被你的账号“归档”或“静音”，Telegram 有时会停止向 API 推送静音频道的更新。
+    * 检查日志 `docker logs tgf`，看是否有报错信息。
+
+**Q: 什么是 FloodWait？**
+**A:** 这是 Telegram 对账号的速率限制。如果触发，日志会显示“FloodWait X seconds”。程序会自动暂停该账号的使用并尝试切换其他账号（如果配置了多账号）。
+
+**Q: Copy 模式和 Forward 模式的区别？**
+**A:** `Forward` 会保留消息的原始来源（显示“转发自...”），如果原频道禁止转发，则会失败。`Copy` 模式会提取内容重新发送，看起来像是你发送的新消息，且能突破禁止转发的限制。
+
+---
 
 # 鸣谢
 
@@ -149,3 +192,8 @@
 1.  [fish2018/tgforwarder](https://github.com/fish2018/TGForwarder)
 2.  [ccrsrg/tg_zf](https://github.com/CCRSRG/TG_ZF)
 3.  [Google Gemini](https://gemini.google.com/) (AI 助手，协助进行代码重构、功能融合和文档编写)
+
+## 📜 许可证
+
+本项目基于 Apache License 2.0 开源。
+```
