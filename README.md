@@ -49,6 +49,7 @@
 mkdir -p ~/tg-forwarder/data
 cd ~/tg-forwarder
 # 下载或创建 config.yaml (参考下文配置详解)
+wget https://raw.githubusercontent.com/callacat/TG-Forwarder/refs/heads/v2.5/config_template.yaml -o config.yaml
 ```
 
 ### 2. 启动容器
@@ -66,6 +67,8 @@ docker run -d \
 ```
 
 > **注意**: `-p 8080:8080` 用于暴露 Web UI 端口，`-it` 用于首次交互式登录。
+
+> **重要**：如需公网请配置SSL反向代理，切勿直接暴露 Web UI 端口！
 
 ### 3. 首次登录
 容器启动后，需要进行交互式登录以生成 Session 文件。
@@ -105,6 +108,8 @@ accounts:
     api_hash: "abcdef..."
     session_name: "user_1"
     enabled: true
+
+# 以下仅为示例配置，请前往web UI 管理界面进行在线配置！
 
 # 监控源配置
 sources:

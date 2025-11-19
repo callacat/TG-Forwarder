@@ -1,12 +1,11 @@
 # .github/workflows/docker-publish.yml
-# 当你推送到 v2.5 分支时，自动构建 Docker 镜像并推送到 Docker Hub
 
 name: Build and Push to Docker Hub
 
 on:
   push:
     branches:
-      - main  # 只在 v2 分支 push 时触发
+      - main  
   workflow_dispatch: # 允许手动触发
 
 jobs:
