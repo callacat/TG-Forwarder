@@ -192,24 +192,26 @@ async def resolve_identifiers(client: TelegramClient, source_list: List[SourceCo
 
 # --- 3. 业务逻辑 ---
 
-# (新) 状态提供函数
+# (新) 状态提供函数 - 优化时间格式
 async def get_runtime_stats_func():
     """提供给 web_server 的回调，用于获取实时状态"""
     global bot_client, clients, START_TIME
     
     # 计算运行时间
     uptime_delta = datetime.now(timezone.utc) - START_TIME
-    # 转换为友好的字符串格式 (例如 "2d 5h 30m")
     days = uptime_delta.days
     seconds = uptime_delta.seconds
     hours = seconds // 3600
     minutes = (seconds % 3600) // 60
+    secs = seconds % 60
     
     uptime_parts = []
-    if days > 0: uptime_parts.append(f"{days}d")
-    if hours > 0: uptime_parts.append(f"{hours}h")
-    uptime_parts.append(f"{minutes}m")
-    uptime_str = " ".join(uptime_parts)
+    if days > 0: uptime_parts.append(f"{days}天")
+    if hours > 0: uptime_parts.append(f"{hours}时")
+    if minutes > 0: uptime_parts.append(f"{minutes}分")
+    uptime_parts.append(f"{secs}秒")
+    
+    uptime_str = "".join(uptime_parts) if uptime_parts else "0秒"
     
     bot_connected = False
     bot_status_text = "未启用"
@@ -226,7 +228,7 @@ async def get_runtime_stats_func():
     return {
         "uptime": uptime_str,
         "bot_status": bot_status_text,
-        "bot_connected": bot_connected, # 布尔值方便前端着色
+        "bot_connected": bot_connected, 
         "user_account_count": len(clients)
     }
 

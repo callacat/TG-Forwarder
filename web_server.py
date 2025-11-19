@@ -28,7 +28,14 @@ RULES_DB_PATH = "/app/data/rules_db.json"
 rules_db: RulesDatabase = RulesDatabase() 
 db_lock = asyncio.Lock() 
 
-app = FastAPI(title="TG Forwarder Web UI")
+# 显式开启 /docs 和 /redoc
+app = FastAPI(
+    title="TG Forwarder Web UI",
+    description="TG 终极转发器管理面板",
+    version="2.5",
+    docs_url="/docs",
+    redoc_url="/redoc"
+)
 
 # --- 全局状态提供者钩子 ---
 _stats_provider: Optional[Callable[[], Awaitable[Dict[str, Any]]]] = None
@@ -105,7 +112,7 @@ async def save_rules_to_db():
     async with db_lock:
         await _save_rules_to_db_internal() 
 
-# --- 统计 API (集成运行时状态) ---
+# --- 统计 API ---
 @app.get("/api/stats")
 async def get_stats(auth: bool = Depends(get_current_user)):
     try:
