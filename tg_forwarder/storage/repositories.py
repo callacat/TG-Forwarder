@@ -22,7 +22,8 @@ class SourceRepository:
         try:
             cur = await self.db._require_conn().execute("SELECT * FROM sources")
             rows = await cur.fetchall()
-            return [dict(r) for r in rows]
+            cols = [d[0] for d in cur.description or []]
+            return [dict(zip(cols, r)) for r in rows]
         except Exception as e:
             logger.error(f"读取源列表失败: {e}")
             return []
@@ -76,9 +77,10 @@ class RuleRepository:
         try:
             cur = await self.db._require_conn().execute("SELECT * FROM rules")
             rows = await cur.fetchall()
+            cols = [d[0] for d in cur.description or []]
             result = []
             for row in rows:
-                d = dict(row)
+                d = dict(zip(cols, row))
                 for field in self._JSON_FIELDS:
                     raw = d.get(field)
                     if raw is None or raw == "":
