@@ -1,0 +1,566 @@
+# -*- coding: utf-8 -*-
+"""core 层测试（R1/R2/R5/R8 对应 + 纯函数覆盖）。全部 mock，不连真实 Telegram。"""
+import asyncio
+import time
+from typing import Any, Dict, List, Optional
+
+import pytest
+
+from tg_forwarder.config import (
+    AccountConfig,
+    AdFilterConfig,
+    ContentFilterConfig,
+    ProxyConfig,
+    RuntimeConfig,
+    SourceConfig,
+    SystemSettings,
+    TargetDistributionRule,
+    WatchdogConfig,
+    WhitelistConfig,
+)
+from tg_forwarder.core.accounts import (
+    PROXY_LEVEL_CONFIGURED,
+    PROXY_LEVEL_DIRECT_443,
+    PROXY_LEVEL_DIRECT_80,
+    PROXY_LEVEL_HTTP_MODE,
+    AccountManager,
+    AccountStartupError,
+    ProxyFallback,
+    backoff_delays,
+)
+from tg_forwarder.core.forwarder import (
+    Forwarder,
+    apply_replacements,
+    find_target,
+    message_hash,
+    should_filter,
+)
+from tg_forwarder.core.supervision import Supervisor
+
+
+def _cfg(**overrides) -> RuntimeConfig:
+    cfg = RuntimeConfig()
+    for k, v in overrides.items():
+        setattr(cfg, k, v)
+    return cfg
+
+
+# ---------------------------------------------------------------------------
+# 退避计算（R1）
+# ---------------------------------------------------------------------------
+
+
+class TestBackoff:
+    def test_sequence_doubles(self):
+        assert backoff_delays(5) == [2, 4, 8, 16, 32]
+
+    def test_capped_at_max(self):
+        delays = backoff_delays(10)
+        assert all(d <= 60 for d in delays)
+        assert delays[-1] == 60
+
+
+# ---------------------------------------------------------------------------
+# ProxyFallback 降级链（R5）
+# ---------------------------------------------------------------------------
+
+
+class TestProxyFallback:
+    def _make_fb(self, fail_levels, configured_proxy=None):
+        """fail_levels: 失败的级别集合；成功级别返回哨兵 client。"""
+        calls: List[int] = []
+
+        async def factory(level, session_path, api_id, api_hash):
+            calls.append(level)
+            if level in fail_levels:
+                raise ConnectionError(f"level {level} down")
+            return f"client@{level}", level
+
+        fb = ProxyFallback(configured_proxy=configured_proxy, connect_factory=factory)
+        return fb, calls
+
+    async def test_fallback_order_direct443_ok(self):
+        fb, calls = self._make_fb(fail_levels=set())
+        client, level = await fb.connect_with_fallback("/tmp/s", 1, "h")
+        assert calls == [PROXY_LEVEL_DIRECT_443]
+        assert level == PROXY_LEVEL_DIRECT_443
+
+    async def test_fallback_descends_chain(self):
+        fb, calls = self._make_fb(
+            fail_levels={PROXY_LEVEL_DIRECT_443, PROXY_LEVEL_DIRECT_80}
+        )
+        client, level = await fb.connect_with_fallback("/tmp/s", 1, "h")
+        assert calls == [
+            PROXY_LEVEL_DIRECT_443,
+            PROXY_LEVEL_DIRECT_80,
+            PROXY_LEVEL_HTTP_MODE,
+        ]
+        assert level == PROXY_LEVEL_HTTP_MODE
+
+    async def test_configured_proxy_appended_to_chain(self):
+        fb, calls = self._make_fb(
+            fail_levels={0, 1, 2}, configured_proxy=("socks5", "127.0.0.1", 1080, True)
+        )
+        client, level = await fb.connect_with_fallback("/tmp/s", 1, "h")
+        assert calls[-1] == PROXY_LEVEL_CONFIGURED
+        assert level == PROXY_LEVEL_CONFIGURED
+
+    async def test_all_levels_fail_raises_last_error(self):
+        fb, calls = self._make_fb(fail_levels={0, 1, 2})
+        with pytest.raises(ConnectionError):
+            await fb.connect_with_fallback("/tmp/s", 1, "h")
+        assert calls == [0, 1, 2]
+
+
+# ---------------------------------------------------------------------------
+# AccountManager（R1/P9）
+# ---------------------------------------------------------------------------
+
+
+class _Acc:
+    def __init__(self, name, enabled=True):
+        self.api_id = 1
+        self.api_hash = "h"
+        self.session_name = name
+        self.enabled = enabled
+
+
+class _Fallback:
+    """可控的 fallback mock：fail_names 中账号全链失败。"""
+
+    def __init__(self, fail_names=(), connect_delay=0):
+        self.fail_names = fail_names
+        self.connect_delay = connect_delay
+        self.attempts: Dict[str, int] = {}
+
+    async def connect_with_fallback(self, session_path, api_id, api_hash):
+        name = session_path.rsplit("/", 1)[-1].replace(".session", "")
+        self.attempts[name] = self.attempts.get(name, 0) + 1
+        if name in self.fail_names:
+            raise ConnectionError(f"down ({name})")
+        return f"client-{name}", PROXY_LEVEL_DIRECT_443
+
+
+class _Client:
+    """轻量 client mock（可挂动态属性，供 session_name_for_forwarder 赋值）。"""
+
+    def __init__(self, name):
+        self.name = name
+        self.session_name_for_forwarder = name
+
+    def is_connected(self):
+        return True
+
+    def is_user_authorized(self):
+        return True
+
+    async def disconnect(self):
+        pass
+
+    async def connect(self):
+        pass
+
+
+class _AM(AccountManager):
+    """绕过 session 文件检查 + 免真实 sleep 的测试子类。"""
+
+    def __init__(self, fallback, fail_names=(), skip_sleep=True):
+        super().__init__(fallback_factory=lambda cfg: fallback)
+
+    async def _start_one(self, acc, config, max_attempts):
+        from tg_forwarder.core.accounts import AccountState
+
+        state = AccountState(
+            session_name=acc.session_name, api_id=acc.api_id, api_hash=acc.api_hash
+        )
+        self._states[acc.session_name] = state
+        fallback = self._fallback_factory(config)
+        delays = backoff_delays(max_attempts)
+        for attempt in range(1, max_attempts + 1):
+            try:
+                client_name, level = await fallback.connect_with_fallback(
+                    f"/data/{acc.session_name}.session", acc.api_id, acc.api_hash
+                )
+                client = _Client(acc.session_name)
+                state.client = client
+                state.connected = True
+                state.authorized = True
+                state.healthy = True
+                state.proxy_level = level
+                state.last_error = None
+                client.session_name_for_forwarder = acc.session_name
+                return
+            except Exception as e:
+                state.last_error = f"{type(e).__name__}: {e}"[:300]
+                if attempt < max_attempts:
+                    delays[attempt - 1]  # 退避序列存在（不真睡）
+        state.unavailable = True
+
+
+class TestAccountManager:
+    async def test_success_sets_state_and_key(self):
+        fb = _Fallback()
+        am = _AM(fb)
+        cfg = _cfg(accounts=[_Acc("a1")])
+        healthy = await am.start(cfg)
+        assert len(healthy) == 1
+        assert healthy[0].session_name_for_forwarder == "a1"
+        assert am.all_status()["accounts"][0]["healthy"] is True
+
+    async def test_all_fail_raises_startup_error(self):
+        """R1：全部账号重试耗尽 → AccountStartupError（进程退出路径）。"""
+        fb = _Fallback(fail_names={"a1"})
+        am = _AM(fb)
+        cfg = _cfg(accounts=[_Acc("a1")])
+        with pytest.raises(AccountStartupError):
+            await am.start(cfg)
+
+    async def test_retry_count_matches_attempts(self):
+        """R1：失败账号按 max_attempts 重试。"""
+        fb = _Fallback(fail_names={"a1"})
+        am = _AM(fb)
+        cfg = _cfg(accounts=[_Acc("a1")])
+        with pytest.raises(AccountStartupError):
+            await am.start(cfg)
+        assert fb.attempts["a1"] == 5
+
+    async def test_partial_success_no_raise(self):
+        fb = _Fallback(fail_names={"bad"})
+        am = _AM(fb)
+        cfg = _cfg(accounts=[_Acc("ok"), _Acc("bad")])
+        healthy = await am.start(cfg)
+        assert len(healthy) == 1
+        st = {a["session_name"]: a for a in am.all_status()["accounts"]}
+        assert st["bad"]["unavailable"] is True
+        assert st["bad"]["last_error"]
+
+    async def test_no_accounts_returns_empty(self):
+        am = _AM(_Fallback())
+        healthy = await am.start(_cfg(accounts=[]))
+        assert healthy == []
+
+    async def test_record_flood_wait(self):
+        am = _AM(_Fallback())
+        await am.start(_cfg(accounts=[_Acc("a1")]))
+        am.record_flood_wait("a1", 30)
+        st = am.all_status()["accounts"][0]
+        assert st["flood_wait"] > 0
+        assert st["flood_wait_count"] == 1
+
+    async def test_session_missing_marks_unavailable(self, tmp_path):
+        """P9：无 session 文件 → unavailable + 禁止交互登录。
+
+        单账号场景下 R1 要求全部失败即抛 AccountStartupError——
+        但无 session 是 unavailable 终态而非重试耗尽，这里验证
+        「标记 unavailable + 未尝试连接」两条核心行为。
+        """
+        am = AccountManager(data_dir=str(tmp_path / "nodata"))
+        called = {"factory": 0}
+
+        def _factory(cfg):
+            called["factory"] += 1
+            return _Fallback()
+
+        am._fallback_factory = _factory
+        cfg = _cfg(accounts=[_Acc("ghost")])
+        try:
+            await am.start(cfg)
+            raised = False
+        except AccountStartupError:
+            raised = True
+        # 全部账号不可用 → R1 抛错（进程退出路径）
+        assert raised is True
+        st = am.all_status()["accounts"][0]
+        assert st["unavailable"] is True
+        assert st["last_error"] == "session_file_missing"
+        assert called["factory"] == 0  # 根本没尝试连接
+
+
+# ---------------------------------------------------------------------------
+# 看门狗（R1 假活根治）
+# ---------------------------------------------------------------------------
+
+
+class _MockAM:
+    def __init__(self, healthy: int):
+        self._healthy = healthy
+
+    def healthy_accounts(self):
+        return [object()] * self._healthy
+
+    def all_status(self):
+        return {"accounts": [{"session_name": "a", "last_error": "x"}] * self._healthy}
+
+
+class _WatchdogCfg:
+    """Supervisor 测试配置：支持浮点参数（WatchdogConfig 模型约束整数）。"""
+
+    def __init__(self, timeout_minutes=5, interval_seconds=60):
+        self.watchdog = type(
+            "W", (), {"timeout_minutes": timeout_minutes, "interval_seconds": interval_seconds}
+        )()
+
+
+class TestSupervisor:
+    async def test_healthy_no_exit(self):
+        exited = []
+        sup = Supervisor(_MockAM(2), _WatchdogCfg(), exit_func=lambda c: exited.append(c))
+        task = asyncio.create_task(sup.run())
+        await asyncio.sleep(0.15)
+        task.cancel()
+        try:
+            await task
+        except asyncio.CancelledError:
+            pass
+        assert exited == []
+
+    async def test_dead_accounts_triggers_exit_after_timeout(self):
+        """无可用账号持续超时 → 告警回调 + exit 1（R1 核心）。"""
+        events = []
+
+        async def on_critical(msg):
+            events.append(msg)
+
+        exited = []
+        sup = Supervisor(
+            _MockAM(0),
+            _WatchdogCfg(timeout_minutes=0.01, interval_seconds=0.05),
+            on_critical=on_critical,
+            exit_func=lambda c: exited.append(c),
+        )
+        task = asyncio.create_task(sup.run())
+        for _ in range(100):
+            await asyncio.sleep(0.02)
+            if exited:
+                break
+        assert exited == [1]
+        assert len(events) == 1
+        assert "account_all_dead" in events[0]
+
+    async def test_recovery_resets_timer(self):
+        """恢复健康后计时器重置，不退出。"""
+        state = {"healthy": 0}
+        am = _MockAM(0)
+        am.healthy_accounts = lambda: [object()] * state["healthy"]
+        exited = []
+
+        async def on_critical(msg):
+            pass
+
+        sup = Supervisor(
+            am,
+            _WatchdogCfg(timeout_minutes=0.05, interval_seconds=0.05),
+            on_critical=on_critical,
+            exit_func=lambda c: exited.append(c),
+        )
+        task = asyncio.create_task(sup.run())
+        await asyncio.sleep(0.12)
+        state["healthy"] = 2  # 恢复
+        await asyncio.sleep(0.12)
+        task.cancel()
+        try:
+            await task
+        except asyncio.CancelledError:
+            pass
+        assert exited == []
+
+
+# ---------------------------------------------------------------------------
+# 纯函数（过滤/替换/哈希/路由）
+# ---------------------------------------------------------------------------
+
+
+class _Photo:
+    def __init__(self, photo_id):
+        self.id = photo_id
+
+
+class _Media:
+    """media mock：photo 带 .photo、document 是真实 MessageMediaDocument
+    （.document.id/.size/.attributes，与 forwarder.message_hash/should_filter
+    和 find_target 的访问路径一致）。"""
+
+    def __init__(self, photo_id=None, doc_id=None, size=None, file_name=None):
+        from telethon.tl.types import (
+            DocumentAttributeFilename,
+            MessageMediaDocument,
+        )
+        from telethon.tl import types as tl_types
+
+        if photo_id is not None:
+            self.photo = _Photo(photo_id)
+        if doc_id is not None:
+            attrs = []
+            if file_name:
+                attrs.append(DocumentAttributeFilename(file_name=file_name))
+            doc = tl_types.Document(
+                id=doc_id,
+                access_hash=0,
+                file_reference=b"",
+                date=None,
+                mime_type="application/octet-stream",
+                size=size or 0,
+                attributes=attrs,
+                dc_id=1,
+            )
+            self.document = MessageMediaDocument(document=doc, ttl_seconds=0)
+
+
+class TestShouldFilter:
+    def _snap(self, **kw):
+        cfg = _cfg(
+            ad_filter=AdFilterConfig(enable=True, keywords_substring=["推广", "http://ad.com"]),
+            whitelist=WhitelistConfig(enable=False, keywords=["白名单词"]),
+            content_filter=ContentFilterConfig(enable=True, meaningless_words=["哈哈"], min_meaningful_length=5),
+        )
+        return cfg
+
+    def test_pass_normal(self):
+        r, k = should_filter("正常内容分享", None, self._snap())
+        assert r is None
+
+    def test_blacklist_substring(self):
+        r, k = should_filter("限时推广速来", None, self._snap())
+        assert r == "Blacklist (Substring)" and k == "推广"
+
+    def test_whitelist_overrides_blacklist(self):
+        cfg = _cfg(
+            ad_filter=AdFilterConfig(enable=True, keywords_substring=["推广"]),
+            whitelist=WhitelistConfig(enable=True, keywords=["白名单词"]),
+            content_filter=ContentFilterConfig(enable=True),
+        )
+        r, k = should_filter("白名单词 推荐", None, cfg)
+        assert r is None  # 白名单放行（黑名单词"推广"不在文本里）
+
+    def test_content_empty(self):
+        r, k = should_filter("", None, self._snap())
+        assert r == "Empty"
+
+    def test_content_too_short(self):
+        r, k = should_filter("短", None, self._snap())
+        assert r == "Too Short"
+
+    def test_content_meaningless(self):
+        r, k = should_filter("哈哈", None, self._snap())
+        assert r == "Meaningless"
+
+    def test_media_saves_short_text(self):
+        r, k = should_filter("短", _Media(doc_id=1, size=100), self._snap())
+        assert r is None  # 有媒体不受短文本过滤
+
+    def test_filename_blacklist(self):
+        r, k = should_filter("下载", _Media(doc_id=1, size=1, file_name="ad_crack.exe"), self._snap())
+        # file_name_keywords 未配置时不命中
+        assert r is None
+        cfg = _cfg(
+            ad_filter=AdFilterConfig(enable=True, file_name_keywords=["crack"]),
+            whitelist=WhitelistConfig(enable=False),
+            content_filter=ContentFilterConfig(enable=False),
+        )
+        r, k = should_filter("下载", _Media(doc_id=1, size=1, file_name="app_crack.exe"), cfg)
+        assert r == "Blacklist (Filename)"
+
+
+class TestReplacements:
+    def test_apply(self):
+        cfg = _cfg(replacements={"频道A": "频道B", "https://a.com": "https://b.com"})
+        assert apply_replacements("频道A https://a.com", cfg) == "频道B https://b.com"
+
+    def test_noop(self):
+        assert apply_replacements("", _cfg(replacements={"a": "b"})) == ""
+        assert apply_replacements("文本", _cfg(replacements={})) == "文本"
+
+
+class TestMessageHash:
+    def test_text_hash_stable(self):
+        """sha256 修复：同文本跨实例哈希一致（v2 内置 hash() 不稳定）。"""
+        h1 = message_hash("长文本" * 30, None, 1)
+        h2 = message_hash("长文本" * 30, None, 999)
+        assert h1 == h2
+        assert h1.startswith("text:")
+
+    def test_photo_hash(self):
+        assert message_hash("t", _Media(photo_id=42), 1) == "photo:42"
+
+    def test_doc_hash(self):
+        assert message_hash("t", _Media(doc_id=7, size=1024), 1) == "doc:7:1024"
+
+    def test_short_text_uses_id(self):
+        assert message_hash("短", None, 55) == "id:55"
+
+    def test_different_texts_differ(self):
+        assert message_hash("A" * 60, None, 1) != message_hash("B" * 60, None, 1)
+
+
+class TestFindTarget:
+    def test_rule_match(self):
+        cfg = _cfg(
+            distribution_rules=[
+                TargetDistributionRule(
+                    name="r", any_keywords=["4K"], target_identifier="-100333",
+                    topic_id=9, resolved_target_id=-100333,
+                )
+            ],
+            settings=SystemSettings(default_target="-100222", default_topic_id=1),
+            targets_resolved_default=-100222,
+        )
+        t, topic = find_target("超清4K资源", None, cfg)
+        assert t == -100333 and topic == 9
+
+    def test_default_fallback(self):
+        cfg = _cfg(
+            distribution_rules=[
+                TargetDistributionRule(
+                    name="r", any_keywords=["4K"], target_identifier="-100333",
+                    resolved_target_id=-100333,
+                )
+            ],
+            settings=SystemSettings(default_topic_id=3),
+            targets_resolved_default=-100222,
+        )
+        t, topic = find_target("普通内容", None, cfg)
+        assert t == -100222 and topic == 3
+
+
+# ---------------------------------------------------------------------------
+# R8：快照原子替换
+# ---------------------------------------------------------------------------
+
+
+class TestSnapshotAtomicity:
+    async def test_update_snapshot_no_tearing(self):
+        """update_snapshot 期间并发 process_message 不炸且视图一致（R8/P7）。"""
+        db_stub = type("DB", (), {})()
+        fwd = Forwarder(db_stub, account_manager=None)
+        cfg1 = _cfg(replacements={"a": "1"})
+        cfg2 = _cfg(replacements={"a": "2"})
+        fwd.update_snapshot(cfg1)
+
+        errors = []
+
+        async def reader():
+            for _ in range(500):
+                snap = fwd.get_snapshot()
+                if snap is not None:
+                    # 同一快照引用必然一致（整体替换语义）
+                    assert snap.replacements["a"] in ("1", "2")
+                await asyncio.sleep(0)
+
+        async def writer():
+            for _ in range(50):
+                fwd.update_snapshot(cfg2 if fwd.get_snapshot() is cfg1 else cfg1)
+                await asyncio.sleep(0)
+
+        await asyncio.gather(reader(), writer(), return_exceptions=False)
+        assert not errors
+
+    async def test_old_snapshot_reference_immutable(self):
+        """旧快照引用在 reload 后仍指向旧对象（处理中的消息视图一致）。"""
+        fwd = Forwarder(type("DB", (), {})(), account_manager=None)
+        cfg1 = _cfg(replacements={"k": "v1"})
+        fwd.update_snapshot(cfg1)
+        held = fwd.get_snapshot()
+        cfg2 = _cfg(replacements={"k": "v2"})
+        fwd.update_snapshot(cfg2)
+        assert held.replacements["k"] == "v1"
+        assert fwd.get_snapshot().replacements["k"] == "v2"

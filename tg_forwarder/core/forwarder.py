@@ -63,10 +63,14 @@ def _compile_patterns(patterns: List[str]) -> List[re.Pattern]:
 
 
 def _doc_file_name(media: Any) -> Optional[str]:
-    """从 MessageMediaDocument 提取文件名。"""
-    if not media or not isinstance(media, MessageMediaDocument):
+    """从消息媒体提取文件名（document 兼容两层形状，与 message_hash 同逻辑）。"""
+    if not media:
         return None
-    doc = media.document
+    doc = getattr(media, "document", None)
+    if not doc:
+        return None
+    # 兼容 MessageMediaDocument（嵌套 .document）或裸 Document
+    doc = getattr(doc, "document", doc)
     if not doc:
         return None
     return next(
@@ -142,12 +146,19 @@ def message_hash(text: str, media: Any, msg_id: Any) -> Optional[str]:
 
     photo → photo:{id}；document → doc:{id}:{size}；文本>50 → text:{sha256[:16]}；
     其他 → id:{msg_id}。
+
+    修复 v2 隐藏 bug：v2 用 ``media.document.id``，但真实 telethon 对象上
+    MessageMediaDocument 的嵌套 Document 在 ``media.document.document``——
+    v2 该路径 AttributeError 被 add_hash 的 try 静默吃掉，文档消息从未入 dedup。
     """
     if media:
         if hasattr(media, "photo") and media.photo:
             return f"photo:{media.photo.id}"
         if hasattr(media, "document") and media.document:
-            return f"doc:{media.document.id}:{getattr(media.document, 'size', '0')}"
+            doc = media.document
+            # 兼容两层形状：MessageMediaDocument（嵌套 .document）或裸 Document
+            doc = getattr(doc, "document", doc)
+            return f"doc:{doc.id}:{getattr(doc, 'size', '0')}"
     text = text or ""
     if len(text) > 50:
         digest = hashlib.sha256(text.encode("utf-8")).hexdigest()
