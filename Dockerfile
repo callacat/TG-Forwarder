@@ -1,36 +1,33 @@
-# 使用更稳定的 Python 3.13 Slim (Bookworm)
+# TG-Forwarder v3 入口镜像（R7/R1：HEALTHCHECK 检测账号健康）
+# 与 v2 同基座 python:3.13-slim-bookworm，保持多架构 amd64+arm64
 FROM python:3.13-slim-bookworm
 
-# 设置环境变量 (优化 Python 运行)
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
     TZ=Asia/Shanghai
 
 WORKDIR /app
 
-# 安装系统基础依赖 (curl 用于健康检查或下载工具)
+# curl 保留给 HEALTHCHECK
 RUN apt-get update && apt-get install -y --no-install-recommends curl && \
-    rm -rf /var/lib/apt/lists/*
+    rm -rf /var/lib/apt/lists/* && \
+    ln -snf /usr/share/zoneinfo/$TZ /etc/localtime && echo $TZ > /etc/timezone
 
-# 设置时区
-RUN ln -snf /usr/share/zoneinfo/$TZ /etc/localtime && echo $TZ > /etc/timezone
-
-# 现代化：使用 'uv' 替代 pip (速度快 10-100 倍)
-# 这一步会下载 uv 二进制文件
-COPY --from=ghcr.io/astral-sh/uv:latest /uv /bin/uv
-
-# 复制依赖并安装
+# 依赖全 pin（R7）；镜像内构建一次成型，禁本地构建（D7）
 COPY requirements.txt .
-# 使用 uv pip install 安装依赖到系统环境
-RUN uv pip install --system --no-cache -r requirements.txt
+RUN pip install --no-cache-dir --no-compile -r requirements.txt
 
-# 复制项目文件
-COPY . .
+# v3 包 + 入口脚本（v2 单文件已退役，不再 COPY 全量）
+COPY tg_forwarder/ ./tg_forwarder/
+COPY main.py ./
+COPY config_template.yaml ./
 
-# 创建数据目录并赋权
-RUN mkdir -p /app/data && chmod -R 755 /app/data
+RUN mkdir -p /app/data && chmod 755 /app/data
 
 VOLUME /app/data
 
-# 启动命令
-CMD ["python", "ultimate_forwarder.py", "run", "-c", "/app/config.yaml"]
+# HEALTHCHECK：/health 由 v3 Web 服务暴露，账号全灭时返回 unhealthy
+HEALTHCHECK --interval=60s --timeout=10s --start-period=120s --retries=3 \
+  CMD curl -sf http://127.0.0.1:8080/health || exit 1
+
+CMD ["python", "main.py", "run", "-c", "/app/config.yaml"]
