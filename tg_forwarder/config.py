@@ -291,6 +291,9 @@ class RuntimeConfig(BaseModel):
     content_filter: ContentFilterConfig = Field(default_factory=ContentFilterConfig)
     replacements: Dict[str, str] = Field(default_factory=dict)
 
+    # 运行期解析结果（resolve_targets 写入；默认目标 resolved ID）
+    targets_resolved_default: Optional[int] = None
+
     def snapshot(self) -> "RuntimeConfig":
         """返回当前配置视图（整体替换语义，见类 docstring）。"""
         return self
