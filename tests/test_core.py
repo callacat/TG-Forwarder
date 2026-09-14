@@ -730,3 +730,193 @@ class TestSnapshotAtomicity:
         fwd.update_snapshot(cfg2)
         assert held.replacements["k"] == "v1"
         assert fwd.get_snapshot().replacements["k"] == "v2"
+
+
+# ---------------------------------------------------------------------------
+# catchup 兜底扫描（P1 修复：事件漏送补齐 + 与事件路径不双发）
+# ---------------------------------------------------------------------------
+
+_CHAT = -100555
+
+
+class _Msg:
+    def __init__(self, id, chat_id=_CHAT, text="", media=None, grouped_id=None):
+        self.id = id
+        self.chat_id = chat_id
+        self.text = text
+        self.media = media
+        self.grouped_id = grouped_id
+
+
+class _CatchupClient:
+    """fake TelegramClient：iter_messages 镜像 telethon min_id/limit/reverse 语义。"""
+
+    session_name_for_forwarder = "catchup"
+
+    def __init__(self, messages):
+        self._all = list(messages)
+
+    def is_connected(self):
+        return True
+
+    def iter_messages(self, chat_id, min_id=0, limit=None, reverse=False):
+        msgs = [m for m in self._all if m.chat_id == chat_id and m.id > min_id]
+        # telethon 默认 newest-first；reverse=True → oldest-first
+        msgs.sort(key=lambda m: m.id, reverse=not reverse)
+        if limit is not None:
+            msgs = msgs[:limit]
+
+        async def gen():
+            for m in msgs:
+                yield m
+
+        return gen()
+
+
+class _AMStub:
+    def __init__(self, client):
+        self._c = client
+
+    def healthy_accounts(self):
+        return [self._c]
+
+    def all_status(self):
+        return {"accounts": [{"session_name": "catchup", "flood_wait_count": 0}]}
+
+    def record_flood_wait(self, *a, **k):
+        pass
+
+
+def _catchup_snap(forward_new_only=True):
+    return _cfg(
+        sources=[SourceConfig(identifier=str(_CHAT), resolved_id=_CHAT)],
+        settings=SystemSettings(
+            default_target="-100999", forward_new_only=forward_new_only
+        ),
+        targets_resolved_default=-100999,
+        ad_filter=AdFilterConfig(enable=False),
+        content_filter=ContentFilterConfig(enable=False),
+    )
+
+
+async def _make_fwd(tmp_path, snapshot, client):
+    import os
+
+    from tg_forwarder.storage.db import Database
+
+    db = Database(os.path.join(str(tmp_path), "catch.sqlite"))
+    await db.open()
+    await db.migrate()
+    fwd = Forwarder(db, _AMStub(client))
+    fwd.update_snapshot(snapshot)
+    return fwd, db
+
+
+class TestCatchup:
+    async def test_gap_recovery_ascends_progress(self, tmp_path):
+        """断连窗口漏送：progress 之后被 catchup 逐条补齐并连续抬升。"""
+        client = _CatchupClient([_Msg(11, text="hello11"), _Msg(12, text="hello12"), _Msg(13, text="hello13")])
+        fwd, db = await _make_fwd(tmp_path, _catchup_snap(forward_new_only=True), client)
+        await db.set_progress(_CHAT, 10)  # 事件停在 10
+        calls = []
+        async def spy(m, all_messages_in_group=None):
+            calls.append(m.id)
+        fwd.process_message = spy
+        n = await fwd.catchup_once(limit=50)
+        assert n == 3
+        assert calls == [11, 12, 13]
+        assert await db.get_progress(_CHAT) == 13
+        await db.close()
+
+    async def test_limit_capped_per_source(self, tmp_path):
+        """每源上限 50：漏送 >50 条时 oldest-first 只补最早的 50。"""
+        client = _CatchupClient([_Msg(i, text=f"m{i}") for i in range(11, 111)])  # 11..110
+        fwd, db = await _make_fwd(tmp_path, _catchup_snap(), client)
+        await db.set_progress(_CHAT, 10)
+        calls = []
+        async def spy(m, all_messages_in_group=None):
+            calls.append(m.id)
+        fwd.process_message = spy
+        await fwd.catchup_once(limit=50)
+        assert len(calls) == 50
+        assert calls == list(range(11, 61))  # oldest-first
+        assert await db.get_progress(_CHAT) == 60
+        await db.close()
+
+    async def test_album_grouped_single_call(self, tmp_path):
+        """相册 grouped_id 合并：整组一次进 process_message，主消息取带 text 的。"""
+        client = _CatchupClient([
+            _Msg(11, grouped_id=7),                # 相册图1
+            _Msg(12, text="相册标题", grouped_id=7),  # 相册图2（带文字=主）
+            _Msg(13, text="单独"),
+        ])
+        fwd, db = await _make_fwd(tmp_path, _catchup_snap(), client)
+        await db.set_progress(_CHAT, 10)
+        seen = []
+        async def spy(m, all_messages_in_group=None):
+            seen.append((m.id, len(all_messages_in_group) if all_messages_in_group else 0))
+        fwd.process_message = spy
+        await fwd.catchup_once(limit=50)
+        # 相册(11,12) 合并成 1 次，主消息=12（有 text）；单独 13 一次
+        assert seen == [(12, 2), (13, 0)]
+        await db.close()
+
+    async def test_forward_new_only_sets_baseline_no_backfill(self, tmp_path):
+        """新源 + forward_new_only：只建基线不倒灌历史。"""
+        client = _CatchupClient([_Msg(5, text="old5"), _Msg(6, text="old6"), _Msg(7, text="old7")])
+        fwd, db = await _make_fwd(tmp_path, _catchup_snap(forward_new_only=True), client)
+        # 默认 progress=0
+        calls = []
+        async def spy(m, all_messages_in_group=None):
+            calls.append(m.id)
+        fwd.process_message = spy
+        await fwd.catchup_once(limit=50)
+        assert calls == []                       # 未处理任何历史
+        assert await db.get_progress(_CHAT) == 7  # 基线=最新，往后只追新增
+        await db.close()
+
+    async def test_history_scan_when_forward_new_only_off(self, tmp_path):
+        """forward_new_only=False：progress=0 也增量补历史（min_id=0 起）。"""
+        client = _CatchupClient([_Msg(1, text="m1"), _Msg(2, text="m2")])
+        fwd, db = await _make_fwd(tmp_path, _catchup_snap(forward_new_only=False), client)
+        calls = []
+        async def spy(m, all_messages_in_group=None):
+            calls.append(m.id)
+        fwd.process_message = spy
+        await fwd.catchup_once(limit=50)
+        assert calls == [1, 2]
+        await db.close()
+
+    async def test_event_and_catchup_no_double_send(self, tmp_path):
+        """核心不双发：事件处理过的消息，catchup 靠 progress 门控不再重复转发。"""
+        m11, m12, m13 = _Msg(11, text="hello11"), _Msg(12, text="hello12"), _Msg(13, text="hello13")
+        client = _CatchupClient([m11, m12, m13])
+        snapshot = _catchup_snap(forward_new_only=True)
+        fwd, db = await _make_fwd(tmp_path, snapshot, client)
+        sent = []
+        async def stub_send(original, text, target_id, topic_id, snap):
+            sent.append(text)
+        fwd._send_message = stub_send
+        # 模拟事件只送达 11（12/13 在断连窗口漏送）
+        await fwd.process_message(m11)
+        assert sent == ["hello11"]
+        assert await db.get_progress(_CHAT) == 11
+        # catchup 从 progress=11 起 → 只补 12,13，11 不再重复
+        await fwd.catchup_once(limit=50)
+        assert sent == ["hello11", "hello12", "hello13"]
+        assert sent.count("hello11") == 1
+        await db.close()
+
+    async def test_lru_blocks_direct_reprocess(self, tmp_path):
+        """同一条消息二次进 process_message（事件+catchup 竞态）被 LRU 拦下不双发。"""
+        m11 = _Msg(11, text="hello11")
+        client = _CatchupClient([m11])
+        fwd, db = await _make_fwd(tmp_path, _catchup_snap(forward_new_only=False), client)
+        sent = []
+        async def stub_send(original, text, target_id, topic_id, snap):
+            sent.append(text)
+        fwd._send_message = stub_send
+        await fwd.process_message(m11)  # 首次
+        await fwd.process_message(m11)  # 竞态重复 → LRU 跳过
+        assert sent == ["hello11"]
+        await db.close()

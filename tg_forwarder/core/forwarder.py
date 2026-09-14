@@ -186,9 +186,19 @@ def find_target(text: str, media: Any, snapshot) -> Tuple[Optional[int], Optiona
 
 
 class Forwarder:
-    """事件驱动转发 + catchup 兜底；快照原子替换（R8）。"""
+    """事件驱动转发 + catchup 兜底；快照原子替换（R8）。
 
-    _CATCHUP_LRU_SIZE = 200  # 近期已处理消息 chat/msg 记录上限
+    两条入口共用同一 process_message 管线：
+    - 实时：register_handlers 挂 telethon NewMessage/Album 事件；
+    - 兜底：catchup_once（main.py 以 IntervalTrigger 周期调用），
+      增量扫描 progress 之后的消息，补齐断连窗口/update 间隙漏送的
+      （09-13 事故 v2 靠它补回 35 条）。与事件路径不双发：
+      progress 门控（min_id=last）为主、LRU + dedup hash 为兜底。
+    """
+
+    _CATCHUP_LRU_SIZE = 200      # 近期已处理消息 chat/msg 记录上限
+    _CATCHUP_INTERVAL_SECONDS = 300  # 兜底扫描周期（对齐 v2 IntervalTrigger 300s）
+    _CATCHUP_LIMIT = 50          # 每源每轮上限（对齐 v2 50 条/次）
 
     def __init__(self, db: Database, account_manager: Any):
         self.db = db
@@ -529,6 +539,85 @@ class Forwarder:
                 await asyncio.sleep(6 * 3600)
 
         self._prune_task = asyncio.create_task(_loop())
+
+    # --- catchup 兜底扫描（P1 修复：补齐事件漏送）---
+
+    async def catchup_once(self, client: Any = None, limit: int = 50) -> int:
+        """增量扫描各源 progress 之后的消息，补齐 telethon 事件漏送的。
+
+        main.py 以 IntervalTrigger(300s) 周期调用。返回本轮补齐条数。
+        与实时事件不双发：process_message 内部 progress 门控（min_id=last）
+        为主、_seen_recently LRU + dedup hash 为兜底。
+        """
+        snapshot = self._snapshot
+        if snapshot is None:
+            return 0
+        if client is None:
+            healthy = self._am.healthy_accounts() if self._am else []
+            if not healthy:
+                logger.debug("catchup: 无可用客户端，跳过本轮。")
+                return 0
+            client = healthy[0]
+
+        total = 0
+        for src in list(snapshot.sources):
+            if not src.resolved_id:
+                continue
+            try:
+                total += await self._catchup_source(client, src.resolved_id, limit)
+            except Exception as e:
+                logger.error(f"catchup 源 {src.resolved_id} 异常: {e}")
+        if total:
+            logger.info(f"🧩 catchup 兜底补齐 {total} 条（事件漏送窗口）。")
+        return total
+
+    async def _catchup_source(self, client: Any, chat_id: int, limit: int) -> int:
+        """单源增量兜底（对齐 v2 process_history 的 50 条/次 + 相册合并）。"""
+        settings = self._snapshot.settings
+        last = await self.db.get_progress(chat_id)
+
+        # 新源基线：forward_new_only 时不倒灌历史，仅记录当前头部往后追
+        if last == 0 and settings.forward_new_only:
+            async for m in client.iter_messages(chat_id, limit=1):
+                await self.db.set_progress(chat_id, m.id)
+                logger.info(
+                    f"catchup 源 {chat_id} 建立基线 progress={m.id}"
+                    f"（forward_new_only，不倒灌历史）"
+                )
+            return 0
+
+        # 增量：reverse=True 升序（oldest-first），保证 progress 连续推进
+        batch: List[Message] = []
+        async for m in client.iter_messages(
+            chat_id, min_id=last, limit=limit, reverse=True
+        ):
+            batch.append(m)
+        if not batch:
+            return 0
+
+        processed = 0
+        i, n = 0, len(batch)
+        while i < n:
+            m = batch[i]
+            gid = getattr(m, "grouped_id", None)
+            if gid:
+                group = [m]
+                j = i + 1
+                while j < n and getattr(batch[j], "grouped_id", None) == gid:
+                    group.append(batch[j])
+                    j += 1
+                main_msg = next((g for g in group if g.text), group[0])
+                await self.process_message(main_msg, all_messages_in_group=group)
+                i = j
+            else:
+                await self.process_message(m)
+                i += 1
+            processed += 1
+
+        # 本轮扫到的最大 id 抬升 progress（含相册尾部/被过滤消息），
+        # 避免下轮重复拉取（process_message 内 finally 只抬到 main_msg.id）
+        await self.db.set_progress(chat_id, batch[-1].id)
+        return processed
 
     # --- 状态（R9：/api/status 与 /api/stats 消费）---
 

@@ -105,25 +105,44 @@ async def cmd_run(db: Database, yaml_path: str) -> None:
     supervisor = Supervisor(accounts, config)
     tasks.append(supervisor.run())
 
-    # 死链检测定时任务（v2 对齐：cron schedule）
-    if config.link_checker.enabled and healthy:
+    # 定时任务：catchup 兜底扫描（P1 修复）+ 死链检测（v2 对齐 cron）
+    if healthy:
         from apscheduler.schedulers.asyncio import AsyncIOScheduler
         from apscheduler.triggers.cron import CronTrigger
-
-        from tg_forwarder.core.link_checker import LinkChecker
+        from apscheduler.triggers.interval import IntervalTrigger
 
         scheduler = AsyncIOScheduler(timezone="UTC")
-        checker = LinkChecker(db, healthy[0], config)
+
+        # catchup：每 300s 增量补齐事件漏送（对齐 v2 IntervalTrigger 300s）
         try:
             scheduler.add_job(
-                checker.run,
-                CronTrigger.from_crontab(config.link_checker.schedule),
-                name="link_checker",
+                forwarder.catchup_once,
+                IntervalTrigger(
+                    seconds=Forwarder._CATCHUP_INTERVAL_SECONDS
+                ),
+                name="catchup",
             )
-            scheduler.start()
-            logger.info(f"死链检测已排程: {config.link_checker.schedule}")
+            logger.info(
+                f"catchup 兜底扫描已排程: 每 {Forwarder._CATCHUP_INTERVAL_SECONDS}s"
+            )
         except Exception as e:
-            logger.warning(f"死链检测排程失败（忽略）: {e}")
+            logger.warning(f"catchup 排程失败（忽略）: {e}")
+
+        # 死链检测（仅启用时）
+        if config.link_checker.enabled:
+            from tg_forwarder.core.link_checker import LinkChecker
+
+            checker = LinkChecker(db, healthy[0], config)
+            try:
+                scheduler.add_job(
+                    checker.run,
+                    CronTrigger.from_crontab(config.link_checker.schedule),
+                    name="link_checker",
+                )
+            except Exception as e:
+                logger.warning(f"死链检测排程失败（忽略）: {e}")
+
+        scheduler.start()
 
     for client in healthy:
         tasks.append(client.run_until_disconnected())
