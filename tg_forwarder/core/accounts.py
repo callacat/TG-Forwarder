@@ -30,8 +30,19 @@ PROXY_LEVEL_NAMES = {
     PROXY_LEVEL_CONFIGURED: "configured-proxy",
 }
 
-# 连接超时（单次连接尝试）
-CONNECT_TIMEOUT_SECONDS = 45
+# 连接超时（单次 socket 操作，交给 telethon MTProtoSender）
+CONNECT_TIMEOUT_SECONDS = 20
+# 降级链每级墙钟上限：blocked 端口在此被取消并试下一级，
+# 防 connection_retries=None 的内部无限重试吞掉降级
+LEVEL_CONNECT_TIMEOUT_SECONDS = 25
+
+# telethon 连接子类：强制 80 端口（不触碰 session，auth_key 与 DC 绑定不受影响）
+from telethon.network.connection.tcpfull import ConnectionTcpFull
+
+
+class ConnectionTcpPort80(ConnectionTcpFull):
+    def __init__(self, ip, port, dc_id, **kwargs):
+        super().__init__(ip, 80, dc_id, **kwargs)
 
 
 def backoff_delays(attempts: int = 5, base: float = 2.0, factor: float = 2.0,
@@ -103,40 +114,52 @@ class ProxyFallback:
 
     async def _default_connect_factory(self, level: int, session_path: str,
                                        api_id: int, api_hash: str):
+        """真实 Telethon 工厂：构造 + **连接**（老马验收发现的 P0 修复点）。
+
+        旧版只构造不 connect()，下游 is_user_authorized() 立即
+        "Cannot send requests while disconnected"，各级全部假性失败。
+        连接失败自行清理（disconnect 吞异常后重抛），由降级链捕获后试下一级。
+        """
         from telethon import TelegramClient
 
         proxy = None
         if level == PROXY_LEVEL_CONFIGURED and self.configured_proxy:
             proxy = self.configured_proxy
 
+        # connection_retries=None：运行期 telethon 无限自动重连（R2，v2 语义）；
+        # 启动降级链靠下面 wait_for 限时防内部重试吞掉降级，二者解耦。
         client = TelegramClient(
             session_path,
             api_id,
             api_hash,
             proxy=proxy,
             use_ipv6=False,
-            connection_retries=3,
+            connection_retries=None,
             retry_delay=1,
             timeout=CONNECT_TIMEOUT_SECONDS,
         )
 
-        # direct(80)：连接前覆盖 session 端口（默认 DC IP 不变，端口 443→80）
+        # direct(80)：用连接子类强制端口，不动 session（set_dc 是同步函数，
+        # await 会 TypeError；且会重写 session 行/auth_key 选择，有副作用）
         if level == PROXY_LEVEL_DIRECT_80:
-            from telethon.client.telegrambaseclient import (
-                DEFAULT_DC_ID,
-                DEFAULT_IPV4_IP,
-            )
+            client._connection = ConnectionTcpPort80
 
-            await client.session.set_dc(
-                DEFAULT_DC_ID, DEFAULT_IPV4_IP, 80
-            )
-
-        # http 模式：HTTP 传输连接类（443 端口、伪装 HTTP 流量）
+        # http 模式：HTTP 传输连接类（telethon 实际类名是 ConnectionHttp）
         if level == PROXY_LEVEL_HTTP_MODE:
-            from telethon.network.connection.http import ConnectionTcpHttp
+            from telethon.network.connection.http import ConnectionHttp
 
-            client._connection = ConnectionTcpHttp
+            client._connection = ConnectionHttp
 
+        try:
+            # 每级限时：blocked 级别在 LEVEL_CONNECT_TIMEOUT 内被取消并试下一级，
+            # 不让 connection_retries=None 的内部无限重试吞掉降级链
+            await asyncio.wait_for(client.connect(), LEVEL_CONNECT_TIMEOUT_SECONDS)
+        except Exception:
+            try:
+                await client.disconnect()
+            except Exception:
+                pass
+            raise
         return client
 
     # ------------------------------------------------------------------
@@ -145,7 +168,11 @@ class ProxyFallback:
 
     async def connect_with_fallback(self, session_path: str, api_id: int,
                                     api_hash: str) -> Any:
-        """按降级链逐级尝试连接，返回 (client, 生效级别)。全链失败抛最后异常。"""
+        """按降级链逐级尝试连接，返回 (client, 生效级别)。全链失败抛最后异常。
+
+        工厂契约：入参 (level, session_path, api_id, api_hash)，成功返回
+        **已连接** 的 client（生产工厂内部 connect+失败自清理），失败抛异常。
+        """
         last_error: Optional[Exception] = None
         for level in self.levels:
             try:
@@ -160,13 +187,7 @@ class ProxyFallback:
                     f"连接失败 [{PROXY_LEVEL_NAMES[level]}] {session_path}: "
                     f"{type(e).__name__}: {e}"
                 )
-                # 清理半初始化的 client，避免泄漏连接
-                client_ref = locals().get("client")
-                if client_ref is not None:
-                    try:
-                        await client_ref.disconnect()
-                    except Exception:
-                        pass
+                # 失败 client 由工厂自行清理（生产实现约定）
         raise last_error if last_error else RuntimeError("降级链为空")
 
 

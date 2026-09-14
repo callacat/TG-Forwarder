@@ -74,7 +74,8 @@ class TestProxyFallback:
             calls.append(level)
             if level in fail_levels:
                 raise ConnectionError(f"level {level} down")
-            return f"client@{level}", level
+            # 工厂契约：成功返回已连接的 client（非元组），与生产实现一致
+            return f"client@{level}"
 
         fb = ProxyFallback(configured_proxy=configured_proxy, connect_factory=factory)
         return fb, calls
@@ -110,6 +111,171 @@ class TestProxyFallback:
         with pytest.raises(ConnectionError):
             await fb.connect_with_fallback("/tmp/s", 1, "h")
         assert calls == [0, 1, 2]
+
+
+# ---------------------------------------------------------------------------
+# 生产连接工厂真实路径（P0 修复回归：老马验收发现旧版只构造不 connect）
+# ---------------------------------------------------------------------------
+
+
+class _FakeTelegramClient:
+    """替身 TelegramClient：记录构造 kwargs、connect/disconnect 调用与顺序。"""
+
+    instances: List["_FakeTelegramClient"] = []
+
+    def __init__(self, session_path, api_id, api_hash, **kwargs):
+        self.session_path = session_path
+        self.init_kwargs = kwargs
+        self.connect_called = 0
+        self.disconnect_called = 0
+        self.connected = False
+        self.raise_on_connect = False
+        self._connection = kwargs.pop("_connection_probe", None)
+        _FakeTelegramClient.instances.append(self)
+
+    async def connect(self):
+        self.connect_called += 1
+        if self.raise_on_connect:
+            raise ConnectionError("fake dc unreachable")
+        self.connected = True
+
+    async def disconnect(self):
+        self.disconnect_called += 1
+        self.connected = False
+
+    async def is_user_authorized(self):
+        assert self.connected, "is_user_authorized 前必须先 connect（旧 bug 回归守卫）"
+        return True
+
+
+class TestDefaultConnectFactory:
+    def setup_method(self):
+        _FakeTelegramClient.instances = []
+
+    def _patch_telegramclient(self, monkeypatch):
+        import telethon
+
+        monkeypatch.setattr(telethon, "TelegramClient", _FakeTelegramClient)
+
+    async def test_factory_connects_before_return(self, monkeypatch):
+        """P0 回归：factory 返回的 client 必须已 connect（旧版从未连接）。"""
+        self._patch_telegramclient(monkeypatch)
+        fb = ProxyFallback()
+        client, level = await fb.connect_with_fallback("/tmp/s.session", 1, "h")
+        assert level == PROXY_LEVEL_DIRECT_443
+        assert isinstance(client, _FakeTelegramClient)
+        assert client.connect_called == 1
+        assert client.connected is True
+
+    async def test_factory_connection_retries_decoupled(self, monkeypatch):
+        """connection_retries=None（运行期 telethon 自愈，R2）；
+        启动降级靠每级 wait_for 限时防内部重试吞降级（二者解耦）。"""
+        self._patch_telegramclient(monkeypatch)
+        fb = ProxyFallback()
+        client, _ = await fb.connect_with_fallback("/tmp/s.session", 1, "h")
+        assert client.init_kwargs["connection_retries"] is None
+        assert client.init_kwargs["use_ipv6"] is False
+
+    async def test_direct80_level_uses_port80_connection(self):
+        """direct(80) 级别必须挂 port 强制 80 的连接子类，且不动 session。"""
+        import logging
+        from collections import defaultdict
+
+        from tg_forwarder.core.accounts import ConnectionTcpPort80
+
+        loggers = defaultdict(lambda: logging.getLogger("test"))
+        conn = ConnectionTcpPort80(
+            "149.154.167.51", 443, 2, loggers=loggers, proxy=None, local_addr=None
+        )
+        assert conn._port == 80
+        # 443 被传入也必须被强制成 80（子类签名兼容 TelegramClient 调用）
+        conn2 = ConnectionTcpPort80("1.2.3.4", 80, 2, loggers=loggers)
+        assert conn2._port == 80
+
+    async def test_http_level_uses_correct_class_name(self, monkeypatch):
+        """http 模式用真实 telethon ConnectionHttp（旧误写 ConnectionTcpHttp 已修）。"""
+        from telethon.network.connection.http import ConnectionHttp
+
+        self._patch_telegramclient(monkeypatch)
+        fb = ProxyFallback()
+        client, level = await fb.connect_with_fallback("/tmp/s.session", 1, "h")
+        # 直接测 http 级别：levels 裁剪到只剩 http
+        fb2 = ProxyFallback(levels=[PROXY_LEVEL_HTTP_MODE])
+        client2, level2 = await fb2.connect_with_fallback("/tmp/s.session", 1, "h")
+        assert client2._connection is ConnectionHttp
+
+    async def test_factory_connect_failure_disconnects_and_raises(self, monkeypatch):
+        """connect 失败：factory 内 disconnect 清理并抛出，降级链捕获后试下一级。"""
+        import telethon
+
+        made: List["_FakeTelegramClient"] = []
+
+        class FailConnectClient(_FakeTelegramClient):
+            def __init__(self, *a, **k):
+                super().__init__(*a, **k)
+                made.append(self)
+
+            async def connect(self):
+                self.connect_called += 1
+                raise ConnectionError("443 blocked")
+
+        monkeypatch.setattr(telethon, "TelegramClient", FailConnectClient)
+        fb = ProxyFallback()
+        with pytest.raises(ConnectionError):
+            await fb._default_connect_factory(
+                PROXY_LEVEL_DIRECT_443, "/tmp/s.session", 1, "h"
+            )
+        assert len(made) == 1
+        assert made[0].disconnect_called == 1  # 失败自清理
+        assert made[0].connected is False
+
+    async def test_chain_descends_to_next_level_on_connect_fail(self, monkeypatch):
+        """生产 factory 下：443 连不上 → 自动降到 80（端到端降级链）。"""
+        import telethon
+
+        made: List[_FakeTelegramClient] = []
+
+        def factory_cls(session_path, api_id, api_hash, **kwargs):
+            # 第 1 次构造（443）失败；第 2 次（80）成功
+            if len(made) == 0:
+                c = FailConnectClient2(session_path, api_id, api_hash, **kwargs)
+            else:
+                c = _FakeTelegramClient(session_path, api_id, api_hash, **kwargs)
+            made.append(c)
+            return c
+
+        class FailConnectClient2(_FakeTelegramClient):
+            async def connect(self):
+                self.connect_called += 1
+                raise ConnectionError("443 blocked")
+
+        monkeypatch.setattr(telethon, "TelegramClient", factory_cls)
+        fb = ProxyFallback(levels=[PROXY_LEVEL_DIRECT_443, PROXY_LEVEL_DIRECT_80])
+        client, level = await fb.connect_with_fallback("/tmp/s.session", 1, "h")
+        assert level == PROXY_LEVEL_DIRECT_80
+        assert len(made) == 2
+        assert made[0].disconnect_called == 1
+        assert made[1].connect_called == 1
+        assert made[1].connected is True
+
+    async def test_account_manager_end_to_end_with_production_factory(self, monkeypatch, tmp_path):
+        """AccountManager 真实 _start_one 路径：session 文件在 + fake client → healthy。"""
+        import telethon
+
+        self._patch_telegramclient(monkeypatch)
+        (tmp_path / "real1.session").touch()  # P9 检查通过
+        fb = ProxyFallback()
+        am = AccountManager(data_dir=str(tmp_path))
+        cfg = _cfg(accounts=[_Acc("real1")])
+        healthy = await am.start(cfg)
+        assert len(healthy) == 1
+        c = healthy[0]
+        assert isinstance(c, _FakeTelegramClient)
+        assert c.connect_called == 1
+        assert c.session_name_for_forwarder == "real1"
+        st = am.all_status()["accounts"][0]
+        assert st["healthy"] is True
+        assert st["proxy_level"] == "direct:443"
 
 
 # ---------------------------------------------------------------------------
