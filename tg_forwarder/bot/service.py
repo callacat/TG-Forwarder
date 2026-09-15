@@ -124,42 +124,6 @@ class BotService:
                 logger.warning(f"读取数据库统计失败: {e}")
         return {}
 
-    def _rule_stats(self) -> dict:
-        """从 repos（config/source/rule 仓储）读取规则统计。
-
-        repos 为 (config_repo, source_repo, rule_repo) 元组；仓储为同步 get()
-        时直接调用，协程时由调用方 await。此处提供同步读取的兜底实现。
-        """
-        stats = {
-            "source_count": 0,
-            "rule_count": 0,
-            "bl_count": 0,
-            "wl_count": 0,
-            "cf_count": 0,
-            "rep_count": 0,
-        }
-        repos = self.repos
-        if not repos:
-            return stats
-        config_repo, source_repo, rule_repo = repos
-
-        try:
-            # app_config 段（ad_filter/whitelist/content_filter/replacements）
-            cfg = config_repo.get("ad_filter") if hasattr(config_repo, "get") else None
-            if cfg is not None:
-                if asyncio_iscoroutine(cfg):
-                    cfg = None  # 协程配置读取需异步上下文，此处跳过（/status 已含兜底）
-            if isinstance(cfg, dict):
-                stats["bl_count"] = (
-                    len(cfg.get("keywords_substring") or [])
-                    + len(cfg.get("keywords_word") or [])
-                    + len(cfg.get("file_name_keywords") or [])
-                    + len(cfg.get("patterns") or [])
-                )
-        except Exception as e:
-            logger.debug(f"读取规则统计(ad_filter)失败: {e}")
-        return stats
-
     # ------------------------------------------------------------------
     # 命令注册
     # ------------------------------------------------------------------

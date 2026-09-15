@@ -920,3 +920,369 @@ class TestCatchup:
         await fwd.process_message(m11)  # 竞态重复 → LRU 跳过
         assert sent == ["hello11"]
         await db.close()
+
+
+# ---------------------------------------------------------------------------
+# 运行期维护（P2 修复：断连立即置 unhealthy + 周期维护循环触发看门狗退出）
+# ---------------------------------------------------------------------------
+
+
+class _LiveClient:
+    """可切换连接态的 fake client（模拟 docker network disconnect）。"""
+
+    session_name_for_forwarder = "live"
+
+    def __init__(self):
+        self._connected = True
+
+    def is_connected(self):  # telethon 同步 API
+        return self._connected
+
+    async def disconnect(self):
+        pass
+
+    async def connect(self):
+        if not self._connected:
+            raise ConnectionError("network down")
+
+    async def is_user_authorized(self):
+        return True
+
+
+class TestRuntimeMaintenance:
+    def _seed(self):
+        from tg_forwarder.core.accounts import AccountManager, AccountState
+
+        am = AccountManager()
+        client = _LiveClient()
+        st = AccountState(session_name="live", api_id=1, api_hash="h")
+        st.client = client
+        st.connected = True
+        st.authorized = True
+        st.healthy = True
+        am._states["live"] = st
+        return am, client, st
+
+    async def test_maintain_flips_healthy_immediately_on_disconnect(self):
+        """P2 回归：探到断连立即置 unhealthy（旧版依赖重连失败才置位）。"""
+        am, client, st = self._seed()
+        assert len(am.healthy_accounts()) == 1
+        client._connected = False  # 注入断网
+        await am.maintain_once()
+        assert st.healthy is False          # 关键：无需等 _reconnect
+        assert st.connected is False
+        assert len(am.healthy_accounts()) == 0  # 看门狗/health 看到真实值
+        if st.reconnect_task:
+            st.reconnect_task.cancel()
+        await am.stop()
+
+    async def test_reconnect_restores_healthy_when_back(self):
+        am, client, st = self._seed()
+        client._connected = False
+        await am.maintain_once()
+        assert st.healthy is False
+        if st.reconnect_task:
+            st.reconnect_task.cancel()
+            try:
+                await st.reconnect_task
+            except (asyncio.CancelledError, Exception):
+                pass
+        client._connected = True  # 网络恢复
+        await am.maintain_once()
+        assert st.healthy is True
+        await am.stop()
+
+    async def test_end_to_end_disconnect_triggers_watchdog_exit(self):
+        """端到端复现老马断网注入：维护循环置 unhealthy → 看门狗超时 exit(1)。"""
+        am, client, st = self._seed()
+        cfg = _WatchdogCfg(timeout_minutes=0.01, interval_seconds=0.05)  # ~0.6s 阈值
+        exited = []
+
+        async def on_critical(msg):
+            pass
+
+        async def flip():
+            await asyncio.sleep(0.1)
+            client._connected = False  # 运行期断网
+
+        sup = Supervisor(
+            am, cfg, on_critical=on_critical, exit_func=lambda c: exited.append(c)
+        )
+        tasks = [
+            asyncio.create_task(am.maintenance_loop(0.05)),
+            asyncio.create_task(flip()),
+            asyncio.create_task(sup.run()),
+        ]
+        for _ in range(150):
+            await asyncio.sleep(0.05)
+            if exited:
+                break
+        for t in tasks:
+            t.cancel()
+        for t in tasks:
+            try:
+                await t
+            except asyncio.CancelledError:
+                pass
+        if st.reconnect_task:
+            st.reconnect_task.cancel()
+        assert exited == [1]  # 假活根治：断网超阈值必退出
+
+
+# ---------------------------------------------------------------------------
+# T1：BotService 装配（main.py 接线回归）
+# ---------------------------------------------------------------------------
+
+
+import main as _main_module  # noqa: E402
+
+
+class _BotMe:
+    username = "test_forwarder_bot"
+
+
+class _BMsg:
+    async def edit(self, *a, **k):
+        return None
+
+
+class _BEv:
+    def __init__(self, sender_id, is_group=False):
+        self.sender_id = sender_id
+        self.is_group = is_group
+
+    async def reply(self, *a, **k):
+        return _BMsg()
+
+
+class _FakeBotClient:
+    """替身 bot TelegramClient：记录 start(bot_token)/get_me/on()/__call__。"""
+
+    def __init__(self, session, api_id, api_hash, **kwargs):
+        self.api_id = api_id
+        self.api_hash = api_hash
+        self.init_kwargs = kwargs
+        self.started_with = None
+        self.registered = []
+        self._connected = False
+        self.raise_on_start = False
+        self.commands_sent = 0
+
+    async def start(self, bot_token=None):
+        if self.raise_on_start:
+            raise ConnectionError("bot login failed")
+        self.started_with = bot_token
+        self._connected = True
+
+    async def get_me(self):
+        return _BotMe()
+
+    def is_connected(self):
+        return self._connected
+
+    async def disconnect(self):
+        self._connected = False
+
+    def on(self, *a, **k):
+        def deco(fn):
+            self.registered.append(fn)
+            return fn
+        return deco
+
+    async def __call__(self, *a, **k):
+        self.commands_sent += 1
+        return None
+
+
+def _bot_cfg(**bs_over):
+    from tg_forwarder.config import AccountConfig, BotServiceConfig
+
+    bs = BotServiceConfig(
+        enabled=True, bot_token="123:AAAtoken", admin_user_ids=[100],
+        **bs_over,
+    )
+    return RuntimeConfig(
+        bot_service=bs,
+        accounts=[AccountConfig(api_id=111, api_hash="ah", session_name="acc1")],
+    )
+
+
+class _AM2:
+    def healthy_accounts(self):
+        return []
+
+    def all_status(self):
+        return {"accounts": []}
+
+    def record_flood_wait(self, *a, **k):
+        pass
+
+
+async def _bot_db(tmp_path):
+    """真实 tmp db（migrate 后建 app_config 表）+ 三仓储。"""
+    import os
+
+    from tg_forwarder.storage.db import Database
+    from tg_forwarder.storage.repositories import (
+        ConfigRepository,
+        RuleRepository,
+        SourceRepository,
+    )
+
+    db = Database(os.path.join(str(tmp_path), "bot.sqlite"))
+    await db.open()
+    await db.migrate()
+    return db, (ConfigRepository(db), SourceRepository(db), RuleRepository(db))
+
+
+def _patch_bot_factory(monkeypatch, made=None):
+    import telethon
+
+    def factory(session, api_id, api_hash, **kw):
+        c = _FakeBotClient(session, api_id, api_hash, **kw)
+        if made is not None:
+            made.append(c)
+        return c
+
+    monkeypatch.setattr(telethon, "TelegramClient", factory)
+    return factory
+
+
+class TestBotCredentialsResolve:
+    def test_independent_preferred(self):
+        cfg = _bot_cfg(bot_api_id=777, bot_api_hash="bh")
+        assert _main_module.resolve_bot_credentials(cfg) == (777, "bh")
+
+    def test_fallback_accounts0(self):
+        assert _main_module.resolve_bot_credentials(_bot_cfg()) == (111, "ah")
+
+    def test_no_credentials_returns_none(self):
+        cfg = _bot_cfg()
+        cfg.accounts = []
+        assert _main_module.resolve_bot_credentials(cfg) == (None, None)
+
+    def test_partial_independent_falls_back(self):
+        """只有 bot_api_id 缺 hash → 视为无独立凭据，回落 accounts[0]。"""
+        cfg = _bot_cfg(bot_api_id=777, bot_api_hash=None)
+        assert _main_module.resolve_bot_credentials(cfg) == (111, "ah")
+
+
+class TestInitializeBot:
+    async def test_enabled_connects_and_registers(self, tmp_path, monkeypatch):
+        """装配冒烟（T1 核心）：Bot 连接 + 命令注册 + 菜单落库 + reload 接线。"""
+        made = []
+        _patch_bot_factory(monkeypatch, made)
+        db, repos = await _bot_db(tmp_path)
+        try:
+            cfg = _bot_cfg(bot_api_id=777, bot_api_hash="bh")
+
+            async def reload_func():
+                return "ok"
+
+            svc, client = await _main_module._initialize_bot(
+                cfg, None, _AM2(), None, db, repos, reload_func, lambda: []
+            )
+            assert svc is not None and client is not None
+            assert made[0].started_with == "123:AAAtoken"      # bot_token 登录
+            assert made[0].api_id == 777                       # R6 独立凭据生效
+            names = [getattr(b, "__name__", "") for b in made[0].registered]
+            assert len(made[0].registered) >= 5                # 5 条命令 handler
+            assert made[0].commands_sent >= 1                  # SetBotCommandsRequest 已发
+            stored = await repos[0].get("bot_command_setup")   # 菜单签名落库
+            assert stored and "token_signature" in stored
+            assert svc.reload_config is reload_func            # /reload 链路接线
+        finally:
+            await db.close()
+
+    async def test_menu_signature_dedup_second_run(self, tmp_path, monkeypatch):
+        """token 未变 → 第二次装配跳过菜单设置（v2 去重逻辑）。"""
+        made = []
+        _patch_bot_factory(monkeypatch, made)
+        db, repos = await _bot_db(tmp_path)
+        try:
+            cfg = _bot_cfg()
+            svc1, _ = await _main_module._initialize_bot(
+                cfg, None, _AM2(), None, db, repos, lambda: None, lambda: []
+            )
+            first_calls = made[0].commands_sent
+            svc2, _ = await _main_module._initialize_bot(
+                cfg, None, _AM2(), None, db, repos, lambda: None, lambda: []
+            )
+            assert svc2 is not None
+            assert made[1].commands_sent == 0   # 签名一致，菜单未重设
+            assert first_calls >= 1
+        finally:
+            await db.close()
+
+    async def test_disabled_returns_none(self):
+        cfg = _bot_cfg()
+        cfg.bot_service.enabled = False
+        svc, client = await _main_module._initialize_bot(
+            cfg, None, _AM2(), None, None, None, lambda: None, lambda: []
+        )
+        assert svc is None and client is None
+
+    async def test_placeholder_token_skipped(self):
+        cfg = _bot_cfg()
+        cfg.bot_service.bot_token = "YOUR_BOT_TOKEN_HERE"
+        svc, client = await _main_module._initialize_bot(
+            cfg, None, _AM2(), None, None, None, lambda: None, lambda: []
+        )
+        assert svc is None and client is None
+
+    async def test_no_credentials_skipped(self, monkeypatch):
+        """独立凭据缺 + accounts 空 → 不构造 client。"""
+        made = []
+        _patch_bot_factory(monkeypatch, made)
+        cfg = _bot_cfg()
+        cfg.accounts = []
+        svc, client = await _main_module._initialize_bot(
+            cfg, None, _AM2(), None, None, None, lambda: None, lambda: []
+        )
+        assert svc is None and client is None
+        assert made == []
+
+    async def test_connect_failure_nonfatal(self, tmp_path, monkeypatch):
+        """Bot 连接失败不阻断进程（运维通道非转发核心）。"""
+        import telethon
+
+        def factory(session, api_id, api_hash, **kw):
+            c = _FakeBotClient(session, api_id, api_hash, **kw)
+            c.raise_on_start = True
+            return c
+
+        monkeypatch.setattr(telethon, "TelegramClient", factory)
+        db, repos = await _bot_db(tmp_path)
+        try:
+            svc, client = await _main_module._initialize_bot(
+                _bot_cfg(), None, _AM2(), None, db, repos, lambda: None, lambda: []
+            )
+            assert svc is None and client is None
+        finally:
+            await db.close()
+
+    async def test_reload_handler_admin_gate_and_chain(self, tmp_path, monkeypatch):
+        """/reload：非 admin 直接拒绝不触链；admin 走 reload_func 全链路。"""
+        made = []
+        _patch_bot_factory(monkeypatch, made)
+        db, repos = await _bot_db(tmp_path)
+        try:
+            cfg = _bot_cfg()
+            calls = {"n": 0}
+
+            async def reload_func():
+                calls["n"] += 1
+                return "reloaded"
+
+            svc, client = await _main_module._initialize_bot(
+                cfg, None, _AM2(), None, db, repos, reload_func, lambda: []
+            )
+            assert svc is not None
+            # v2 注册顺序：/start /status /reload /check /ids
+            reload_handler = made[0].registered[2]
+            await reload_handler(_BEv(sender_id=999))   # 非 admin → 拒绝
+            assert calls["n"] == 0
+            await reload_handler(_BEv(sender_id=100))   # admin → 全链路
+            assert calls["n"] == 1
+        finally:
+            await db.close()

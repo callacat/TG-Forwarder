@@ -280,3 +280,40 @@ class MiniRuleRepository:
             conn.commit()
 
         await asyncio.to_thread(_r)
+
+    async def replace_all(self, rules):
+        """事务化全量重写（与真实 RuleRepository.replace_all 语义一致）。"""
+        conn = await self.db._ensure()
+
+        def _s():
+            with conn:  # 单事务：clear + 重写，异常自动回滚
+                conn.execute("DELETE FROM rules")
+                for data in rules:
+                    conn.execute(
+                        """
+                        INSERT OR REPLACE INTO rules
+                        (name, target_identifier, topic_id, all_keywords,
+                         any_keywords, file_types, file_name_patterns)
+                        VALUES (?, ?, ?, ?, ?, ?, ?)
+                        """,
+                        (
+                            data.get("name"),
+                            str(data.get("target_identifier")),
+                            data.get("topic_id"),
+                            json.dumps(
+                                data.get("all_keywords", []), ensure_ascii=False
+                            ),
+                            json.dumps(
+                                data.get("any_keywords", []), ensure_ascii=False
+                            ),
+                            json.dumps(
+                                data.get("file_types", []), ensure_ascii=False
+                            ),
+                            json.dumps(
+                                data.get("file_name_patterns", []),
+                                ensure_ascii=False,
+                            ),
+                        ),
+                    )
+
+        await asyncio.to_thread(_s)

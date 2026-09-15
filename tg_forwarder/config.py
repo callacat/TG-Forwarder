@@ -115,10 +115,15 @@ class DeduplicationConfig(BaseModel):
 
 
 class WatchdogConfig(BaseModel):
-    """R1 看门狗参数：无可用账号持续超过 timeout_minutes → 告警 + 非零退出。"""
+    """R1 看门狗 + R2 运行期维护参数。
+
+    - timeout_minutes/interval_seconds：看门狗判"无可用账号"的阈值与检查周期；
+    - maintain_interval_seconds：账号维护循环（探活+置 unhealthy+重连）周期（R2，P2 修复）。
+    """
 
     timeout_minutes: int = 5
     interval_seconds: int = 60
+    maintain_interval_seconds: int = 30
 
 
 # ---------------------------------------------------------------------------

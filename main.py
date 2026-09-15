@@ -41,6 +41,74 @@ def _sync_web_rules_db(cfg) -> None:
     rules_db.replacements = dict(cfg.replacements)
 
 
+def resolve_bot_credentials(config):
+    """R6 凭据解析链：bot_service.bot_api_id/hash 优先，缺省回落 accounts[0]。"""
+    bs = getattr(config, "bot_service", None)
+    if bs is not None:
+        api_id = getattr(bs, "bot_api_id", None)
+        api_hash = getattr(bs, "bot_api_hash", None)
+        if api_id and api_hash:
+            return api_id, api_hash
+    accounts = getattr(config, "accounts", None) or []
+    if accounts:
+        return accounts[0].api_id, accounts[0].api_hash
+    return None, None
+
+
+async def _initialize_bot(
+    config, forwarder, accounts, link_checker, db, repos,
+    reload_func, get_clients_func,
+):
+    """装配 Bot 运维服务（T1：修复 v3 主流程从未实例化 BotService）。
+
+    v2 initialize_bot 等价：连接 bot TelegramClient（bot_token + R6 凭据链）→
+    BotService(...) → register_commands() → setup_command_menu()。
+    Bot 是运维/告警通道，非转发核心：连接失败仅告警、不阻断进程（对齐 v2）。
+    返回 (bot_service, bot_client)，未启用/失败返回 (None, None)。
+    """
+    from telethon import TelegramClient
+
+    from tg_forwarder.bot.service import BotService
+
+    bs = getattr(config, "bot_service", None)
+    if bs is None or not getattr(bs, "enabled", False):
+        return None, None
+    if not getattr(bs, "bot_token", "") or bs.bot_token == "YOUR_BOT_TOKEN_HERE":
+        logger.info("Bot 服务已启用但 token 未配置，跳过。")
+        return None, None
+
+    api_id, api_hash = resolve_bot_credentials(config)
+    if not api_id or not api_hash:
+        logger.error("❌ Bot 无可用凭据（独立与 accounts[0] 皆缺），跳过 Bot。")
+        return None, None
+
+    proxy = config.proxy.get_telethon_proxy() if getattr(config, "proxy", None) else None
+    bot_client = TelegramClient(None, api_id, api_hash, proxy=proxy, use_ipv6=False)
+    try:
+        await asyncio.wait_for(bot_client.start(bot_token=bs.bot_token), 45)
+        me = await bot_client.get_me()
+        logger.success(f"✅ Bot 登录成功: @{getattr(me, 'username', '?')}")
+    except Exception as e:
+        logger.error(f"❌ Bot 启动失败（不阻断转发核心，运维指令将不可用）: {e}")
+        return None, None
+
+    bot_service = BotService(
+        config,
+        bot_client,
+        account_manager=accounts,
+        forwarder=forwarder,
+        reload_func=reload_func,
+        get_clients_func=get_clients_func,
+        db=db,
+        repos=repos,
+        link_checker=link_checker,
+    )
+    bot_service.register_commands()
+    await bot_service.setup_command_menu()
+    logger.success("🤖 Bot 运维服务已装配（/status /reload /ids /check）。")
+    return bot_service, bot_client
+
+
 async def cmd_run(db: Database, yaml_path: str) -> None:
     """正常运行模式：装配全部组件并运行至退出。"""
     from tg_forwarder.core.accounts import AccountManager
@@ -87,7 +155,31 @@ async def cmd_run(db: Database, yaml_path: str) -> None:
             logger.error(f"热重载失败: {e}")
             raise
 
-    # 5. Web + 看门狗（R1 假活根治）
+    # 5. 死链检测器实例（/check 命令与 scheduler 共用，避免双实例）
+    link_checker = None
+    if config.link_checker and config.link_checker.enabled and healthy:
+        from tg_forwarder.core.link_checker import LinkChecker
+
+        link_checker = LinkChecker(db, healthy[0], config)
+
+    # 6. Bot 服务（T1：修复 v3 从未接线 BotService；R6 独立凭据；/reload 全链路）
+    async def reload_func() -> str:
+        await update_settings_cb()  # 热重载全链路：load→update_snapshot→_sync_web
+        return "配置与规则已从 app_config 表重载并生效。"
+
+    bot_service, bot_client = await _initialize_bot(
+        config,
+        forwarder,
+        accounts,
+        link_checker,
+        db,
+        (config_repo, source_repo, rule_repo),
+        reload_func,
+        lambda: accounts.healthy_accounts(),
+    )
+    bot_notify = bot_service.notify_admin if bot_service else None
+
+    # 7. Web（写配置成功经 bot_notify 推送 admin，T1 通知通道）
     app = create_app(
         db=db,
         config_repo=config_repo,
@@ -97,12 +189,21 @@ async def cmd_run(db: Database, yaml_path: str) -> None:
         update_settings=update_settings_cb,
         account_manager=accounts,
         forwarder=forwarder,
+        bot_notifier=bot_notify,
     )
     server = run_server(app)
 
-    # 6. Bot 服务（R6：独立凭据可选；告警推送 + 运维指令）
     tasks = [server.serve()]
-    supervisor = Supervisor(accounts, config)
+
+    # 运行期维护循环（R2/P2 修复）：探活断连账号→立即置 unhealthy→后台重连。
+    # 与看门狗并存：维护循环把真实连接态写回 state，看门狗据此判"无可用账号"超时退出。
+    # 旧版此循环未接线（maintain_once 零调用）→ 运行期假活防线失效。
+    tasks.append(
+        accounts.maintenance_loop(config.watchdog.maintain_interval_seconds)
+    )
+
+    # 看门狗（R1）：无可用账号超阈值 → on_critical 经 Bot 触达 admin → 非零退出
+    supervisor = Supervisor(accounts, config, on_critical=bot_notify)
     tasks.append(supervisor.run())
 
     # 定时任务：catchup 兜底扫描（P1 修复）+ 死链检测（v2 对齐 cron）
@@ -128,14 +229,11 @@ async def cmd_run(db: Database, yaml_path: str) -> None:
         except Exception as e:
             logger.warning(f"catchup 排程失败（忽略）: {e}")
 
-        # 死链检测（仅启用时）
-        if config.link_checker.enabled:
-            from tg_forwarder.core.link_checker import LinkChecker
-
-            checker = LinkChecker(db, healthy[0], config)
+        # 死链检测（复用实例）
+        if link_checker is not None:
             try:
                 scheduler.add_job(
-                    checker.run,
+                    link_checker.run,
                     CronTrigger.from_crontab(config.link_checker.schedule),
                     name="link_checker",
                 )
@@ -146,6 +244,8 @@ async def cmd_run(db: Database, yaml_path: str) -> None:
 
     for client in healthy:
         tasks.append(client.run_until_disconnected())
+    if bot_client is not None and bot_client.is_connected():
+        tasks.append(bot_client.run_until_disconnected())
 
     logger.success("🚀 TG-Forwarder v3 就绪。Web UI: http://localhost:8080")
     try:

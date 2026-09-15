@@ -562,3 +562,73 @@ class TestUvicornRunner:
         assert server.config.port == 18080
         assert server.config.access_log is False
         assert server.config.log_config is None
+
+
+class TestBotNotifierWiring:
+    """T1：Web 写配置成功后经 notify_bot 推送 admin（bot_notifier 注入链）。"""
+
+    def _make_with_notifier(self):
+        tmpdir = tempfile.mkdtemp()
+        db = MiniDatabase(os.path.join(tmpdir, "t.sqlite"))
+        repos = (
+            MiniConfigRepository(db),
+            MiniSourceRepository(db),
+            MiniRuleRepository(db),
+        )
+        pushed = []
+
+        async def notifier(msg):
+            pushed.append(msg)
+
+        def get_snapshot():
+            cfg = type("Cfg", (), {})()
+            cfg.web_ui = type("W", (), {})()
+            cfg.web_ui.password = TEST_PASSWORD
+            return cfg
+
+        async def noop_update():
+            return None
+
+        app = create_app(
+            db=db,
+            config_repo=repos[0],
+            source_repo=repos[1],
+            rule_repo=repos[2],
+            get_snapshot=get_snapshot,
+            update_settings=noop_update,
+            bot_notifier=notifier,
+        )
+        return TestClient(app), pushed
+
+    def test_settings_update_pushes_bot(self):
+        client, pushed = self._make_with_notifier()
+        with client:
+            res = client.post(
+                "/api/settings/update",
+                json={"forwarding_mode": "copy", "default_target": "-1001"},
+                headers=basic_auth(),
+            )
+            assert res.status_code == 200
+        assert len(pushed) >= 1  # 系统设置更新 → Bot 推送
+
+    def test_source_add_pushes_bot(self):
+        client, pushed = self._make_with_notifier()
+        with client:
+            res = client.post(
+                "/api/sources/add",
+                json={"identifier": "-100999"},
+                headers=basic_auth(),
+            )
+            assert res.status_code == 200
+        assert any("-100999" in m for m in pushed)
+
+    def test_no_notifier_is_silent_not_error(self):
+        """bot_notifier=None（未启用 Bot）：写操作仍成功，推送静默不报错。"""
+        client, _ = make_client()  # 默认无 notifier
+        with client:
+            res = client.post(
+                "/api/settings/update",
+                json={"forwarding_mode": "forward", "default_target": "-2"},
+                headers=basic_auth(),
+            )
+            assert res.status_code == 200

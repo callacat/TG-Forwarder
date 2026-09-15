@@ -219,6 +219,15 @@ class Forwarder:
     def get_snapshot(self):
         return self._snapshot
 
+    @property
+    def client_flood_wait(self) -> Dict[str, float]:
+        """FloodWait 到期时间表（bot /status 与观测读取，R9）。
+
+        旧属性名带下划线 _client_flood_wait，而 status_handler 读无下划线名，
+        导致 /status 的 FloodWait 计数恒 0；此别名对齐消费端。
+        """
+        return self._client_flood_wait
+
     # --- FloodWait 感知轮询（对齐 v2 _get_next_client）---
 
     def _get_next_client(self) -> Any:

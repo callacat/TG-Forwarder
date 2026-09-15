@@ -333,7 +333,13 @@ class AccountManager:
     # ------------------------------------------------------------------
 
     async def maintain_once(self) -> None:
-        """单轮探活：断连账号触发重连（指数退避，同启动策略）。"""
+        """单轮探活（R2）：断连账号立即置 unhealthy 再后台重连。
+
+        P2 修复：is_connected()==False 时**立即**把 healthy/connected 翻 False
+        （旧版只在 _reconnect 首次 connect 失败后才置位，且本方法零调用点 →
+        运行期假活防线失效）。这样 Supervisor._healthy_count() 与 /health 立刻
+        看到真实断连，超阈值即触发 R1 退出。
+        """
         for state in list(self._states.values()):
             if state.unavailable or state.client is None:
                 continue
@@ -341,14 +347,39 @@ class AccountManager:
                 connected = state.client.is_connected()
             except Exception:
                 connected = False
-            if connected and state.healthy:
-                continue
 
-            # 断连 → 重连（后台任务，避免阻塞探活循环）
-            if state.reconnect_task is None or state.reconnect_task.done():
-                state.reconnect_task = asyncio.create_task(
-                    self._reconnect(state)
-                )
+            if not connected:
+                # 立即置 unhealthy（不依赖重连结果），供看门狗/health 读真实值
+                if state.healthy or state.connected:
+                    state.healthy = False
+                    state.connected = False
+                    logger.warning(
+                        f"⚠️ 账号 {state.session_name} 运行期断连，立即标记 "
+                        f"unhealthy → 后台重连（计入看门狗无可用账号计时）"
+                    )
+                # 断连 → 重连（后台任务，避免阻塞探活循环）
+                if state.reconnect_task is None or state.reconnect_task.done():
+                    state.reconnect_task = asyncio.create_task(
+                        self._reconnect(state)
+                    )
+            else:
+                state.connected = True
+                state.healthy = True
+
+    async def maintenance_loop(self, interval_seconds: int = 30) -> None:
+        """周期维护循环（R2）：每 interval 探活断连账号并触发重连。
+
+        main 层纳入 tasks 列表，随进程优雅取消（asyncio.CancelledError）。
+        与 Supervisor 并存：本循环负责置 unhealthy，看门狗负责据此超时退出。
+        """
+        logger.info(f"🩺 账号维护循环启动（每 {interval_seconds}s 探活+重连）")
+        try:
+            while True:
+                await asyncio.sleep(interval_seconds)
+                await self.maintain_once()
+        except asyncio.CancelledError:
+            logger.info("账号维护循环收到取消信号，优雅退出。")
+            raise
 
     async def _reconnect(self, state: AccountState, max_attempts: int = 5) -> None:
         """断线重连：指数退避；连续失败仅标记，由看门狗按 R1 处置。"""

@@ -140,6 +140,39 @@ class RuleRepository:
             logger.error(f"清空规则失败: {e}")
             raise
 
+    async def replace_all(self, rules: List[Dict[str, Any]]) -> None:
+        """事务化全量重写规则表（C5 修复：重排 clear+rewrite 原子，
+        中途失败整体回滚，不留半新半旧）。"""
+        conn = self.db._require_conn()
+        try:
+            # 默认非 autocommit：首条 DML 隐式开事务，末尾单次 commit 保证原子
+            await conn.execute("DELETE FROM rules")
+            for data in rules:
+                await conn.execute(
+                    """
+                    INSERT OR REPLACE INTO rules
+                    (name, target_identifier, topic_id, all_keywords, any_keywords,
+                     file_types, file_name_patterns)
+                    VALUES (?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        data.get("name"),
+                        str(data.get("target_identifier")),
+                        data.get("topic_id"),
+                        json.dumps(data.get("all_keywords", []), ensure_ascii=False),
+                        json.dumps(data.get("any_keywords", []), ensure_ascii=False),
+                        json.dumps(data.get("file_types", []), ensure_ascii=False),
+                        json.dumps(
+                            data.get("file_name_patterns", []), ensure_ascii=False
+                        ),
+                    ),
+                )
+            await conn.commit()
+        except Exception as e:
+            await conn.rollback()
+            logger.error(f"规则全量重写失败（已回滚）: {e}")
+            raise
+
 
 class ConfigRepository:
     """app_config 表仓储：get(key, default)/save(key, data)。

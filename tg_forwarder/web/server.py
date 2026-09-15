@@ -31,29 +31,17 @@ from pydantic import BaseModel
 
 from loguru import logger
 
-# v3 模块（config.py 由并行子代理交付，未就绪时回退到本地定义——见 _local_models）
-try:  # pragma: no cover - 取决于并行交付时序
-    from tg_forwarder.config import (  # type: ignore[no-redef]
-        AdFilterConfig,
-        ContentFilterConfig,
-        RulesDatabase,
-        SourceConfig,
-        SystemSettings,
-        TargetDistributionRule,
-        WhitelistConfig,
-    )
-    _CONFIG_READY = True
-except ImportError:  # pragma: no cover
-    _CONFIG_READY = False
-    from tg_forwarder.web._local_models import (  # type: ignore[no-redef]
-        AdFilterConfig,
-        ContentFilterConfig,
-        RulesDatabase,
-        SourceConfig,
-        SystemSettings,
-        TargetDistributionRule,
-        WhitelistConfig,
-    )
+# v3 单一配置源模型（config.py 已就绪；原 _local_models fallback 双份模型
+# 系并行交付期临时产物，已删，消除 import 顺序依赖与漂移）
+from tg_forwarder.config import (
+    AdFilterConfig,
+    ContentFilterConfig,
+    RulesDatabase,
+    SourceConfig,
+    SystemSettings,
+    TargetDistributionRule,
+    WhitelistConfig,
+)
 
 # ---------------------------------------------------------------------------
 # 鉴权（P5/R9 加固）
@@ -185,6 +173,7 @@ def create_app(
     account_manager: Any = None,
     forwarder: Any = None,
     static_index_path: Optional[str] = None,
+    bot_notifier: Optional[Callable[[str], Awaitable[None]]] = None,
 ) -> FastAPI:
     """构建 FastAPI 应用。
 
@@ -195,6 +184,7 @@ def create_app(
         update_settings: 写操作成功后的回调（触发 RuntimeConfig 重建 + forwarder 热更新）
         account_manager/forwarder: 可选，用于 /health 与 /api/status（R1/R9）
         static_index_path: index.html 绝对路径（默认取包内 static/index.html）
+        bot_notifier: Bot 通知回调（T1：Web 写配置成功后推送 admin；缺省 None 不推送）
     """
     # 内存规则库快照：初始为空对象，真实数据由 main 启动时经仓储加载
     rules_db = RulesDatabase()
@@ -203,8 +193,8 @@ def create_app(
     app_state["update_settings"] = update_settings
     app_state["account_manager"] = account_manager
     app_state["forwarder"] = forwarder
-    # 重置注入型状态，避免多实例/测试间残留
-    app_state["notify_bot"] = None
+    # 重置注入型状态，避免多实例/测试间残留；notify_bot 由 bot_notifier 注入（T1）
+    app_state["notify_bot"] = bot_notifier
     app_state["web_password"] = None
 
     if static_index_path is None:
@@ -422,10 +412,8 @@ def create_app(
 
             rules_db.distribution_rules = new_list
 
-            # DB 重排：清空重写
-            await rule_repo.clear()
-            for r in new_list:
-                await rule_repo.save(r.model_dump())
+            # DB 重排：事务化全量重写（C5，中途失败整体回滚）
+            await rule_repo.replace_all([r.model_dump() for r in new_list])
         return {"status": "success"}
 
     @app.post("/api/rules/remove")
@@ -555,9 +543,3 @@ def create_app(
         return FileResponse(static_index_path)
 
     return app
-
-
-def load_rules_from_repos(rules_db: Any, source_repo: Any, rule_repo: Any, config_repo: Any) -> None:
-    """从仓储加载规则到内存 rules_db（文档化加载顺序；main 层直接 await 仓储
-    get() 后填充 rules_db，此函数不做实际工作）。"""
-    raise NotImplementedError("main 层直接 await 仓储 get() 后填充 rules_db")
