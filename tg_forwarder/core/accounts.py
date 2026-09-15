@@ -419,6 +419,21 @@ class AccountManager:
             f"重连 {max_attempts} 次失败，等待下一轮探活重试。"
         )
 
+    def mark_unhealthy(self, session_name: str, error: str) -> None:
+        """标记账号不可用（main 层 client 轮询循环异常退出时调用，R1）。
+
+        让维护循环/看门狗立即读到真实状态，触发重连尝试；持续无可用账号时
+        由 Supervisor 输出 [account_all_dead] 结构化告警并 exit 1。
+        """
+        state = self._states.get(session_name)
+        if state and (state.healthy or state.connected):
+            state.connected = False
+            state.healthy = False
+            state.last_error = f"poll_died: {error}"[:300]
+            logger.warning(
+                f"⚠️ 账号 {session_name} 轮询循环异常退出，标记 unhealthy（等待重连）"
+            )
+
     async def stop(self) -> None:
         """优雅退出：取消重连任务并断开全部客户端。"""
         for state in self._states.values():

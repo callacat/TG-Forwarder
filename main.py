@@ -109,6 +109,31 @@ async def _initialize_bot(
     return bot_service, bot_client
 
 
+async def _supervised_poll(client, accounts, name, *, is_bot=False) -> None:
+    """客户端轮询包装（R1 关键）：run_until_disconnected 的异常不得外泄给 gather。
+
+    旧版直接 gather(client.run_until_disconnected())：telethon 重连耗尽抛
+    ConnectionError → gather 传播 → 进程从**异常旁路**退出，绕过 Supervisor 的
+    [account_all_dead] 结构化告警 + on_critical（老马断网注入复验抓到：exit1 有、
+    JSON/CRITICAL 全无）。改法：异常/断开 → 标记该账号 unhealthy → 交维护循环重连
+    → 5s 后再接轮询；网络长期不可用时由看门狗计时走**唯一权威退出路径**（带告警）。
+    """
+    while True:
+        err = "poll ended (disconnected)"
+        try:
+            await client.run_until_disconnected()
+            logger.warning(f"⚠️ 账号 {name} run_until_disconnected 返回（连接断开）")
+        except asyncio.CancelledError:
+            raise
+        except Exception as e:
+            err = f"{type(e).__name__}: {e}"
+            logger.error(f"❌ 账号 {name} 轮询循环异常退出: {err}")
+        if not is_bot and accounts is not None:
+            accounts.mark_unhealthy(name, err)
+        # 等维护循环把连接重建后再挂回轮询；持续失败则由看门狗结构化退出
+        await asyncio.sleep(5)
+
+
 async def cmd_run(db: Database, yaml_path: str) -> None:
     """正常运行模式：装配全部组件并运行至退出。"""
     from tg_forwarder.core.accounts import AccountManager
@@ -243,9 +268,10 @@ async def cmd_run(db: Database, yaml_path: str) -> None:
         scheduler.start()
 
     for client in healthy:
-        tasks.append(client.run_until_disconnected())
+        client_name = getattr(client, "session_name_for_forwarder", "client")
+        tasks.append(_supervised_poll(client, accounts, client_name))
     if bot_client is not None and bot_client.is_connected():
-        tasks.append(bot_client.run_until_disconnected())
+        tasks.append(_supervised_poll(bot_client, None, "bot", is_bot=True))
 
     logger.success("🚀 TG-Forwarder v3 就绪。Web UI: http://localhost:8080")
     try:

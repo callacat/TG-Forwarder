@@ -1286,3 +1286,89 @@ class TestInitializeBot:
             assert calls["n"] == 1
         finally:
             await db.close()
+
+
+# ---------------------------------------------------------------------------
+# R1 关键：client 轮询异常不得旁路看门狗的结构化告警（老马断网复验抓到 JSON 缺失）
+# ---------------------------------------------------------------------------
+
+
+class _BoomPollClient:
+    """run_until_disconnected 立即抛 telethon 式 ConnectionError（模拟重连耗尽）。"""
+
+    session_name_for_forwarder = "live"
+
+    def __init__(self):
+        self.poll_calls = 0
+
+    async def run_until_disconnected(self):
+        self.poll_calls += 1
+        raise ConnectionError("Connection to Telegram failed 5 time(s)")
+
+    def is_connected(self):
+        return False
+
+
+class TestSupervisedPoll:
+    async def test_exception_contained_and_marks_unhealthy(self):
+        """轮询抛错不外泄 gather，且把账号标 unhealthy（否则进程旁路退出无告警）。"""
+        from tg_forwarder.core.accounts import AccountManager, AccountState
+
+        am = AccountManager()
+        st = AccountState(session_name="live", api_id=1, api_hash="h")
+        st.connected = True
+        st.healthy = True
+        am._states["live"] = st
+
+        client = _BoomPollClient()
+        task = asyncio.create_task(_main_module._supervised_poll(client, am, "live"))
+        await asyncio.sleep(0.2)  # 捕获一次 + mark_unhealthy + 进 5s sleep
+        # 关键1：异常被吸收，task 仍在（sleep 中），未因异常 done
+        assert not task.done()
+        # 关键2：账号已标 unhealthy（看门狗会读到真实值）
+        assert st.healthy is False and st.connected is False
+        assert client.poll_calls >= 1
+        task.cancel()
+        try:
+            await task
+        except asyncio.CancelledError:
+            pass
+        await am.stop()
+
+    async def test_watchdog_alert_fires_on_poll_death(self):
+        """端到端：轮询异常→看门狗超阈值→on_critical 被调（结构化告警不旁路）。"""
+        from tg_forwarder.core.accounts import AccountManager, AccountState
+
+        am = AccountManager()
+        st = AccountState(session_name="live", api_id=1, api_hash="h")
+        st.connected = True
+        st.healthy = True
+        am._states["live"] = st
+        client = _BoomPollClient()
+
+        cfg = _WatchdogCfg(timeout_minutes=0.01, interval_seconds=0.05)
+        crit = []
+        async def on_critical(msg):
+            crit.append(msg)
+        exited = []
+        sup = Supervisor(
+            am, cfg, on_critical=on_critical, exit_func=lambda c: exited.append(c)
+        )
+        tasks = [
+            asyncio.create_task(am.maintenance_loop(0.05)),
+            asyncio.create_task(_main_module._supervised_poll(client, am, "live")),
+            asyncio.create_task(sup.run()),
+        ]
+        for _ in range(200):
+            await asyncio.sleep(0.05)
+            if exited:
+                break
+        for t in tasks:
+            t.cancel()
+        for t in tasks:
+            try:
+                await t
+            except asyncio.CancelledError:
+                pass
+        assert exited == [1]
+        assert len(crit) >= 1  # 结构化告警确实触达（非裸 ConnectionError 旁路退出）
