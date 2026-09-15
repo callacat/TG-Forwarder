@@ -29,8 +29,11 @@ from tg_forwarder.core.accounts import (
     backoff_delays,
 )
 from tg_forwarder.core.forwarder import (
+    CAPTION_LIMIT_UNITS,
     Forwarder,
+    _utf16_len,
     apply_replacements,
+    clamp_caption,
     find_target,
     message_hash,
     should_filter,
@@ -1497,3 +1500,103 @@ class TestBlackholeDetection:
             st.reconnect_task.cancel()
         assert exited == [1]
         assert len(crit) >= 1  # 黑洞场景结构化告警确实触达（老马要的判据①）
+
+
+# ---------------------------------------------------------------------------
+# T4：caption 超限截断保媒体（v2 全历史 7 次 SendMediaRequest 丢图实锤，老马 9-15 验收新发现）
+# ---------------------------------------------------------------------------
+
+
+class _SendRecordingClient:
+    """替身发送客户端：记录 send_message kwargs；raise_first=首次调用抛该异常。"""
+
+    session_name_for_forwarder = "sendcap"
+
+    def __init__(self, raise_first=None):
+        self.calls: List[Dict[str, Any]] = []
+        self._raise_first = raise_first
+
+    async def send_message(self, target_id, message=None, file=None, **kw):
+        self.calls.append({"target_id": target_id, "message": message, "file": file, **kw})
+        if self._raise_first is not None and len(self.calls) == 1:
+            raise self._raise_first
+
+        class _Sent:
+            id = 42
+
+        return _Sent()
+
+    async def mark_read(self, *a, **k):
+        pass
+
+
+def _copy_snap():
+    return _cfg(
+        settings=SystemSettings(default_target="-100999"),
+        ad_filter=AdFilterConfig(enable=False),
+        content_filter=ContentFilterConfig(enable=False),
+    )
+
+
+class TestCaptionTruncation:
+    def test_under_limit_untouched(self):
+        text = "x" * CAPTION_LIMIT_UNITS
+        assert clamp_caption(text) == text
+
+    def test_long_ascii_truncated_with_ellipsis(self):
+        out = clamp_caption("A" * 1500)
+        assert _utf16_len(out) == CAPTION_LIMIT_UNITS  # 1023 字符+省略号=恰好 1024
+        assert out.endswith("…")
+        assert ("A" * 1023) == out[:-1]
+
+    def test_exact_1024_boundary_no_truncation(self):
+        text = "B" * (CAPTION_LIMIT_UNITS - 2) + "🐴"  # 1022 BMP + 2 单位 = 恰 1024
+        assert clamp_caption(text) == text
+
+    def test_astral_emoji_never_split(self):
+        """emoji 占 2 个 UTF-16 单位，截断不得拆代理对（孤立代理项=坏字符）。"""
+        out = clamp_caption("🐴" * 600)  # 1200 单位
+        assert _utf16_len(out) <= CAPTION_LIMIT_UNITS
+        assert out == "🐴" * 511 + "…"
+        assert not any(0xD800 <= ord(c) <= 0xDFFF for c in out)  # 无孤立代理项
+
+    async def test_send_message_clamps_before_send(self, tmp_path):
+        """>1024 长文案+媒体：预截断后带图发送（保图截文）。"""
+        client = _SendRecordingClient()
+        fwd, db = await _make_fwd(tmp_path, _copy_snap(), client)
+        album = [_Msg(1, media=object()), _Msg(2, media=object())]
+        await fwd._send_message(album, "C" * 1500, -100999, None, fwd._snapshot)
+        assert len(client.calls) == 1
+        call = client.calls[0]
+        assert call["file"] and len(call["file"]) == 2  # 图保住
+        assert _utf16_len(call["message"]) <= CAPTION_LIMIT_UNITS
+        assert call["message"].endswith("…")
+        await db.close()
+
+    async def test_send_message_fallback_strips_caption_on_server_reject(self, tmp_path):
+        """服务端仍拒 caption → 同图去 caption 重试；不算客户端故障（不进 _handle_send_error）。"""
+        from telethon.errors import MediaCaptionTooLongError
+
+        client = _SendRecordingClient(raise_first=MediaCaptionTooLongError(request=None))
+        fwd, db = await _make_fwd(tmp_path, _copy_snap(), client)
+        err_calls = []
+        fwd._handle_send_error = lambda c, e: err_calls.append(e)
+        media_obj = object()
+        await fwd._send_message(
+            [_Msg(1, media=media_obj)], "D" * 1500, -100999, None, fwd._snapshot
+        )
+        assert len(client.calls) == 2
+        assert client.calls[1]["message"] == ""  # 去文
+        assert client.calls[1]["file"] is not None  # 保图
+        assert err_calls == []
+        await db.close()
+
+    async def test_text_only_path_not_clamped(self, tmp_path):
+        """T4 范围=caption only：纯文本消息（4096 限额）不截断，md 解析路径不变。"""
+        client = _SendRecordingClient()
+        fwd, db = await _make_fwd(tmp_path, _copy_snap(), client)
+        long_text = "E" * 1500  # >1024 但 <4096，文本消息合法
+        await fwd._send_message(_Msg(1, text=long_text), long_text, -100999, None, fwd._snapshot)
+        assert len(client.calls) == 1
+        assert client.calls[0]["message"] == long_text
+        await db.close()

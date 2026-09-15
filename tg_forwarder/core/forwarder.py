@@ -15,6 +15,7 @@ from typing import Any, Dict, List, Optional, Tuple
 
 from loguru import logger
 from telethon import events
+from telethon.errors import MediaCaptionTooLongError
 from telethon.tl.types import (
     Channel,
     Chat,
@@ -60,6 +61,39 @@ def _compile_patterns(patterns: List[str]) -> List[re.Pattern]:
         except re.error as e:
             logger.warning(f"无效正则已跳过: {p} ({e})")
     return compiled
+
+
+# ---------------------------------------------------------------------------
+# T4：caption 超限截断保媒体（v2 全历史 7 次 SendMediaRequest "caption too long"
+# 整条图文永久丢失实锤；v3 原先同样无保护）。方案=保图截文：截断+省略号，溢出文本丢弃。
+# ---------------------------------------------------------------------------
+
+# Telegram caption 上限 1024，按 UTF-16 代码元计数（emoji 等增补平面字符占 2）
+CAPTION_LIMIT_UNITS = 1024
+_CAPTION_ELLIPSIS = "…"  # U+2026 占 1 个 UTF-16 代码元
+
+
+def _utf16_len(s: str) -> int:
+    return len(s.encode("utf-16-le")) // 2
+
+
+def clamp_caption(text: str, limit: int = CAPTION_LIMIT_UNITS) -> str:
+    """caption 超限时截断到 limit（UTF-16 单位）并补省略号；未超限原样返回。
+
+    逐码点累计宽度截断，绝不拆散 emoji 代理对。
+    """
+    if _utf16_len(text) <= limit:
+        return text
+    budget = limit - _utf16_len(_CAPTION_ELLIPSIS)
+    out: List[str] = []
+    used = 0
+    for ch in text:
+        w = 2 if ord(ch) > 0xFFFF else 1
+        if used + w > budget:
+            break
+        out.append(ch)
+        used += w
+    return "".join(out).rstrip() + _CAPTION_ELLIPSIS
 
 
 def _doc_file_name(media: Any) -> Optional[str]:
@@ -373,9 +407,27 @@ class Forwarder:
                         media_to_send = media
 
                 if is_real_file:
-                    sent_message = await client.send_message(
-                        target_id, message=text, file=media_to_send, **send_kwargs
-                    )
+                    # T4：caption 预截断保图；服务端仍拒则去 caption 单发图兜底
+                    caption = clamp_caption(text)
+                    if caption != text:
+                        logger.warning(
+                            f"T4: caption {_utf16_len(text)} UTF-16 单位超上限"
+                            f"({CAPTION_LIMIT_UNITS})，截断保图，溢出文本丢弃"
+                        )
+                    try:
+                        sent_message = await client.send_message(
+                            target_id, message=caption, file=media_to_send,
+                            **send_kwargs
+                        )
+                    except MediaCaptionTooLongError:
+                        logger.warning(
+                            "T4: 服务端仍拒绝 caption（MediaCaptionTooLongError），"
+                            "去文本重发媒体兜底"
+                        )
+                        sent_message = await client.send_message(
+                            target_id, message="", file=media_to_send,
+                            **send_kwargs
+                        )
                 else:
                     sent_message = await client.send_message(
                         target_id, message=text, file=None, parse_mode="md",
