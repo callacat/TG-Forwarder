@@ -67,6 +67,8 @@ class AccountState:
     flood_wait_count: int = 0
     last_error: Optional[str] = None
     client: Any = None
+    # 最近一次成功网络往返（探活 RPC 或收发）时间戳，黑洞式断连判活用（R1）
+    last_activity: float = field(default_factory=time.time)
     # 重连任务与控制
     reconnect_task: Optional[Any] = field(default=None, repr=False)
 
@@ -332,14 +334,59 @@ class AccountManager:
     # 运行期维护（R2：断连自动重连）
     # ------------------------------------------------------------------
 
-    async def maintain_once(self) -> None:
-        """单轮探活（R2）：断连账号立即置 unhealthy 再后台重连。
+    def touch(self, session_name: str) -> None:
+        """记录一次成功网络往返（发送成功/收到事件/探活 OK），刷新 last_activity。"""
+        state = self._states.get(session_name)
+        if state:
+            state.last_activity = time.time()
 
-        P2 修复：is_connected()==False 时**立即**把 healthy/connected 翻 False
-        （旧版只在 _reconnect 首次 connect 失败后才置位，且本方法零调用点 →
-        运行期假活防线失效）。这样 Supervisor._healthy_count() 与 /health 立刻
-        看到真实断连，超阈值即触发 R1 退出。
+    async def _probe(self, client: Any, timeout: float) -> bool:
+        """主动发一次轻量 RPC（updates.GetState）判连接活性。
+
+        黑洞式断连（iptables DROP）下 telethon is_connected() 恒 True 且不抛异常，
+        唯一可靠信号是"发出去有没有回应"：wait_for 超时即视为不活。不信任布尔。
         """
+        from telethon import functions
+
+        try:
+            await asyncio.wait_for(
+                client(functions.updates.GetStateRequest()), timeout=timeout
+            )
+            return True
+        except asyncio.CancelledError:
+            raise
+        except Exception as e:
+            logger.debug(f"探活 RPC 未成功（超时/异常）: {type(e).__name__}: {e}")
+            return False
+
+    def _mark_dead(self, state: AccountState, reason: str) -> None:
+        """翻转 unhealthy/connected（仅在从活到死时记一次日志，幂等防刷屏）。"""
+        if state.healthy or state.connected:
+            state.healthy = False
+            state.connected = False
+            state.last_error = reason[:300]
+            logger.warning(
+                f"⚠️ 账号 {state.session_name} 判定不活（{reason}）→ unhealthy，"
+                f"计入看门狗无可用账号计时"
+            )
+
+    def _schedule_reconnect(self, state: AccountState) -> None:
+        if state.reconnect_task is None or state.reconnect_task.done():
+            state.reconnect_task = asyncio.create_task(self._reconnect(state))
+
+    async def maintain_once(
+        self, *, probe_timeout: float = 15.0, stale_seconds: float = 60.0
+    ) -> None:
+        """单轮探活（R2 + 黑洞式 R1 修复，老马复验）。
+
+        两级信号，都不单靠 telethon is_connected() 布尔：
+        ① 快速路径：is_connected() 明确 False → 立即 unhealthy（RST/主动断开）。
+        ② 黑洞路径：is_connected() True 时**主动发一次 GetState RPC 带超时**；
+           失败且距上次成功往返(last_activity) 超 stale_seconds → 判 unhealthy。
+           给瞬时抖动/重连留 stale 宽限，避免误杀。
+        判定不活即后台重连；持续全死由 Supervisor 计时→结构化告警→exit。
+        """
+        now = time.time()
         for state in list(self._states.values()):
             if state.unavailable or state.client is None:
                 continue
@@ -349,24 +396,33 @@ class AccountManager:
                 connected = False
 
             if not connected:
-                # 立即置 unhealthy（不依赖重连结果），供看门狗/health 读真实值
-                if state.healthy or state.connected:
-                    state.healthy = False
-                    state.connected = False
-                    logger.warning(
-                        f"⚠️ 账号 {state.session_name} 运行期断连，立即标记 "
-                        f"unhealthy → 后台重连（计入看门狗无可用账号计时）"
-                    )
-                # 断连 → 重连（后台任务，避免阻塞探活循环）
-                if state.reconnect_task is None or state.reconnect_task.done():
-                    state.reconnect_task = asyncio.create_task(
-                        self._reconnect(state)
-                    )
-            else:
+                self._mark_dead(state, "is_connected()==False")
+                self._schedule_reconnect(state)
+                continue
+
+            # is_connected True：主动 RPC 探活（黑洞下 RPC 永不返回→超时）
+            if await self._probe(state.client, probe_timeout):
+                state.last_activity = now
+                if not state.healthy:
+                    logger.info(f"✅ 账号 {state.session_name} 探活恢复，重新计入健康")
                 state.connected = True
                 state.healthy = True
+            elif now - state.last_activity > stale_seconds:
+                age = now - state.last_activity
+                self._mark_dead(state, f"RPC 探活无回 {age:.0f}s > stale {stale_seconds:.0f}s（黑洞式断连）")
+                self._schedule_reconnect(state)
+            else:
+                logger.warning(
+                    f"账号 {state.session_name} 探活未获回应，但在 stale 宽限内"
+                    f"（{now - state.last_activity:.0f}s/{stale_seconds:.0f}s）暂不判死"
+                )
 
-    async def maintenance_loop(self, interval_seconds: int = 30) -> None:
+    async def maintenance_loop(
+        self,
+        interval_seconds: int = 30,
+        probe_timeout: float = 15.0,
+        stale_seconds: float = 60.0,
+    ) -> None:
         """周期维护循环（R2）：每 interval 探活断连账号并触发重连。
 
         main 层纳入 tasks 列表，随进程优雅取消（asyncio.CancelledError）。
@@ -376,7 +432,9 @@ class AccountManager:
         try:
             while True:
                 await asyncio.sleep(interval_seconds)
-                await self.maintain_once()
+                await self.maintain_once(
+                    probe_timeout=probe_timeout, stale_seconds=stale_seconds
+                )
         except asyncio.CancelledError:
             logger.info("账号维护循环收到取消信号，优雅退出。")
             raise
@@ -397,6 +455,7 @@ class AccountManager:
                 if await state.client.is_user_authorized():
                     state.connected = True
                     state.healthy = True
+                    state.last_activity = time.time()
                     state.last_error = None
                     logger.success(
                         f"✅ 账号 {state.session_name} 重连成功 (第 {attempt} 次)"

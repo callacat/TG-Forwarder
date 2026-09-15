@@ -948,6 +948,14 @@ class _LiveClient:
     async def is_user_authorized(self):
         return True
 
+    def __call__(self, request, **kw):
+        # 探活 RPC：连接成功→立即返回；断开→快速抛错
+        async def _rpc():
+            if not self._connected:
+                raise ConnectionError("net down")
+            return "ok"
+        return _rpc()
+
 
 class TestRuntimeMaintenance:
     def _seed(self):
@@ -1372,3 +1380,120 @@ class TestSupervisedPoll:
                 pass
         assert exited == [1]
         assert len(crit) >= 1  # 结构化告警确实触达（非裸 ConnectionError 旁路退出）
+
+
+# ---------------------------------------------------------------------------
+# 黑洞式断连检测（老马 09fb4c4 复验：is_connected 恒 True、无异常，须靠主动 RPC 探活）
+# ---------------------------------------------------------------------------
+
+
+class _BlackholeClient:
+    """iptables DROP 黑洞：is_connected 永远 True、不抛异常，但任何 RPC 永不返回。"""
+
+    session_name_for_forwarder = "live"
+
+    def __init__(self):
+        self.probe_calls = 0
+
+    def is_connected(self):  # 黑洞下 telethon 仍报已连接
+        return True
+
+    async def disconnect(self):
+        pass
+
+    async def connect(self):
+        raise ConnectionError("blackhole: connect never completes")
+
+    async def is_user_authorized(self):
+        return True
+
+    def __call__(self, request, **kw):
+        async def _hang():
+            self.probe_calls += 1
+            await asyncio.Event().wait()  # 永不返回 → 探活超时
+        return _hang()
+
+
+class TestBlackholeDetection:
+    async def test_probe_detects_blackhole_despite_is_connected(self):
+        """核心：is_connected True + 无异常，仍靠 RPC 探活超时 + stale 判死。"""
+        from tg_forwarder.core.accounts import AccountManager, AccountState
+
+        am = AccountManager()
+        client = _BlackholeClient()
+        st = AccountState(session_name="live", api_id=1, api_hash="h")
+        st.client = client
+        st.connected = True
+        st.authorized = True
+        st.healthy = True
+        st.last_activity = time.time() - 9999  # 久无成功往返
+        am._states["live"] = st
+
+        assert len(am.healthy_accounts()) == 1
+        await am.maintain_once(probe_timeout=0.05, stale_seconds=0.01)
+        assert client.probe_calls >= 1
+        assert st.healthy is False            # 黑洞被判不活（旧版靠 is_connected 布尔会漏）
+        assert len(am.healthy_accounts()) == 0
+        if st.reconnect_task:
+            st.reconnect_task.cancel()
+        await am.stop()
+
+    async def test_alive_channel_not_false_positive(self):
+        """健康但空闲的账号：探活成功 → 刷新 last_activity，不被 stale 误杀。"""
+        from tg_forwarder.core.accounts import AccountManager, AccountState
+
+        am = AccountManager()
+        client = _LiveClient()  # connected → __call__ 立即返回
+        st = AccountState(session_name="live", api_id=1, api_hash="h")
+        st.client = client
+        st.connected = st.authorized = st.healthy = True
+        st.last_activity = time.time() - 9999
+        am._states["live"] = st
+        await am.maintain_once(probe_timeout=0.05, stale_seconds=0.01)
+        assert st.healthy is True             # 探活成功即复活，不误判
+        assert st.last_activity > time.time() - 5  # 已刷新
+        await am.stop()
+
+    async def test_blackhole_end_to_end_watchdog_alerts_and_exits(self):
+        """端到端黑洞：维护循环探活判死→看门狗超时→on_critical 告警 + exit1（补 R1 判据①）。"""
+        from tg_forwarder.core.accounts import AccountManager, AccountState
+
+        am = AccountManager()
+        client = _BlackholeClient()
+        st = AccountState(session_name="live", api_id=1, api_hash="h")
+        st.client = client
+        st.connected = st.authorized = st.healthy = True
+        st.last_activity = time.time() - 9999
+        am._states["live"] = st
+
+        cfg = _WatchdogCfg(timeout_minutes=0.01, interval_seconds=0.05)
+        crit = []
+
+        async def on_critical(msg):
+            crit.append(msg)
+
+        exited = []
+        sup = Supervisor(
+            am, cfg, on_critical=on_critical, exit_func=lambda c: exited.append(c)
+        )
+        tasks = [
+            asyncio.create_task(
+                am.maintenance_loop(0.05, probe_timeout=0.05, stale_seconds=0.0)
+            ),
+            asyncio.create_task(sup.run()),
+        ]
+        for _ in range(300):
+            await asyncio.sleep(0.05)
+            if exited:
+                break
+        for t in tasks:
+            t.cancel()
+        for t in tasks:
+            try:
+                await t
+            except asyncio.CancelledError:
+                pass
+        if st.reconnect_task:
+            st.reconnect_task.cancel()
+        assert exited == [1]
+        assert len(crit) >= 1  # 黑洞场景结构化告警确实触达（老马要的判据①）

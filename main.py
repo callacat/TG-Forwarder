@@ -224,7 +224,11 @@ async def cmd_run(db: Database, yaml_path: str) -> None:
     # 与看门狗并存：维护循环把真实连接态写回 state，看门狗据此判"无可用账号"超时退出。
     # 旧版此循环未接线（maintain_once 零调用）→ 运行期假活防线失效。
     tasks.append(
-        accounts.maintenance_loop(config.watchdog.maintain_interval_seconds)
+        accounts.maintenance_loop(
+            config.watchdog.maintain_interval_seconds,
+            probe_timeout=config.watchdog.probe_timeout_seconds,
+            stale_seconds=config.watchdog.stale_seconds,
+        )
     )
 
     # 看门狗（R1）：无可用账号超阈值 → on_critical 经 Bot 触达 admin → 非零退出

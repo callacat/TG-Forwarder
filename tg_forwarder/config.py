@@ -119,11 +119,17 @@ class WatchdogConfig(BaseModel):
 
     - timeout_minutes/interval_seconds：看门狗判"无可用账号"的阈值与检查周期；
     - maintain_interval_seconds：账号维护循环（探活+置 unhealthy+重连）周期（R2，P2 修复）。
+    - probe_timeout_seconds / stale_seconds：黑洞式断连检测（老马 R1 复验）——
+      维护循环主动发一次 RPC（updates.GetState）带超时，不信任 telethon is_connected()
+      布尔（黑洞下它恒 True）；连续探活失败超过 stale_seconds（距上次成功往返）才判
+      unhealthy，给瞬时抖动/重连留宽限。stale 必须 > probe 超时+一个维护周期。
     """
 
     timeout_minutes: int = 5
     interval_seconds: int = 60
     maintain_interval_seconds: int = 30
+    probe_timeout_seconds: int = 15
+    stale_seconds: int = 60
 
 
 # ---------------------------------------------------------------------------

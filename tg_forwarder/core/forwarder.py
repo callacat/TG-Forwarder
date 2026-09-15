@@ -386,6 +386,11 @@ class Forwarder:
                     target_id, messages=original_message, **send_kwargs
                 )
 
+            # 成功收发 → 刷新活性时间戳（黑洞式断连检测双保险，R1）
+            key = getattr(client, "session_name_for_forwarder", None)
+            if key and self._am is not None and hasattr(self._am, "touch"):
+                self._am.touch(key)
+
             if snapshot.settings.mark_target_as_read and sent_message:
                 try:
                     last_id = (
