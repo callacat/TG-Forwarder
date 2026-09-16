@@ -15,8 +15,8 @@ import aiosqlite
 
 from loguru import logger
 
-# 当前 schema 版本：2（v2 现网库视为版本 1 语义 —— 表已存在但 user_version=0）
-CURRENT_SCHEMA_VERSION = 2
+# 当前 schema 版本：3（v2 现网库=1；v3 初版=2；v3 升级 F2 加 message_map=3）
+CURRENT_SCHEMA_VERSION = 3
 
 # 迁移对账表（v2 基线表，缺表视为 0 行）
 _AUDIT_TABLES = ("forward_progress", "dedup_hashes", "rules", "sources")
@@ -90,23 +90,27 @@ class Database:
                 return
 
             if not has_v2_tables and version == 0:
-                # 全新空库：直接建 v3 schema
+                # 全新空库：直接建最新 schema
                 await self._create_v3_schema()
                 await self._set_user_version(CURRENT_SCHEMA_VERSION)
                 await conn.commit()
                 logger.info(f"✅ 全新库已初始化到 v{CURRENT_SCHEMA_VERSION} schema")
                 return
 
-            # v2 现网库（user_version 0 或 1）→ 迁移到 2
-            logger.info(f"检测到 v2 库 (user_version={version})，开始迁移 v2→v3 schema...")
+            # 逐版本前向迁移：v2 现网库(0/1)→2→3
+            logger.info(
+                f"检测到旧库 (user_version={version})，"
+                f"开始迁移 v{version}→v{CURRENT_SCHEMA_VERSION} schema..."
+            )
             before = {t: await self._table_count(t) for t in _AUDIT_TABLES}
             logger.info(
                 f"迁移前行数对账: " + ", ".join(f"{t}={n}" for t, n in before.items())
             )
 
             try:
-                # v2→v3：增量（不动既有表结构与数据）
+                # 增量逐版本（不动既有表结构与数据）
                 await self._migrate_2_forward()
+                await self._migrate_3_forward()
             except Exception:
                 await conn.rollback()
                 raise
@@ -123,7 +127,7 @@ class Database:
             await self._set_user_version(CURRENT_SCHEMA_VERSION)
             await conn.commit()
             logger.info(
-                f"✅ 迁移 v2→v3 完成，对账通过: "
+                f"✅ 迁移 v{version}→v{CURRENT_SCHEMA_VERSION} 完成，对账通过: "
                 + ", ".join(f"{t}={n}" for t, n in after.items())
             )
 
@@ -145,6 +149,39 @@ class Database:
         await conn.execute(
             "CREATE INDEX IF NOT EXISTS idx_dedup_ts ON dedup_hashes (timestamp)"
         )
+
+    async def _migrate_3_forward(self) -> None:
+        """版本 3 的迁移内容（F2）：
+        - message_map 表（src→dest 消息映射，编辑/删除级联用）；
+        - sources 表补 sync_edits/sync_deletes 列（F2 per 源开关）。
+        历史消息无映射（级联只覆盖开启后的新转发）。"""
+        conn = self._require_conn()
+        await conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS message_map (
+              src_channel_id INTEGER NOT NULL,
+              src_message_id INTEGER NOT NULL,
+              dest_channel_id INTEGER NOT NULL,
+              dest_message_id INTEGER NOT NULL,
+              created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+              PRIMARY KEY (src_channel_id, src_message_id, dest_channel_id)
+            )
+            """
+        )
+        await conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_message_map_dest "
+            "ON message_map (dest_channel_id, dest_message_id)"
+        )
+        # v2 现网库的 sources 是旧表（缺 F2 新列）：防护性补列（幂等）。
+        # 全新库 _create_v3_schema 已含这两列，ALTER 前查 PRAGMA 避免重复列错。
+        cur = await conn.execute("PRAGMA table_info(sources)")
+        existing = {row[1] for row in await cur.fetchall()}
+        for col, ddl in (
+            ("sync_edits", "INTEGER DEFAULT 0"),
+            ("sync_deletes", "INTEGER DEFAULT 0"),
+        ):
+            if col not in existing:
+                await conn.execute(f"ALTER TABLE sources ADD COLUMN {col} {ddl}")
 
     async def _create_v3_schema(self) -> None:
         """全新库：建 v3 全量 schema（与 v2 表结构一致 + 增量）。"""
@@ -183,7 +220,9 @@ class Database:
               replies_limit INTEGER DEFAULT 5,
               forward_new_only BOOLEAN,
               resolved_id INTEGER,
-              cached_title TEXT
+              cached_title TEXT,
+              sync_edits BOOLEAN DEFAULT 0,
+              sync_deletes BOOLEAN DEFAULT 0
             )
             """
         )
@@ -209,6 +248,7 @@ class Database:
             """
         )
         await self._migrate_2_forward()
+        await self._migrate_3_forward()
 
     # --- 基础操作（签名与 v2 database.py 对齐，实例方法，无全局变量）---
 
@@ -257,6 +297,52 @@ class Database:
         except Exception as e:
             logger.error(f"get_progress 失败: {e}")
             return 0
+
+    # --- Message Map（F2 编辑/删除级联：src→dest 映射）---
+
+    async def add_message_map(
+        self, src_channel_id: int, src_message_id: int,
+        dest_channel_id: int, dest_message_id: int,
+    ) -> None:
+        """登记一条转发映射（发送成功后调用）。幂等（INSERT OR REPLACE）。"""
+        try:
+            await self._require_conn().execute(
+                "INSERT OR REPLACE INTO message_map "
+                "(src_channel_id, src_message_id, dest_channel_id, dest_message_id) "
+                "VALUES (?, ?, ?, ?)",
+                (src_channel_id, src_message_id, dest_channel_id, dest_message_id),
+            )
+            await self._require_conn().commit()
+        except Exception as e:
+            logger.error(f"add_message_map 失败: {e}")
+
+    async def get_message_map_by_src(
+        self, src_channel_id: int, src_message_id: int
+    ) -> list:
+        """按源消息查全部镜像（编辑级联）。返回 [(dest_channel_id, dest_message_id)]。"""
+        try:
+            cur = await self._require_conn().execute(
+                "SELECT dest_channel_id, dest_message_id FROM message_map "
+                "WHERE src_channel_id = ? AND src_message_id = ?",
+                (src_channel_id, src_message_id),
+            )
+            return [tuple(r) for r in await cur.fetchall()]
+        except Exception as e:
+            logger.error(f"get_message_map_by_src 失败: {e}")
+            return []
+
+    async def delete_message_map_by_src(
+        self, src_channel_id: int, src_message_id: int
+    ) -> None:
+        """源消息删除后清映射（删除级联后调用）。"""
+        try:
+            await self._require_conn().execute(
+                "DELETE FROM message_map WHERE src_channel_id = ? AND src_message_id = ?",
+                (src_channel_id, src_message_id),
+            )
+            await self._require_conn().commit()
+        except Exception as e:
+            logger.error(f"delete_message_map_by_src 失败: {e}")
 
     async def set_progress(self, channel_id: int, message_id: int) -> None:
         try:

@@ -519,6 +519,29 @@ class Forwarder:
             if key and self._am is not None and hasattr(self._am, "touch"):
                 self._am.touch(key)
 
+            # F2：登记 src→dest 映射（编辑/删除级联；copy 与 forward 模式都登记）
+            if (
+                sent_message
+                and self._source_sync_enabled(snapshot, original_message)
+            ):
+                try:
+                    dest_list = (
+                        sent_message if isinstance(sent_message, list) else [sent_message]
+                    )
+                    src_msgs = (
+                        original_message
+                        if isinstance(original_message, list)
+                        else [original_message]
+                    )
+                    # 相册整组：逐条配对（按组内顺序）
+                    for i, dest in enumerate(dest_list):
+                        src = src_msgs[min(i, len(src_msgs) - 1)]
+                        await self.db.add_message_map(
+                            src.chat_id, src.id, target_id, dest.id
+                        )
+                except Exception as e:
+                    logger.warning(f"F2 映射登记失败（不阻塞转发）: {e}")
+
             if snapshot.settings.mark_target_as_read and sent_message:
                 try:
                     last_id = (
@@ -639,10 +662,102 @@ class Forwarder:
             except Exception as e:
                 logger.error(f"无法解析源 '{s.identifier}': {e}")
 
+    # --- F2：编辑/删除实时同步（telemirror/appro 模式）---
+
+    @staticmethod
+    def _source_sync_enabled(snapshot, original_message) -> bool:
+        """源消息所在频道的编辑/删除同步开关（per 源，默认关=现网行为零变化）。"""
+        src_config = None
+        chat_id = original_message.chat_id if hasattr(original_message, "chat_id") else None
+        if chat_id is not None:
+            for s in snapshot.sources:
+                if s.resolved_id == chat_id:
+                    src_config = s
+                    break
+        return bool(src_config and src_config.sync_edits)
+
+    async def _on_message_edited(self, message) -> None:
+        """源消息编辑 → 同步编辑全部镜像（F2）。
+
+        只改文本部分（媒体本体不动）；映射缺失（开启前转发的）跳过。
+        """
+        snapshot = self._snapshot
+        if snapshot is None or not snapshot.deduplication:
+            pass  # 快照判空在下方统一处理
+        if snapshot is None:
+            return
+        try:
+            src_chat = message.chat_id
+            src_id = message.id
+            mirrors = await self.db.get_message_map_by_src(src_chat, src_id)
+            if not mirrors:
+                return
+            new_text = apply_replacements(message.text or "", snapshot)
+            client = self._get_next_client()
+            if client is None:
+                logger.warning("F2 编辑同步：无可用客户端，跳过本轮。")
+                return
+            for dest_channel_id, dest_message_id in mirrors:
+                try:
+                    await client.edit_message(
+                        dest_channel_id, dest_message_id, new_text
+                    )
+                    logger.info(
+                        f"F2 编辑同步: {src_chat}/{src_id} → {dest_channel_id}/{dest_message_id}"
+                    )
+                except Exception as e:
+                    logger.warning(
+                        f"F2 编辑镜像 {dest_channel_id}/{dest_message_id} 失败: {e}"
+                    )
+        except Exception as e:
+            logger.error(f"F2 编辑同步异常: {e}")
+
+    async def _on_message_deleted(self, event) -> None:
+        """源消息删除 → 级联删除全部镜像并清映射（F2，per 源 sync_deletes）。"""
+        snapshot = self._snapshot
+        if snapshot is None:
+            return
+        try:
+            deleted_ids = getattr(event, "deleted_ids", None) or []
+            channel_id = getattr(event, "channel_id", None)
+            if not deleted_ids or channel_id is None:
+                return
+            # 该源是否开启删除同步（per 源开关）
+            src_config = None
+            for s in snapshot.sources:
+                if s.resolved_id == channel_id:
+                    src_config = s
+                    break
+            if not src_config or not src_config.sync_deletes:
+                return
+            client = self._get_next_client()
+            if client is None:
+                logger.warning("F2 删除同步：无可用客户端，跳过本轮。")
+                return
+            for src_id in deleted_ids:
+                mirrors = await self.db.get_message_map_by_src(channel_id, src_id)
+                if mirrors:
+                    try:
+                        # 镜像可能分布多目标：按目标分组删除
+                        by_dest: Dict[int, List[int]] = {}
+                        for d_ch, d_id in mirrors:
+                            by_dest.setdefault(d_ch, []).append(d_id)
+                        for d_ch, d_ids in by_dest.items():
+                            await client.delete_messages(d_ch, d_ids)
+                        logger.info(
+                            f"F2 删除同步: {channel_id}/{src_id} → "
+                            f"{len(mirrors)} 条镜像已删"
+                        )
+                    except Exception as e:
+                        logger.warning(f"F2 删除镜像 {channel_id}/{src_id} 失败: {e}")
+                await self.db.delete_message_map_by_src(channel_id, src_id)
+        except Exception as e:
+            logger.error(f"F2 删除同步异常: {e}")
+
     # --- 事件注册（main 层调用）---
 
     def register_handlers(self, client) -> None:
-        """注册 NewMessage/Album 处理器（对齐 v2 事件拓扑）。"""
+        """注册 NewMessage/Album/Edited/Deleted 处理器（v2 拓扑 + F2 级联）。"""
 
         @client.on(events.NewMessage())
         async def handle_new_message(event):
@@ -656,6 +771,15 @@ class Forwarder:
                 (m for m in event.messages if m.text), event.messages[0]
             )
             await self.process_message(main_message, all_messages_in_group=event.messages)
+
+        # F2 编辑/删除级联（内部按 per 源开关门控，默认关）
+        @client.on(events.MessageEdited())
+        async def handle_edited(event):
+            await self._on_message_edited(event.message)
+
+        @client.on(events.MessageDeleted())
+        async def handle_deleted(event):
+            await self._on_message_deleted(event)
 
     # --- dedup TTL 清理（P8 修复）---
 

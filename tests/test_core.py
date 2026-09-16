@@ -1728,3 +1728,111 @@ class TestCrossSourceDedup:
         await fwd.process_message(m)
         assert len(seen) == 1
         await db.close()
+
+
+# ---------------------------------------------------------------------------
+# F2：编辑/删除实时同步（映射登记 + 事件级联；per 源开关默认为关）
+# ---------------------------------------------------------------------------
+
+
+class _SyncClient:
+    """F2 fake 发送客户端：send/edit/delete 三条路径 + 记录调用。"""
+
+    session_name_for_forwarder = "sync"
+
+    def __init__(self):
+        self.sent = []
+        self.edits = []
+        self.deletes = []
+
+    async def send_message(self, target_id, message=None, file=None, **kw):
+        class _Sent:
+            id = 42
+        self.sent.append((target_id, message))
+        return _Sent()
+
+    async def edit_message(self, channel_id, message_id, new_text, **kw):
+        self.edits.append((channel_id, message_id, new_text))
+
+    async def delete_messages(self, channel_id, message_ids):
+        self.deletes.append((channel_id, list(message_ids) if not isinstance(message_ids, list) else message_ids))
+
+    async def mark_read(self, *a, **k):
+        pass
+
+
+def _sync_snap(sync_edits=True, sync_deletes=True):
+    from tg_forwarder.config import SourceConfig
+
+    return _cfg(
+        sources=[
+            SourceConfig(
+                identifier=str(_CHAT), resolved_id=_CHAT,
+                sync_edits=sync_edits, sync_deletes=sync_deletes,
+            )
+        ],
+        settings=SystemSettings(default_target="-100999", forward_new_only=False),
+        targets_resolved_default=-100999,
+        ad_filter=AdFilterConfig(enable=False),
+        content_filter=ContentFilterConfig(enable=False),
+    )
+
+
+class TestForwarderSync:
+    async def test_map_registered_after_send_when_enabled(self, tmp_path):
+        """copy 发送成功 → src→dest 映射入库（仅 sync_edits 源）。"""
+        client = _SyncClient()
+        fwd, db = await _make_fwd(tmp_path, _sync_snap(), client)
+        media = object()
+        await fwd.process_message(_Msg(11, chat_id=_CHAT, media=media))
+        got = await db.get_message_map_by_src(_CHAT, 11)
+        assert got == [(-100999, 42)]
+        await db.close()
+
+    async def test_map_not_registered_when_sync_off(self, tmp_path):
+        """sync_edits 默认关 → 不登记映射（现网行为零变化）。"""
+        client = _SyncClient()
+        fwd, db = await _make_fwd(tmp_path, _sync_snap(sync_edits=False), client)
+        await fwd.process_message(_Msg(11, chat_id=_CHAT, media=object()))
+        assert await db.get_message_map_by_src(_CHAT, 11) == []
+        await db.close()
+
+    async def test_edited_syncs_to_mirrors(self, tmp_path):
+        """源消息编辑 → 镜像同步编辑（文本经 replacements）。"""
+        client = _SyncClient()
+        fwd, db = await _make_fwd(tmp_path, _sync_snap(), client)
+        await db.add_message_map(_CHAT, 11, -100999, 101)
+        edit_msg = _Msg(11, chat_id=_CHAT, text="编辑后的正文")
+        await fwd._on_message_edited(edit_msg)
+        assert client.edits == [(-100999, 101, "编辑后的正文")]
+        await db.close()
+
+    async def test_edited_without_map_skipped(self, tmp_path):
+        """无映射（开启前转发/非同步源）→ 编辑不动作。"""
+        client = _SyncClient()
+        fwd, db = await _make_fwd(tmp_path, _sync_snap(), client)
+        await fwd._on_message_edited(_Msg(99, chat_id=_CHAT, text="x"))
+        assert client.edits == []
+        await db.close()
+
+    async def test_deleted_cascades_and_clears_map(self, tmp_path):
+        """源消息删除（sync_deletes=True）→ 镜像删除 + 映射清除。"""
+        client = _SyncClient()
+        fwd, db = await _make_fwd(tmp_path, _sync_snap(), client)
+        await db.add_message_map(_CHAT, 11, -100999, 101)
+        event = type("E", (), {"deleted_ids": [11], "channel_id": _CHAT})()
+        await fwd._on_message_deleted(event)
+        assert client.deletes == [(-100999, [101])]
+        assert await db.get_message_map_by_src(_CHAT, 11) == []
+        await db.close()
+
+    async def test_deleted_gated_by_source_flag(self, tmp_path):
+        """sync_deletes 默认关 → 删除事件不动作（历史映射保留）。"""
+        client = _SyncClient()
+        fwd, db = await _make_fwd(tmp_path, _sync_snap(sync_deletes=False), client)
+        await db.add_message_map(_CHAT, 11, -100999, 101)
+        event = type("E", (), {"deleted_ids": [11], "channel_id": _CHAT})()
+        await fwd._on_message_deleted(event)
+        assert client.deletes == []
+        assert await db.get_message_map_by_src(_CHAT, 11) == [(-100999, 101)]
+        await db.close()

@@ -169,6 +169,9 @@ class SourceConfig(BaseModel):
     forward_new_only: Optional[bool] = None
     resolved_id: Optional[int] = None
     cached_title: Optional[str] = None
+    # F2 编辑/删除实时同步（per 源，默认关=现网行为零变化）
+    sync_edits: bool = False
+    sync_deletes: bool = False
 
 
 class TargetDistributionRule(BaseModel):

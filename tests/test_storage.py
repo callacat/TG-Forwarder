@@ -295,3 +295,73 @@ class TestRepositories:
         stats = await db.get_db_stats()
         assert stats["invalid_links"] == 1
         await db.close()
+
+
+# ---------------------------------------------------------------------------
+# F2：message_map 表（v3 schema）迁移 + CRUD
+# ---------------------------------------------------------------------------
+
+
+class TestV2MigrationCreatesMessageMap:
+    async def test_v2_migration_creates_message_map_and_source_flags(self, v2_db_path):
+        """v2 库迁移后：message_map 表存在 + sources 表含 sync_edits/sync_deletes 列。"""
+        db = Database(v2_db_path)
+        await db.open()
+        await db.migrate()
+        conn = sqlite3.connect(v2_db_path)
+        tables = {
+            r[0]
+            for r in conn.execute(
+                "SELECT name FROM sqlite_master WHERE type='table'"
+            ).fetchall()
+        }
+        cols = {
+            r[1]
+            for r in conn.execute("PRAGMA table_info(sources)").fetchall()
+        }
+        conn.close()
+        assert "message_map" in tables
+        assert "sync_edits" in cols
+        assert "sync_deletes" in cols
+        assert await db._user_version() == CURRENT_SCHEMA_VERSION
+        await db.close()
+
+
+class TestMessageMap:
+    async def _db(self, tmp_path):
+        db = Database(str(tmp_path / "mm.sqlite"))
+        await db.open()
+        await db.migrate()
+        return db
+
+    async def test_add_get_delete_roundtrip(self, tmp_path):
+        db = await self._db(tmp_path)
+        await db.add_message_map(-1001, 11, -1009, 101)
+        await db.add_message_map(-1001, 11, -1008, 202)  # 同源同消息多目标
+        got = await db.get_message_map_by_src(-1001, 11)
+        assert set(got) == {(-1008, 202), (-1009, 101)}
+        # 无映射
+        assert await db.get_message_map_by_src(-1001, 99) == []
+        await db.delete_message_map_by_src(-1001, 11)
+        assert await db.get_message_map_by_src(-1001, 11) == []
+        await db.close()
+
+    async def test_add_is_idempotent(self, tmp_path):
+        db = await self._db(tmp_path)
+        await db.add_message_map(-1001, 11, -1009, 101)
+        await db.add_message_map(-1001, 11, -1009, 101)  # 重复登记
+        assert await db.get_message_map_by_src(-1001, 11) == [(-1009, 101)]
+        await db.close()
+
+    async def test_source_repo_sync_flags_roundtrip(self, tmp_path):
+        db = await self._db(tmp_path)
+        repo = SourceRepository(db)
+        await repo.save({
+            "identifier": "-100123", "cached_title": "T",
+            "sync_edits": True, "sync_deletes": True,
+        })
+        rows = await repo.get_all()
+        src = next(r for r in rows if r["identifier"] == "-100123")
+        assert src["sync_edits"] in (1, True)
+        assert src["sync_deletes"] in (1, True)
+        await db.close()
