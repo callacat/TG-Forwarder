@@ -34,8 +34,9 @@ class SourceRepository:
                 """
                 INSERT OR REPLACE INTO sources
                 (identifier, check_replies, replies_limit, forward_new_only,
-                 resolved_id, cached_title, sync_edits, sync_deletes)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                 resolved_id, cached_title, sync_edits, sync_deletes,
+                 age_cutoff_hours, header_template)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     str(data.get("identifier")),
@@ -46,6 +47,8 @@ class SourceRepository:
                     data.get("cached_title"),
                     data.get("sync_edits", False),
                     data.get("sync_deletes", False),
+                    data.get("age_cutoff_hours"),
+                    data.get("header_template"),
                 ),
             )
             await self.db._require_conn().commit()
@@ -70,7 +73,13 @@ class RuleRepository:
     JSON List 字段（all_keywords 等）与 v2 序列化一致。
     """
 
-    _JSON_FIELDS = ("all_keywords", "any_keywords", "file_types", "file_name_patterns")
+    _JSON_FIELDS = (
+        "all_keywords",
+        "any_keywords",
+        "file_types",
+        "file_name_patterns",
+        "media_types",
+    )
 
     def __init__(self, db: Database):
         self.db = db
@@ -105,8 +114,8 @@ class RuleRepository:
                 """
                 INSERT OR REPLACE INTO rules
                 (name, target_identifier, topic_id, all_keywords, any_keywords,
-                 file_types, file_name_patterns)
-                VALUES (?, ?, ?, ?, ?, ?, ?)
+                 file_types, file_name_patterns, media_types, max_file_size)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     data.get("name"),
@@ -116,6 +125,8 @@ class RuleRepository:
                     json.dumps(data.get("any_keywords", []), ensure_ascii=False),
                     json.dumps(data.get("file_types", []), ensure_ascii=False),
                     json.dumps(data.get("file_name_patterns", []), ensure_ascii=False),
+                    json.dumps(data.get("media_types", []), ensure_ascii=False),
+                    data.get("max_file_size", 0),
                 ),
             )
             await self.db._require_conn().commit()
@@ -154,8 +165,8 @@ class RuleRepository:
                     """
                     INSERT OR REPLACE INTO rules
                     (name, target_identifier, topic_id, all_keywords, any_keywords,
-                     file_types, file_name_patterns)
-                    VALUES (?, ?, ?, ?, ?, ?, ?)
+                     file_types, file_name_patterns, media_types, max_file_size)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                     (
                         data.get("name"),
@@ -167,6 +178,8 @@ class RuleRepository:
                         json.dumps(
                             data.get("file_name_patterns", []), ensure_ascii=False
                         ),
+                        json.dumps(data.get("media_types", []), ensure_ascii=False),
+                        data.get("max_file_size", 0),
                     ),
                 )
             await conn.commit()

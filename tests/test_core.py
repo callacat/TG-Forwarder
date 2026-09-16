@@ -1836,3 +1836,451 @@ class TestForwarderSync:
         assert client.deletes == []
         assert await db.get_message_map_by_src(_CHAT, 11) == [(-100999, 101)]
         await db.close()
+
+
+# ---------------------------------------------------------------------------
+# F5：per-规则媒体类型/大小过滤（TargetDistributionRule.check）
+# ---------------------------------------------------------------------------
+
+
+class _FilterDocMedia:
+    """带 mime_type/size 的 document media mock（F5 专用，两层形状）。"""
+
+    def __init__(self, mime, size, file_name=None):
+        from telethon.tl.types import (
+            DocumentAttributeFilename,
+            MessageMediaDocument,
+        )
+        from telethon.tl import types as tl_types
+
+        attrs = []
+        if file_name:
+            attrs.append(DocumentAttributeFilename(file_name=file_name))
+        doc = tl_types.Document(
+            id=999, access_hash=0, file_reference=b"", date=None,
+            mime_type=mime, size=size, attributes=attrs, dc_id=1,
+        )
+        self.document = MessageMediaDocument(document=doc, ttl_seconds=0)
+
+
+class TestRuleMediaFilter:
+    def _rule(self, media_types=(), max_file_size=0, any_keywords=()):
+        return TargetDistributionRule(
+            name="r",
+            any_keywords=list(any_keywords),
+            media_types=list(media_types),
+            max_file_size=max_file_size,
+            target_identifier="-100333",
+            resolved_target_id=-100333,
+        )
+
+    def test_media_types_match(self):
+        """media_types 命中（mime 子串）→ 规则匹配。"""
+        r = self._rule(media_types=["video"])
+        assert r.check("", _FilterDocMedia("video/mp4", 1000)) is True
+
+    def test_media_types_not_match(self):
+        """设了 media_types 且 mime 不匹配 → 不命中（哪怕有关键字）。"""
+        r = self._rule(media_types=["video"], any_keywords=["4K"])
+        assert r.check("4K超清", _FilterDocMedia("image/jpeg", 1000)) is False
+
+    def test_media_types_match_with_keyword(self):
+        """关键字命中 + media_types 命中 → 放行。"""
+        r = self._rule(media_types=["video"], any_keywords=["4K"])
+        assert r.check("4K超清", _FilterDocMedia("video/mp4", 1000)) is True
+
+    def test_max_file_size_within(self):
+        """max_file_size 内 → 命中。"""
+        r = self._rule(max_file_size=1_000_000)
+        assert r.check("", _FilterDocMedia("video/mp4", 500_000)) is True
+
+    def test_max_file_size_exceeded(self):
+        """超 max_file_size → 不命中。"""
+        r = self._rule(max_file_size=1_000_000)
+        assert r.check("", _FilterDocMedia("video/mp4", 2_000_000)) is False
+
+    def test_no_filters_unchanged(self):
+        """未设媒体限制 → 行为与升级前一致（关键字命中即放行）。"""
+        r = self._rule(any_keywords=["4K"])
+        assert r.check("4K", _FilterDocMedia("video/mp4", 10)) is True
+
+    def test_media_required_when_filter_set(self):
+        """设了媒体限制但无媒体（纯文本）→ 不命中（不放行纯文本进媒体规则）。"""
+        r = self._rule(media_types=["video"])
+        assert r.check("纯文本", None) is False
+
+
+# ---------------------------------------------------------------------------
+# F6：源标注模板（build_header）
+# ---------------------------------------------------------------------------
+
+
+class TestHeaderTemplate:
+    def _src(self, template):
+        return SourceConfig(
+            identifier=str(_CHAT), resolved_id=_CHAT,
+            cached_title="测试频道", header_template=template,
+        )
+
+    def test_none_template_returns_none(self):
+        from tg_forwarder.core.forwarder import build_header
+
+        src = SourceConfig(identifier=str(_CHAT), resolved_id=_CHAT)
+        assert build_header(src, _Msg(1, chat_id=_CHAT)) is None
+
+    def test_empty_template_returns_none(self):
+        from tg_forwarder.core.forwarder import build_header
+
+        assert build_header(self._src(""), _Msg(1, chat_id=_CHAT)) is None
+
+    def test_full_render(self):
+        from datetime import datetime, timezone
+
+        from tg_forwarder.core.forwarder import build_header
+
+        msg = _Msg(1, chat_id=_CHAT, text="内容")
+        msg.date = datetime(2026, 9, 16, 12, 30, tzinfo=timezone.utc)
+        src = self._src("📢 {title} | {link} | {time}")
+        out = build_header(src, msg)
+        assert "📢 测试频道" in out
+        assert "https://t.me/s/测试频道" in out
+        assert "2026-09-16 12:30" in out
+
+    async def test_process_message_prepends_header(self, tmp_path):
+        """有 header_template 的源 → 转发文本前置 header（默认关不标）。"""
+        from tg_forwarder.config import SystemSettings
+
+        cfg = _cfg(
+            sources=[self._src("来自 {title}")],
+            settings=SystemSettings(default_target="-100999"),
+            targets_resolved_default=-100999,
+            ad_filter=AdFilterConfig(enable=False),
+            content_filter=ContentFilterConfig(enable=False),
+        )
+        client = _SendRecordingClient()
+        fwd, db = await _make_fwd(tmp_path, cfg, client)
+        # 纯文本消息走 copy text-only 路径
+        await fwd.process_message(_Msg(2, chat_id=_CHAT, text="正文内容"))
+        assert len(client.calls) >= 1
+        sent_text = client.calls[0]["message"]
+        assert sent_text.startswith("来自 测试频道")
+        assert "正文内容" in sent_text
+        await db.close()
+
+
+# ---------------------------------------------------------------------------
+# F4：年龄截断（catchup 超龄旧消息跳过）
+# ---------------------------------------------------------------------------
+
+
+class _DatedMsg(_Msg):
+    def __init__(self, id, date_ts, chat_id=_CHAT, text="", grouped_id=None):
+        super().__init__(id, chat_id=chat_id, text=text, grouped_id=grouped_id)
+        self.date = type("DT", (), {"timestamp": lambda s: date_ts})()
+
+
+def _age_snap(age_hours):
+    from tg_forwarder.config import SystemSettings
+
+    return _cfg(
+        sources=[
+            SourceConfig(
+                identifier=str(_CHAT), resolved_id=_CHAT, age_cutoff_hours=age_hours
+            )
+        ],
+        settings=SystemSettings(default_target="-100999", forward_new_only=False),
+        targets_resolved_default=-100999,
+        ad_filter=AdFilterConfig(enable=False),
+        content_filter=ContentFilterConfig(enable=False),
+    )
+
+
+class TestAgeCutoff:
+    async def test_skips_old_messages(self, tmp_path):
+        """catchup 遇到超龄消息 → 跳过不转发，但 progress 仍抬升。"""
+        import time
+
+        now = time.time()
+        old = now - 100 * 3600   # 100h 前（超 48h 阈值）
+        new = now - 1 * 3600     # 1h 前（未超）
+        client = _CatchupClient(
+            [_DatedMsg(11, old, text="old"), _DatedMsg(12, new, text="new")]
+        )
+        fwd, db = await _make_fwd(tmp_path, _age_snap(48), client)
+        await db.set_progress(_CHAT, 10)  # 事件停在 10
+        sent = []
+        async def stub_send(original, text, target_id, topic_id, snap):
+            sent.append(text)
+        fwd._send_message = stub_send
+        await fwd.catchup_once(limit=50)
+        assert sent == ["new"]          # 只有新消息转发
+        assert await db.get_progress(_CHAT) == 12  # progress 抬到最新（含被跳过）
+        await db.close()
+
+    async def test_no_cutoff_backward_compatible(self, tmp_path):
+        """age_cutoff=None → 所有消息照常转发（现网行为零变化）。"""
+        import time
+
+        now = time.time()
+        old = now - 100 * 3600
+        client = _CatchupClient([_DatedMsg(11, old, text="old")])
+        fwd, db = await _make_fwd(tmp_path, _age_snap(None), client)
+        await db.set_progress(_CHAT, 10)
+        sent = []
+        async def stub_send(original, text, target_id, topic_id, snap):
+            sent.append(text)
+        fwd._send_message = stub_send
+        await fwd.catchup_once(limit=50)
+        assert sent == ["old"]          # 未设截断 → 全部转发
+        await db.close()
+
+
+# ---------------------------------------------------------------------------
+# F7：评论区资源抓取（网盘链接进死链检测管线）
+# ---------------------------------------------------------------------------
+
+
+class _ReplyClient:
+    """支持 reply_to 的 fake client：返回预置的回复消息列表。"""
+
+    session_name_for_forwarder = "reply"
+
+    def __init__(self, replies):
+        self._replies = replies
+
+    def iter_messages(self, chat_id, reply_to=0, limit=10):
+        msgs = [r for r in self._replies if getattr(r, "_reply_to", None) == reply_to][:limit]
+
+        async def gen():
+            for m in msgs:
+                yield m
+        return gen()
+
+
+def _reply_msg(rid, text, parent_id):
+    class _R(_Msg):
+        pass
+    m = _R(rid, chat_id=_CHAT, text=text)
+    m._reply_to = parent_id
+    return m
+
+
+class _ReplyAMStub(_AMStub):
+    def healthy_accounts(self):
+        from tg_forwarder.core.forwarder import Forwarder
+        return [self._c]
+
+
+class TestReplyLinks:
+    async def test_collects_matching_reply_links(self, tmp_path):
+        """源 check_replies=True → 抓取回复里的网盘链接进 pending 管线。"""
+        from tg_forwarder.config import SystemSettings
+
+        client = _ReplyClient([
+            _reply_msg(21, "下载: https://pan.quark.cn/s/abc", 11),
+            _reply_msg(22, "普通回复无链接", 11),
+            _reply_msg(23, "https://pan.baidu.com/s/xyz", 11),
+        ])
+        cfg = _cfg(
+            sources=[SourceConfig(identifier=str(_CHAT), resolved_id=_CHAT, check_replies=True)],
+            settings=SystemSettings(default_target="-100999"),
+            targets_resolved_default=-100999,
+            ad_filter=AdFilterConfig(enable=False),
+            content_filter=ContentFilterConfig(enable=False),
+        )
+        fwd, db = await _make_fwd(tmp_path, cfg, client)
+        # 用真实 sender 客户端跑 _send_message（登记映射走真路径）
+        fwd._get_next_client = lambda: client
+        await fwd.process_message(_Msg(11, chat_id=_CHAT, media=object()))
+        # 回复里的 2 个网盘链接应已入 pending
+        pending = await db.get_links_to_check()
+        urls = {u for u, _ in pending}
+        assert "https://pan.quark.cn/s/abc" in urls
+        assert "https://pan.baidu.com/s/xyz" in urls
+        assert len(urls) == 2
+        await db.close()
+
+    async def test_gated_by_check_replies_flag(self, tmp_path):
+        """check_replies=False（默认）→ 不抓取回复链接（现网行为零变化）。"""
+        from tg_forwarder.config import SystemSettings
+
+        client = _ReplyClient([_reply_msg(21, "https://pan.quark.cn/s/abc", 11)])
+        cfg = _cfg(
+            sources=[SourceConfig(identifier=str(_CHAT), resolved_id=_CHAT)],
+            settings=SystemSettings(default_target="-100999"),
+            targets_resolved_default=-100999,
+            ad_filter=AdFilterConfig(enable=False),
+            content_filter=ContentFilterConfig(enable=False),
+        )
+        fwd, db = await _make_fwd(tmp_path, cfg, client)
+        fwd._get_next_client = lambda: client
+        await fwd.process_message(_Msg(11, chat_id=_CHAT, media=object()))
+        pending = await db.get_links_to_check()
+        assert pending == []   # 无抓取
+        await db.close()
+
+
+# ---------------------------------------------------------------------------
+# F8：parse_mode 格式污染修复（纯文本发送 parse_mode=None）
+# ---------------------------------------------------------------------------
+
+
+class TestParseModeNone:
+    async def test_text_only_path_parse_mode_none(self, tmp_path):
+        """纯文本 copy：parse_mode=None（替换后残留 * _ [ 不再触发 md 解析异常）。"""
+        client = _SendRecordingClient()
+        fwd, db = await _make_fwd(tmp_path, _copy_snap(), client)
+        await fwd._send_message(_Msg(1, text="*粗体残留 *_[ 测试"), "普通", -100999, None, fwd._snapshot)
+        assert len(client.calls) == 1
+        assert client.calls[0].get("parse_mode") is None  # F8 关键
+        await db.close()
+
+
+# ---------------------------------------------------------------------------
+# F9：转发出口（delivery）抽象——WebhookDelivery + DeliveryManager
+# ---------------------------------------------------------------------------
+
+
+class TestDeliveryEvent:
+    def test_to_dict_keys(self):
+        from tg_forwarder.core.delivery import DeliveryEvent
+
+        ev = DeliveryEvent(
+            source="频道A", target="-100999", destination="频道B",
+            text="分享", media_type="document", link="https://example.com",
+            occurred_at="2026-09-16T12:00:00Z",
+        )
+        d = ev.to_dict()
+        assert d["source"] == "频道A"
+        assert d["media_type"] == "document"
+        assert "occurred_at" in d
+
+
+class TestWebhookDelivery:
+    async def test_send_success(self, monkeypatch):
+        """WebhookDelivery.send 成功时返回 True，payload 包含事件字段。"""
+        import httpx
+
+        from tg_forwarder.core.delivery import DeliveryEvent, WebhookDelivery
+
+        sent = []
+
+        class _FakeClient:
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, *a):
+                pass
+
+            async def post(self, url, json=None, headers=None):
+                sent.append({"url": url, "json": json})
+
+                class _Resp:
+                    status_code = 200
+                return _Resp()
+
+        original = httpx.AsyncClient
+        httpx.AsyncClient = lambda **kw: _FakeClient()
+        try:
+            wb = WebhookDelivery("https://hook.example.com", headers={"X": "y"})
+            ok = await wb.send(DeliveryEvent(source="频道A", text="hello"))
+            assert ok is True
+            assert len(sent) == 1
+            assert sent[0]["url"] == "https://hook.example.com"
+            assert sent[0]["json"]["source"] == "频道A"
+        finally:
+            httpx.AsyncClient = original
+
+    async def test_send_on_network_error_returns_false(self, monkeypatch):
+        """网络异常 → 返回 False，不抛（fail-open）。"""
+        import httpx
+
+        from tg_forwarder.core.delivery import DeliveryEvent, WebhookDelivery
+
+        class _FakeClient:
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, *a):
+                pass
+
+            async def post(self, url, json=None, **kw):
+                raise httpx.RequestError("net down")
+
+        original = httpx.AsyncClient
+        httpx.AsyncClient = lambda **kw: _FakeClient()
+        try:
+            wb = WebhookDelivery("https://hook.example.com")
+            ok = await wb.send(DeliveryEvent(source="X"))
+            assert ok is False
+        finally:
+            httpx.AsyncClient = original
+
+
+class TestDeliveryManager:
+    async def test_disabled_returns_zero(self):
+        from tg_forwarder.core.delivery import DeliveryEvent, DeliveryManager
+
+        dm = DeliveryManager([])
+        assert dm.enabled is False
+        assert await dm.send_event(DeliveryEvent()) == 0
+
+    async def test_multiple_backends_aggregate(self):
+        from tg_forwarder.core.delivery import DeliveryBackend, DeliveryEvent, DeliveryManager
+
+        class _DummyBackend(DeliveryBackend):
+            name = "dummy"
+
+            def __init__(self, ok: bool = True):
+                self.ok = ok
+
+            async def send(self, event):
+                return self.ok
+
+        dm = DeliveryManager([_DummyBackend(True), _DummyBackend(False)])
+        assert dm.enabled is True
+        ok = await dm.send_event(DeliveryEvent(source="X"))
+        assert ok == 1  # 一成一败
+
+    async def test_exception_in_backend_does_not_raise(self):
+        from tg_forwarder.core.delivery import DeliveryBackend, DeliveryEvent, DeliveryManager
+
+        class _BoomBackend(DeliveryBackend):
+            name = "boom"
+
+            async def send(self, event):
+                raise RuntimeError("boom")
+
+        dm = DeliveryManager([_BoomBackend()])
+        count = await dm.send_event(DeliveryEvent())  # 不抛
+        assert count == 0
+
+
+class TestBuildDeliveryManager:
+    def test_builds_webhook_backends(self):
+        from tg_forwarder.core.delivery import DeliveryManager, WebhookDelivery
+        from tg_forwarder.config import DeliveryConfig, RuntimeConfig
+        from tg_forwarder.core.delivery import build_delivery_manager
+
+        cfg = RuntimeConfig(delivery=DeliveryConfig(
+            enabled=True,
+            webhooks=[{"url": "https://hook1.com"}, {"url": "https://hook2.com"}],
+        ))
+        dm = build_delivery_manager(cfg)
+        assert dm.enabled is True
+        assert len(dm.backends) == 2
+        assert all(isinstance(b, WebhookDelivery) for b in dm.backends)
+
+    def test_builds_off_by_default(self):
+        from tg_forwarder.config import RuntimeConfig
+        from tg_forwarder.core.delivery import build_delivery_manager
+
+        cfg = RuntimeConfig()
+        dm = build_delivery_manager(cfg)
+        assert dm.enabled is False
+
+    def test_builds_none_config_returns_off(self):
+        from tg_forwarder.core.delivery import build_delivery_manager
+
+        dm = build_delivery_manager(None)
+        assert dm.enabled is False

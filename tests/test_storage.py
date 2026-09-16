@@ -326,6 +326,24 @@ class TestV2MigrationCreatesMessageMap:
         assert await db._user_version() == CURRENT_SCHEMA_VERSION
         await db.close()
 
+    async def test_v2_migration_creates_v45_columns(self, v2_db_path):
+        """v2 库迁移后：sources 含 age_cutoff_hours/header_template，rules 含 media 列。"""
+        db = Database(v2_db_path)
+        await db.open()
+        await db.migrate()
+        conn = sqlite3.connect(v2_db_path)
+        src_cols = {r[1] for r in conn.execute("PRAGMA table_info(sources)").fetchall()}
+        rule_cols = {r[1] for r in conn.execute("PRAGMA table_info(rules)").fetchall()}
+        conn.close()
+        assert "age_cutoff_hours" in src_cols
+        assert "header_template" in src_cols
+        assert "media_types" in rule_cols
+        assert "max_file_size" in rule_cols
+        # 迁移前后行数不受影响（v2 db sources=3, rules=9）
+        assert _counts(v2_db_path)["sources"] == 3
+        assert _counts(v2_db_path)["rules"] == 9
+        await db.close()
+
 
 class TestMessageMap:
     async def _db(self, tmp_path):

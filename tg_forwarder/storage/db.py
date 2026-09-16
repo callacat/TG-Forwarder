@@ -15,8 +15,8 @@ import aiosqlite
 
 from loguru import logger
 
-# 当前 schema 版本：3（v2 现网库=1；v3 初版=2；v3 升级 F2 加 message_map=3）
-CURRENT_SCHEMA_VERSION = 3
+# 当前 schema 版本：5（v2 现网库=1；v3 初版=2；F2 message_map=3；F4 age_cutoff=4；F5/F6 header+media=5）
+CURRENT_SCHEMA_VERSION = 5
 
 # 迁移对账表（v2 基线表，缺表视为 0 行）
 _AUDIT_TABLES = ("forward_progress", "dedup_hashes", "rules", "sources")
@@ -111,6 +111,8 @@ class Database:
                 # 增量逐版本（不动既有表结构与数据）
                 await self._migrate_2_forward()
                 await self._migrate_3_forward()
+                await self._migrate_4_forward()
+                await self._migrate_5_forward()
             except Exception:
                 await conn.rollback()
                 raise
@@ -183,6 +185,43 @@ class Database:
             if col not in existing:
                 await conn.execute(f"ALTER TABLE sources ADD COLUMN {col} {ddl}")
 
+    async def _migrate_4_forward(self) -> None:
+        """版本 4 的迁移内容（F4 年龄截断）：sources 表补 age_cutoff_hours 列。
+
+        幂等：PRAGMA 检查后 ALTER（旧库可能已是 v3/fresh）。
+        """
+        conn = self._require_conn()
+        cur = await conn.execute("PRAGMA table_info(sources)")
+        existing = {row[1] for row in await cur.fetchall()}
+        if "age_cutoff_hours" not in existing:
+            await conn.execute("ALTER TABLE sources ADD COLUMN age_cutoff_hours REAL")
+
+    async def _migrate_5_forward(self) -> None:
+        """版本 5 的迁移内容（F5/F6）：
+        - sources 表补 header_template 列（F6 源标注模板，默认 NULL=不标注）；
+        - rules 表补 media_types/max_file_size 列（F5 媒体类型/大小过滤，
+          media_types TEXT 逗号分隔、max_file_size INTEGER 默认 0=不限制）。
+
+        幂等：PRAGMA 检查后 ALTER 补列，缺啥补啥。
+        """
+        conn = self._require_conn()
+        cur = await conn.execute("PRAGMA table_info(sources)")
+        src_cols = {row[1] for row in await cur.fetchall()}
+        if "header_template" not in src_cols:
+            await conn.execute("ALTER TABLE sources ADD COLUMN header_template TEXT")
+
+        rule_cols = {}
+        try:
+            rcur = await conn.execute("PRAGMA table_info(rules)")
+            rule_cols = {row[1] for row in await rcur.fetchall()}
+        except Exception:
+            rule_cols = {}  # 旧库可能无 rules 表（bootstrap 前），CREATE 时已含
+        if rule_cols:
+            if "media_types" not in rule_cols:
+                await conn.execute("ALTER TABLE rules ADD COLUMN media_types TEXT")
+            if "max_file_size" not in rule_cols:
+                await conn.execute("ALTER TABLE rules ADD COLUMN max_file_size INTEGER DEFAULT 0")
+
     async def _create_v3_schema(self) -> None:
         """全新库：建 v3 全量 schema（与 v2 表结构一致 + 增量）。"""
         conn = self._require_conn()
@@ -222,7 +261,9 @@ class Database:
               resolved_id INTEGER,
               cached_title TEXT,
               sync_edits BOOLEAN DEFAULT 0,
-              sync_deletes BOOLEAN DEFAULT 0
+              sync_deletes BOOLEAN DEFAULT 0,
+              age_cutoff_hours REAL,
+              header_template TEXT
             )
             """
         )
@@ -235,7 +276,9 @@ class Database:
               all_keywords TEXT,
               any_keywords TEXT,
               file_types TEXT,
-              file_name_patterns TEXT
+              file_name_patterns TEXT,
+              media_types TEXT,
+              max_file_size INTEGER DEFAULT 0
             )
             """
         )
@@ -249,6 +292,8 @@ class Database:
         )
         await self._migrate_2_forward()
         await self._migrate_3_forward()
+        await self._migrate_4_forward()
+        await self._migrate_5_forward()
 
     # --- 基础操作（签名与 v2 database.py 对齐，实例方法，无全局变量）---
 

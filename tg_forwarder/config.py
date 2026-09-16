@@ -101,6 +101,18 @@ class LinkCheckerConfig(BaseModel):
         return v
 
 
+class DeliveryConfig(BaseModel):
+    """F9 转发出口（delivery）抽象：外部可选出口（webhook/RSS/Apprise）。
+
+    默认关（enabled=False，无后端）→ 现网行为零变化。
+    - enabled：是否启用 delivery 出口；
+    - webhooks：[{url, headers?, timeout?}] 列表，每项一个 webhook 后端。
+    RSS/Apprise 后端待接入（同一 DeliveryBackend 抽象）。
+    """
+    enabled: bool = False
+    webhooks: List[Dict[str, Any]] = Field(default_factory=list)
+
+
 class ForwardingConfig(BaseModel):
     mode: str = "forward"
     forward_new_only: bool = True
@@ -182,6 +194,10 @@ class SourceConfig(BaseModel):
     # F2 编辑/删除实时同步（per 源，默认关=现网行为零变化）
     sync_edits: bool = False
     sync_deletes: bool = False
+    # F4 年龄截断（per 源，默认 None=不限制；单位小时）
+    age_cutoff_hours: Optional[float] = None
+    # F6 源标注模板（默认 None=不标注；占位符 {title}/{link}/{time}）
+    header_template: Optional[str] = None
 
 
 class TargetDistributionRule(BaseModel):
@@ -190,12 +206,20 @@ class TargetDistributionRule(BaseModel):
     any_keywords: List[str] = Field(default_factory=list)
     file_types: List[str] = Field(default_factory=list)
     file_name_patterns: List[str] = Field(default_factory=list)
+    # F5 媒体类型/大小过滤（per 规则，默认空=不限制）
+    media_types: List[str] = Field(default_factory=list)
+    max_file_size: int = 0  # 0=不限制；单位字节
     target_identifier: Union[int, str]
     topic_id: Optional[int] = None
     resolved_target_id: Optional[int] = None
 
     def check(self, text: str, media: Any) -> bool:
-        """分发规则命中判断（对齐 v2 TargetDistributionRule.check）。"""
+        """分发规则命中判断（对齐 v2 TargetDistributionRule.check + F5 媒体过滤）。
+
+        F5: media_types（mime 子串匹配）与 max_file_size（字节上限）双重过滤。
+        二者为 AND 关系：设了 media_types 且无匹配 → 不命中；超 max_file_size → 不命中。
+        未设时不限制（默认=0 或空列表）。
+        """
         import re
 
         text_lower = text.lower() if text else ""
@@ -208,10 +232,16 @@ class TargetDistributionRule(BaseModel):
             self.any_keywords or self.file_types or self.file_name_patterns
         )
         if not has_or_conditions:
+            # F5：无关键字条件时仍需检查媒体过滤
+            if self._media_disqualified(media):
+                return False
             return True
 
         if self.any_keywords:
             if any(keyword.lower() in text_lower for keyword in self.any_keywords):
+                # F5：关键字命中仍需过媒体过滤
+                if self._media_disqualified(media):
+                    return False
                 return True
 
         try:
@@ -226,6 +256,8 @@ class TargetDistributionRule(BaseModel):
                     if any(
                         ft.lower() in doc.mime_type.lower() for ft in self.file_types
                     ):
+                        if self._media_disqualified(media):
+                            return False
                         return True
 
                 if self.file_name_patterns:
@@ -245,11 +277,54 @@ class TargetDistributionRule(BaseModel):
                                     re.IGNORECASE,
                                 )
                                 if re.search(pattern, file_name):
+                                    if self._media_disqualified(media):
+                                        return False
                                     return True
                             except re.error:
                                 logger.warning(
                                     f"规则 '{self.name}' 中的文件名模式 '{pattern_str}' 无效"
                                 )
+
+        # F5：无关键字命中时也检查媒体过滤
+        if self._media_disqualified(media):
+            return False
+        return False
+
+    def _media_disqualified(self, media: Any) -> bool:
+        """F5：媒体不通过该规则的类型/大小过滤（空=不限制）。
+
+        返回 True = 媒体不合格（需跳过该规则）。
+        media_types: 按逗号分隔的 mime 子串列表，设了必须至少匹配一个；
+        max_file_size: >0 时文件大小必须 <= 此值。
+        如果无媒体（media=None）且规则有限制 → 不合格（不能放行纯文本进媒体规则）。
+        """
+        if not self.media_types and not self.max_file_size:
+            return False  # 无限制
+
+        if not media:
+            return True  # 有媒体限制但无媒体 → 不合格
+
+        # 两层形状兼容：media 可能是真 MessageMediaDocument，也可能是
+        # wrapper（_Media/_FilterDocMedia 测试 mock：.document 属性承载它）。
+        # 统一解到最内层 Document：media.document[.document]，取不到即视为不合格。
+        doc = getattr(media, "document", None)
+        if not doc:
+            return True
+        doc = getattr(doc, "document", doc)
+        if not doc:
+            return True
+
+        # media_types 过滤
+        if self.media_types:
+            mime = (doc.mime_type or "").lower()
+            if not any(mt.lower() in mime for mt in self.media_types):
+                return True  # mime 不匹配
+
+        # max_file_size 过滤
+        if self.max_file_size > 0:
+            if (doc.size or 0) > self.max_file_size:
+                return True  # 超大小
+
         return False
 
 
@@ -313,6 +388,7 @@ class RuntimeConfig(BaseModel):
     link_extraction: LinkExtractionConfig = Field(default_factory=LinkExtractionConfig)
     deduplication: DeduplicationConfig = Field(default_factory=DeduplicationConfig)
     watchdog: WatchdogConfig = Field(default_factory=WatchdogConfig)
+    delivery: DeliveryConfig = Field(default_factory=DeliveryConfig)
 
     # Web 可编辑（app_config 表权威）
     sources: List[SourceConfig] = Field(default_factory=list)
@@ -364,6 +440,8 @@ def bootstrap_from_yaml(path: str) -> RuntimeConfig:
         cfg.link_checker = LinkCheckerConfig(**data["link_checker"])
     if data.get("watchdog"):
         cfg.watchdog = WatchdogConfig(**data["watchdog"])
+    if data.get("delivery"):
+        cfg.delivery = DeliveryConfig(**data["delivery"])
 
     # 规则段（仅 bootstrap 时有意义；表已有数据时不会覆盖，见 load_runtime_config）
     if data.get("sources"):
@@ -457,6 +535,7 @@ async def load_runtime_config(db: Database, yaml_path: str) -> RuntimeConfig:
             yaml_cfg.deduplication if yaml_cfg else DeduplicationConfig()
         ),
         watchdog=yaml_cfg.watchdog if yaml_cfg else WatchdogConfig(),
+        delivery=yaml_cfg.delivery if yaml_cfg else DeliveryConfig(),
     )
 
     settings_json = await config_repo.get("system_settings")

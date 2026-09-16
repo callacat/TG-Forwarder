@@ -262,6 +262,37 @@ def content_fingerprints(text: str, media: Any) -> List[str]:
     return fps
 
 
+def build_header(source_config, message) -> Optional[str]:
+    """F6：按源的 header_template 生成源标注头部（telemirror ForwardFormatFilter 范式）。
+
+    占位符：
+      {title}  源频道名（resolved 缓存标题）；{link}  源链接（https://t.me/s/<标题>）；
+      {time}  消息时间（YYYY-MM-DD HH:MM）。
+    模板为 None/空 → 返回 None（不标注，默认关=现网行为零变化）。
+    占位符未配置的字段以空串/未知占位，但不会抛异常。
+    """
+    template = getattr(source_config, "header_template", None)
+    if not template:
+        return None
+
+    title = getattr(source_config, "cached_title", None) or ""
+    link = ""
+    if title:
+        link = f"https://t.me/s/{title}"
+    ts = ""
+    ts_attr = getattr(message, "date", None)
+    if ts_attr and not str(ts_attr).startswith("None"):
+        try:
+            ts = ts_attr.strftime("%Y-%m-%d %H:%M")
+        except Exception:
+            ts = str(ts_attr)
+
+    text = template.replace("{title}", title)
+    text = text.replace("{link}", link)
+    text = text.replace("{time}", ts)
+    return text
+
+
 def find_target(text: str, media: Any, snapshot) -> Tuple[Optional[int], Optional[int]]:
     """目标路由（对齐 v2 _find_target）：分发规则命中 → 默认目标。"""
     for rule in snapshot.distribution_rules:
@@ -432,9 +463,22 @@ class Forwarder:
             # 替换
             new_text = apply_replacements(text, snapshot)
 
+            # F6 源标注模板（默认关=不标注；有模板时前置 header）
+            header = build_header(source_config, message)
+            if header:
+                rendered = f"{header}\n\n{new_text}".strip()
+                new_text = rendered
+
             # 发送（相册取整组）
             to_send = all_messages_in_group if all_messages_in_group else message
             await self._send_message(to_send, new_text, target_id, topic_id, snapshot)
+
+            # F7 评论区资源抓取（per 源 check_replies 开关，默认关）
+            if source_config and source_config.check_replies:
+                try:
+                    await self._collect_reply_links(message, source_config)
+                except Exception as e:
+                    logger.warning(f"F7 评论区抓取异常（不阻塞转发）: {e}")
 
             # 标记已见
             if snapshot.deduplication.enable:
@@ -505,8 +549,11 @@ class Forwarder:
                             **send_kwargs
                         )
                 else:
+                    # F8：parse_mode 由 "md" 改为 None——replacements 替换后残留
+                    # `* _ [` 等符号会触发 telegram markdown 解析异常（apppro 实证坑），
+                    # None = 纯文本发送，格式零污染、安全兜底。
                     sent_message = await client.send_message(
-                        target_id, message=text, file=None, parse_mode="md",
+                        target_id, message=text, file=None, parse_mode=None,
                         **send_kwargs
                     )
             else:
@@ -756,6 +803,45 @@ class Forwarder:
 
     # --- 事件注册（main 层调用）---
 
+    # --- F7：评论区资源抓取（per 源 check_replies，默认关）---
+
+    async def _collect_reply_links(self, message, source_config) -> int:
+        """F7：把该源消息的回复中的网盘链接收集进死链检测管线。
+
+        触发条件：源开启 check_replies 且消息有回复。
+        抓取回复文本里的网盘链接（NET_DISK_DOMAINS），add_pending_link 排队，
+        后续 LinkChecker 统一检测。默认关=现网行为零变化。
+        返回本轮收集到的链接数。
+        """
+        if not source_config or not source_config.check_replies:
+            return 0
+        client = self._get_next_client()
+        if client is None:
+            return 0
+        chat_id = message.chat_id
+        limit = getattr(source_config, "replies_limit", 10) or 10
+        from tg_forwarder.core.link_checker import extract_links, NET_DISK_DOMAINS
+
+        collected = 0
+        try:
+            async for reply in client.iter_messages(
+                chat_id, reply_to=message.id, limit=limit
+            ):
+                if not getattr(reply, "text", None):
+                    continue
+                links = extract_links(reply.text, NET_DISK_DOMAINS)
+                for link in links:
+                    await self.db.add_pending_link(link, getattr(reply, "id", 0))
+                    collected += 1
+            if collected:
+                logger.info(
+                    f"F7 源 {chat_id} 消息 {message.id} 回复区收集到 "
+                    f"{collected} 个网盘链接进死链检测管线。"
+                )
+        except Exception as e:
+            logger.warning(f"F7 抓取回复链接失败: {e}")
+        return collected
+
     def register_handlers(self, client) -> None:
         """注册 NewMessage/Album/Edited/Deleted 处理器（v2 拓扑 + F2 级联）。"""
 
@@ -830,15 +916,20 @@ class Forwarder:
             if not src.resolved_id:
                 continue
             try:
-                total += await self._catchup_source(client, src.resolved_id, limit)
+                total += await self._catchup_source(client, src, limit)
             except Exception as e:
                 logger.error(f"catchup 源 {src.resolved_id} 异常: {e}")
         if total:
             logger.info(f"🧩 catchup 兜底补齐 {total} 条（事件漏送窗口）。")
         return total
 
-    async def _catchup_source(self, client: Any, chat_id: int, limit: int) -> int:
-        """单源增量兜底（对齐 v2 process_history 的 50 条/次 + 相册合并）。"""
+    async def _catchup_source(self, client: Any, src, limit: int) -> int:
+        """单源增量兜底（对齐 v2 process_history 的 50 条/次 + 相册合并 + F4 年龄截断）。
+
+        参数 src 为 SourceConfig：携带 resolved_id 与 age_cutoff_hours（F4，
+        超龄旧消息跳过不转发，默认 None=不限制=现网行为零变化）。
+        """
+        chat_id = src.resolved_id
         settings = self._snapshot.settings
         last = await self.db.get_progress(chat_id)
 
@@ -861,10 +952,34 @@ class Forwarder:
         if not batch:
             return 0
 
+        # F4 年龄截断（per 源，默认不限制）：超龄消息跳过转发（仅抬 progress）
+        cutoff_ts = None
+        if (getattr(src, "age_cutoff_hours", None) or 0) > 0:
+            try:
+                cutoff_ts = time.time() - float(src.age_cutoff_hours) * 3600
+            except (TypeError, ValueError):
+                cutoff_ts = None
+
         processed = 0
+        skipped_old = 0
         i, n = 0, len(batch)
         while i < n:
             m = batch[i]
+            # F4：超龄消息不进 process_message（不转发），但 progress 仍抬升跳过
+            if cutoff_ts:
+                m_ts = getattr(m, "date", None)
+                if m_ts is None:
+                    m_ts_ts = 0
+                else:
+                    try:
+                        m_ts_ts = m_ts.timestamp()
+                    except Exception:
+                        m_ts_ts = 0
+                if m_ts_ts and m_ts_ts < cutoff_ts:
+                    skipped_old += 1
+                    i += 1
+                    continue
+
             gid = getattr(m, "grouped_id", None)
             if gid:
                 group = [m]
@@ -879,6 +994,12 @@ class Forwarder:
                 await self.process_message(m)
                 i += 1
             processed += 1
+
+        if skipped_old:
+            logger.info(
+                f"F4 catchup 源 {chat_id}: 跳过 {skipped_old} 条超龄旧消息"
+                f"（age_cutoff_hours={src.age_cutoff_hours}）"
+            )
 
         # 本轮扫到的最大 id 抬升 progress（含相册尾部/被过滤消息），
         # 避免下轮重复拉取（process_message 内 finally 只抬到 main_msg.id）
