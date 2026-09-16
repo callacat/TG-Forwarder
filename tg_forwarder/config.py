@@ -79,15 +79,25 @@ class BotServiceConfig(BaseModel):
 
 
 class LinkCheckerConfig(BaseModel):
+    """死链检测器（对齐 v2）+ F3 安全策略（默认开/默认向后兼容）。
+
+    - mode：log(仅记录)/edit(仅标记)/delete(删除)/delete_marked(只删已标记)；
+      F3 三档=仅标记(edit)/删除(delete)/只删已标记(delete_marked)，log 为历史占位；
+    - recheck_before_delete：删除类模式删除前二次复核（防网络瞬断误删，默认开）；
+    - delete_protect_domains：分域风控——这些域的失效链接只标记不自动删除
+      （默认 123 盘：HEAD 不稳定易误判，单独处理）。
+    """
     enabled: bool = False
     mode: str = "log"
     schedule: str = "0 3 * * *"
+    recheck_before_delete: bool = True
+    delete_protect_domains: List[str] = ["123pan.com"]
 
     @field_validator("mode")
     @classmethod
     def check_mode(cls, v):
-        if v not in ["log", "edit", "delete"]:
-            raise ValueError("mode 必须是 'log'/'edit'/'delete'")
+        if v not in ["log", "edit", "delete", "delete_marked"]:
+            raise ValueError("mode 必须是 'log'/'edit'/'delete'/'delete_marked'")
         return v
 
 

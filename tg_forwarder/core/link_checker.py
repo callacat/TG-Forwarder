@@ -114,14 +114,73 @@ class LinkChecker:
                 invalid_messages.setdefault(msg_id, []).append(link)
 
         mode = self.checker_config.mode
+        protect_doms = self.checker_config.delete_protect_domains or []
+
         if mode == "log":
-            logger.info("检测完成 (日志模式)。")
-        elif mode == "edit":
+            logger.info(f"检测完成 (日志模式)：{len(invalid_messages)} 条含失效链接。")
+            logger.info("--- 失效链接检测器运行完毕 ---")
+            return
+
+        # F3 分域风控：先拆分可删与保护域链接（保护域只标记不自动删除）
+        delete_candidates = {}
+        mark_only = {}
+        for msg_id, links in invalid_messages.items():
+            pr = [l for l in links if any(d in l for d in protect_doms)]
+            di = [l for l in links if l not in pr]
+            if pr:
+                mark_only[msg_id] = pr
+            if di:
+                delete_candidates[msg_id] = di
+
+        # F3 二次复核：删除类模式删除前对候选链接逐个再验一次，防网络瞬断误删
+        if mode in ("delete", "delete_marked") and self.checker_config.recheck_before_delete:
+            rechecked = {}
+            for msg_id, links in delete_candidates.items():
+                still_bad = [l for l in links if not await self._check_link_validity(l)]
+                if still_bad:
+                    rechecked[msg_id] = still_bad
+            skipped = sum(len(v) for v in delete_candidates.values()) - sum(
+                len(v) for v in rechecked.values()
+            )
+            if skipped:
+                logger.info(f"F3 二次复核：{skipped} 个链接复核后仍有效，跳过删除（防误删）。")
+            delete_candidates = rechecked
+
+        if mode == "edit":
+            logger.info("检测完成 (仅标记模式)。")
             await self._edit_invalid(invalid_messages)
         elif mode == "delete":
-            await self._delete_invalid(invalid_messages)
+            if delete_candidates:
+                await self._delete_invalid(delete_candidates)
+            if mark_only:
+                logger.info(
+                    f"F3 保护域（{protect_doms}）失效链接仅标记不自动删。"
+                )
+                await self._edit_invalid(mark_only)
+        elif mode == "delete_marked":
+            # 只删已标记过的消息（防误删首次出现失效）；首次发现的先标记等下轮
+            to_delete = {}
+            to_mark = {}
+            for msg_id, links in delete_candidates.items():
+                if await self._is_marked(msg_id):
+                    to_delete[msg_id] = links
+                else:
+                    to_mark[msg_id] = links
+            if to_delete:
+                await self._delete_invalid(to_delete)
+            if to_mark or mark_only:
+                await self._edit_invalid({**to_mark, **mark_only})
 
         logger.info("--- 失效链接检测器运行完毕 ---")
+
+    async def _is_marked(self, msg_id) -> bool:
+        """快照消息是否已被标记过（delete_marked 档判据）。"""
+        try:
+            message = await self.client.get_messages(self.target_channel_id, ids=msg_id)
+            return bool(message and "[链接已失效]" in (message.text or ""))
+        except Exception as e:
+            logger.error(f"读取消息 {msg_id} 判定标记状态失败: {e}")
+            return False
 
     async def _edit_invalid(self, invalid_messages) -> None:
         logger.info("正在编辑包含失效链接的消息...")
