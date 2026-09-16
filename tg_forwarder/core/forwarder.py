@@ -200,6 +200,68 @@ def message_hash(text: str, media: Any, msg_id: Any) -> Optional[str]:
     return f"id:{msg_id}"
 
 
+# ---------------------------------------------------------------------------
+# F1：跨源内容级去重指纹（跨源同资源：不同消息 id、不同源频道，资源本体相同）。
+# 现单源 dedup 只 hash caption+媒体 id，跨源重发同一资源（换图/换源贴同链）漏掉。
+# 指纹维度：① 链接（消息文本中的网盘/普通 URL，归一化去 query）；
+#           ② 文件名+大小（文档媒体，跨源重发的同一文件 id 不同但 name+size 相同）。
+# ---------------------------------------------------------------------------
+URL_TOKEN_PATTERN = r"https?://[^\s]+"
+
+
+def extract_url_tokens(text: str) -> List[str]:
+    """提取文本中的 URL 并归一化（去 query/fragment、去尾标点、小写）。
+
+    尾标点覆盖中英文常用（。；，、！？与 ASCII 对应符）——中文文案贴链接后
+    紧跟全角标点是现网常态，不剥离会导致同链接指纹不一致漏判。
+    """
+    if not text:
+        return []
+    _TRAIL = ".,;:!?)]}\"'》」」。；：！？、，…"
+    out = []
+    for raw in re.findall(URL_TOKEN_PATTERN, text):
+        u = raw.rstrip(_TRAIL)
+        # 去 query 与 fragment，保 path（网盘分享码在 path）
+        u = u.split("#", 1)[0].split("?", 1)[0]
+        if len(u) > 8:
+            out.append(u.lower())
+    return out
+
+
+def _doc_meta(media: Any) -> Optional[Tuple[str, int]]:
+    """提取文档媒体的 (文件名, 大小)；两层形状兼容与 message_hash/_doc_file_name 同法。"""
+    if not media:
+        return None
+    doc = getattr(media, "document", None)
+    if not doc:
+        return None
+    doc = getattr(doc, "document", doc)
+    if not doc:
+        return None
+    name = next(
+        (attr.file_name for attr in doc.attributes if hasattr(attr, "file_name")),
+        None,
+    )
+    size = getattr(doc, "size", 0) or 0
+    if not name or size <= 0:
+        return None
+    return (name.lower(), size)
+
+
+def content_fingerprints(text: str, media: Any) -> List[str]:
+    """消息的内容指纹集合（F1）：链接指纹 + 文件名+大小指纹。
+
+    空 media+短文本 → 无指纹（不参与跨源去重，走既有 id hash）。
+    """
+    fps: List[str] = []
+    for u in extract_url_tokens(text or ""):
+        fps.append(f"link:{u}")
+    meta = _doc_meta(media)
+    if meta:
+        fps.append(f"file:{meta[0]}:{meta[1]}")
+    return fps
+
+
 def find_target(text: str, media: Any, snapshot) -> Tuple[Optional[int], Optional[int]]:
     """目标路由（对齐 v2 _find_target）：分发规则命中 → 默认目标。"""
     for rule in snapshot.distribution_rules:
@@ -351,6 +413,16 @@ class Forwarder:
                     logger.info(f"消息 {message.id} 重复。")
                     return
 
+            # F1 跨源内容级去重（默认关；任一指纹已见即跨源丢弃）
+            if snapshot.deduplication.cross_source_enable:
+                fps = content_fingerprints(text, media)
+                for fp in fps:
+                    if await self.db.check_hash(fp):
+                        logger.info(
+                            f"消息 {message.id} 跨源重复（{fp.split(':', 1)[0]} 指纹已见）。"
+                        )
+                        return
+
             # 目标路由
             target_id, topic_id = find_target(text, media, snapshot)
             if not target_id:
@@ -369,6 +441,10 @@ class Forwarder:
                 h = message_hash(text, media, message.id)
                 if h:
                     await self.db.add_hash(h)
+            # F1：发送成功后登记内容指纹（跨源后续消息被拦）
+            if snapshot.deduplication.cross_source_enable:
+                for fp in content_fingerprints(text, media):
+                    await self.db.add_hash(fp)
 
         except Exception as e:
             logger.error(f"处理消息失败: {e}", exc_info=True)

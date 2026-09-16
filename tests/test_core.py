@@ -34,6 +34,8 @@ from tg_forwarder.core.forwarder import (
     _utf16_len,
     apply_replacements,
     clamp_caption,
+    content_fingerprints,
+    extract_url_tokens,
     find_target,
     message_hash,
     should_filter,
@@ -1599,4 +1601,130 @@ class TestCaptionTruncation:
         await fwd._send_message(_Msg(1, text=long_text), long_text, -100999, None, fwd._snapshot)
         assert len(client.calls) == 1
         assert client.calls[0]["message"] == long_text
+        await db.close()
+
+
+# ---------------------------------------------------------------------------
+# F1：跨源内容级去重（链接指纹 + 文件名+大小指纹；默认关=现网行为零变化）
+# ---------------------------------------------------------------------------
+
+
+class _FakeDocAttr:
+    def __init__(self, file_name):
+        self.file_name = file_name
+
+
+class _FakeDoc:
+    def __init__(self, file_name, size):
+        self.attributes = [_FakeDocAttr(file_name)]
+        self.size = size
+
+
+class _FakeMediaDoc:
+    """两层形状：MessageMediaDocument（嵌套 .document），与真 telethon 同形。"""
+
+    def __init__(self, file_name, size):
+        self.document = _FakeDoc(file_name, size)
+
+
+def _cross_snap(cross=True, single=True):
+    from tg_forwarder.config import DeduplicationConfig
+
+    return _cfg(
+        sources=[
+            SourceConfig(identifier=str(_CHAT), resolved_id=_CHAT),
+            SourceConfig(identifier="-100888", resolved_id=-100888),  # 跨源二号源
+        ],
+        settings=SystemSettings(default_target="-100999", forward_new_only=False),
+        targets_resolved_default=-100999,
+        deduplication=DeduplicationConfig(
+            enable=single, cross_source_enable=cross, auto_cleanup=False
+        ),
+        ad_filter=AdFilterConfig(enable=False),
+        content_filter=ContentFilterConfig(enable=False),
+    )
+
+
+class TestContentFingerprints:
+    def test_url_normalized_strips_query_and_case(self):
+        fps1 = content_fingerprints("下载: https://pan.quark.cn/s/AbCdEf?pwd=x1 。", None)
+        fps2 = content_fingerprints("备份: https://pan.quark.cn/s/abcdef#main", None)
+        assert fps1 == fps2 == ["link:https://pan.quark.cn/s/abcdef"]
+
+    def test_trailing_punctuation_not_in_url(self):
+        fps = content_fingerprints("链接 https://pan.baidu.com/s/xyz。", None)
+        assert fps == ["link:https://pan.baidu.com/s/xyz"]  # 中文句号不吃进 URL
+
+    def test_doc_name_size_fingerprint(self):
+        m1 = _FakeMediaDoc("Game.apk", 123456)
+        m2 = _FakeMediaDoc("game.APK", 123456)  # 同名（大小写不敏感）同大小
+        assert content_fingerprints("", m1) == content_fingerprints("", m2)
+
+    def test_short_text_no_fingerprint(self):
+        assert content_fingerprints("短文本", None) == []
+
+    def test_album_only_caption_text_used(self):
+        fps = content_fingerprints("https://cloud.189.cn/t/ZZZ", None)
+        assert fps == ["link:https://cloud.189.cn/t/zzz"]
+
+
+class TestCrossSourceDedup:
+    async def test_cross_source_link_blocked(self, tmp_path):
+        """跨源同链接：第二个源的同链接消息被拦（消息 id 不同、源不同）。"""
+        client = _CatchupClient([])
+        fwd, db = await _make_fwd(tmp_path, _cross_snap(), client)
+        seen = []
+        async def stub_send(original, text, target_id, topic_id, snap):
+            seen.append(text)
+        fwd._send_message = stub_send
+        m1 = _Msg(11, chat_id=_CHAT, text="https://pan.quark.cn/s/abc")
+        await fwd.process_message(m1)
+        assert await db.get_progress(_CHAT) == 11
+        # 另一源（不同 chat_id）发同一链接
+        m2 = _Msg(99, chat_id=-100888, text="网盘: https://pan.quark.cn/s/abc")
+        # 单源 hash 不同（text 不同），但链接指纹相同 → 应被跨源拦
+        await fwd.process_message(m2)
+        assert seen == ["https://pan.quark.cn/s/abc"]  # 首条发出、第二条被跨源拦
+        assert await db.get_progress(-100888) == 99  # progress 照常推进
+        await db.close()
+
+    async def test_cross_source_doc_blocked(self, tmp_path):
+        """跨源同文件名+大小：第二源的同文件被拦。"""
+        client = _CatchupClient([])
+        fwd, db = await _make_fwd(tmp_path, _cross_snap(), client)
+        media = _FakeMediaDoc("app.apk", 555)
+        await fwd.process_message(_Msg(11, chat_id=_CHAT, media=media))
+        seen = []
+        async def stub_send(original, text, target_id, topic_id, snap):
+            seen.append(text)
+        fwd._send_message = stub_send
+        await fwd.process_message(_Msg(22, chat_id=-100888, media=_FakeMediaDoc("APP.APK", 555)))
+        assert seen == []
+        await db.close()
+
+    async def test_off_is_backward_compatible(self, tmp_path):
+        """默认关（cross_source_enable=False）：同链接跨源两发，行为与升级前一致。"""
+        client = _CatchupClient([])
+        fwd, db = await _make_fwd(tmp_path, _cross_snap(cross=False), client)
+        seen = []
+        async def stub_send(original, text, target_id, topic_id, snap):
+            seen.append(text)
+        fwd._send_message = stub_send
+        await fwd.process_message(_Msg(11, chat_id=_CHAT, text="https://pan.quark.cn/s/abc"))
+        await fwd.process_message(_Msg(22, chat_id=-100888, text="https://pan.quark.cn/s/abc"))
+        assert len(seen) == 2  # 未拦（现网行为零变化）
+        await db.close()
+
+    async def test_same_source_still_single_dedup(self, tmp_path):
+        """同源同消息（单源 hash 命中）仍走既有去重，不受 F1 影响。"""
+        client = _CatchupClient([])
+        fwd, db = await _make_fwd(tmp_path, _cross_snap(), client)
+        seen = []
+        async def stub_send(original, text, target_id, topic_id, snap):
+            seen.append(text)
+        fwd._send_message = stub_send
+        m = _Msg(11, chat_id=_CHAT, text="hello world " * 10)  # >50 字符走 text hash
+        await fwd.process_message(m)
+        await fwd.process_message(m)
+        assert len(seen) == 1
         await db.close()

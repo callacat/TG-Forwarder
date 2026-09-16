@@ -111,7 +111,15 @@ class LinkExtractionConfig(BaseModel):
 
 
 class DeduplicationConfig(BaseModel):
+    """跨源内容级去重（F1，默认全关=现网行为零变化）。
+
+    - enable：既有单源 hash 去重（v2 语义）；
+    - cross_source_enable：内容级跨源去重（链接指纹/文件名+大小指纹，v3 新增）；
+    - auto_cleanup：自动清理历史重复只留最新（F1 可选开关，默认关）。
+    """
     enable: bool = True
+    cross_source_enable: bool = False
+    auto_cleanup: bool = False
 
 
 class WatchdogConfig(BaseModel):
