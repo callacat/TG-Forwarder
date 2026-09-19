@@ -456,6 +456,7 @@ def create_app(
     async def update_blacklist(config: AdFilterConfig, username: str = Depends(require_auth)):
         rules_db.ad_filter = config
         await config_repo.save("ad_filter", config.model_dump())
+        await _reload_runtime()  # M3：过滤类写端点同样落表即重载，快照不刷新不得声称已生效
         await notify_bot("🛡 **黑名单已更新**\n已热重载生效。")
         return {"status": "success"}
 
@@ -467,6 +468,7 @@ def create_app(
     async def update_whitelist(config: WhitelistConfig, username: str = Depends(require_auth)):
         rules_db.whitelist = config
         await config_repo.save("whitelist", config.model_dump())
+        await _reload_runtime()  # M3：过滤类写端点同样落表即重载，快照不刷新不得声称已生效
         await notify_bot("🛡 **白名单已更新**\n已热重载生效。")
         return {"status": "success"}
 
@@ -478,6 +480,7 @@ def create_app(
     async def update_content_filter(config: ContentFilterConfig, username: str = Depends(require_auth)):
         rules_db.content_filter = config
         await config_repo.save("content_filter", config.model_dump())
+        await _reload_runtime()  # M3：过滤类写端点同样落表即重载，快照不刷新不得声称已生效
         await notify_bot("🛡 **内容过滤已更新**\n已热重载生效。")
         return {"status": "success"}
 
@@ -489,6 +492,7 @@ def create_app(
     async def update_replacements(data: Dict[str, str], username: str = Depends(require_auth)):
         rules_db.replacements = data
         await config_repo.save("replacements", data)
+        await _reload_runtime()  # M3：过滤类写端点同样落表即重载，快照不刷新不得声称已生效
         await notify_bot("🔁 **替换规则已更新**\n已热重载生效。")
         return {"status": "success"}
 

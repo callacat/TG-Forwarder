@@ -712,6 +712,59 @@ class TestWriteAutoReload:
             client.post("/api/rules/remove", json={"name": "r3"}, headers=basic_auth())
             assert ctx["calls"]["update_settings"] == 5
 
+    def test_filter_writes_trigger_reload(self):
+        """Codex review major 残余：4 个过滤类写端点落表后同样触发热重载。
+
+        原先只改 rules_db 内存+落表、从不 _reload_runtime()，却通知「已热重载生效」；
+        forwarder 读自身 RuntimeConfig 快照（仅 update_settings_cb 重建），改动实际未生效。
+        """
+        client, ctx = make_client()
+        with client:
+            client.post(
+                "/api/blacklist/update",
+                json={"enable": True, "keywords_substring": ["ad"]},
+                headers=basic_auth(),
+            )
+            assert ctx["calls"]["update_settings"] == 1
+            client.post(
+                "/api/whitelist/update",
+                json={"enable": True, "keywords": ["vip"]},
+                headers=basic_auth(),
+            )
+            assert ctx["calls"]["update_settings"] == 2
+            client.post(
+                "/api/content_filter/update",
+                json={"enable": True, "meaningless_words": ["哈哈"], "min_meaningful_length": 8},
+                headers=basic_auth(),
+            )
+            assert ctx["calls"]["update_settings"] == 3
+            client.post("/api/replacements/update", json={"foo": "bar"}, headers=basic_auth())
+            assert ctx["calls"]["update_settings"] == 4
+
+    def test_filter_write_reload_failure_propagates_500(self):
+        """过滤类写端点热重载失败同样上抛 500 如实标注（原 200 静默失效路径已消除）。"""
+        from tg_forwarder.web import server as web_server
+
+        client, ctx = make_client()
+        saved = web_server.app_state["update_settings"]
+
+        async def boom():
+            raise RuntimeError("config broke")
+
+        web_server.app_state["update_settings"] = boom
+        try:
+            with client:
+                res = client.post(
+                    "/api/blacklist/update",
+                    json={"enable": True, "keywords_substring": ["ad"]},
+                    headers=basic_auth(),
+                )
+        finally:
+            web_server.app_state["update_settings"] = saved
+        assert res.status_code == 500
+        detail = res.json()["detail"]
+        assert "已保存" in detail and "热重载失败" in detail
+
     def test_write_reload_failure_propagates_500(self):
         """Codex review major：写操作自动热重载失败不再静默 200+「已热重载生效」——上抛 500 如实标注。"""
         from tg_forwarder.web import server as web_server
