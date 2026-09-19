@@ -227,6 +227,20 @@ def create_app(
             except Exception as e:
                 logger.warning(f"Bot 通知失败（忽略）: {e}")
 
+    async def _reload_runtime() -> None:
+        """R8 热重载：触发 update_settings 回调（重建 RuntimeConfig + 快照替换）。
+
+        M3：写操作落表成功后调用，实现「Web 改配置 → 自动热重载 → 无需重启容器」。
+        失败仅记日志（数据已持久化，不阻断响应）；显式 /api/reload 才向上抛错。
+        """
+        cb = app_state.get("update_settings")
+        if cb is None:
+            return
+        try:
+            await cb()
+        except Exception as e:
+            logger.warning(f"update_settings 回调失败: {e}")
+
     # --- 新增：登录签发 session token（P5/R9）---
 
     @app.post("/api/login")
@@ -335,7 +349,7 @@ def create_app(
                 await app_state["update_settings"]()
             except Exception as e:
                 logger.warning(f"update_settings 回调失败: {e}")
-        await notify_bot("⚠️ **系统设置已更新**\n请发送 /reload 以应用更改。")
+        await notify_bot("✅ **系统设置已更新**\n已热重载生效。")
         return {"status": "success"}
 
     @app.get("/api/rules")
@@ -350,7 +364,9 @@ def create_app(
         # await 落表成功后更新内存（R4）
         await source_repo.save(source.model_dump())
         rules_db.sources.append(source)
-        await notify_bot(f"➕ **新增监控源**: `{source.identifier}`")
+        # M3：写后立即热重载（新增源即时生效，无需 Bot /reload）
+        await _reload_runtime()
+        await notify_bot(f"➕ **新增监控源**: `{source.identifier}`（已热重载生效）")
         return {"status": "success"}
 
     @app.post("/api/sources/remove")
@@ -358,14 +374,16 @@ def create_app(
         identifier = str(data.get("identifier"))
         await source_repo.remove(identifier)
         rules_db.sources = [s for s in rules_db.sources if str(s.identifier) != identifier]
-        await notify_bot(f"➖ **移除监控源**: `{identifier}`")
+        await _reload_runtime()  # M3：删除立即生效
+        await notify_bot(f"➖ **移除监控源**: `{identifier}`（已热重载生效）")
         return {"status": "success"}
 
     @app.post("/api/rules/add")
     async def add_rule(rule: TargetDistributionRule, username: str = Depends(require_auth)):
         await rule_repo.save(rule.model_dump())
         rules_db.distribution_rules.append(rule)
-        await notify_bot(f"➕ **新增分发规则**: `{rule.name}`")
+        await _reload_runtime()  # M3：新增规则立即生效
+        await notify_bot(f"➕ **新增分发规则**: `{rule.name}`（已热重载生效）")
         return rule
 
     @app.post("/api/rules/update_single")
@@ -392,6 +410,7 @@ def create_app(
             if name_to_replace and name_to_replace != rule.name:
                 await rule_repo.remove(name_to_replace)
             await rule_repo.save(rule.model_dump())
+            await _reload_runtime()  # M3：规则更新立即生效
         return {"status": "success"}
 
     @app.post("/api/rules/reorder")
@@ -414,6 +433,7 @@ def create_app(
 
             # DB 重排：事务化全量重写（C5，中途失败整体回滚）
             await rule_repo.replace_all([r.model_dump() for r in new_list])
+            await _reload_runtime()  # M3：规则顺序立即生效
         return {"status": "success"}
 
     @app.post("/api/rules/remove")
@@ -421,7 +441,8 @@ def create_app(
         name = data.get("name")
         await rule_repo.remove(name)
         rules_db.distribution_rules = [r for r in rules_db.distribution_rules if r.name != name]
-        await notify_bot(f"➖ **移除分发规则**: `{name}`")
+        await _reload_runtime()  # M3：规则删除立即生效
+        await notify_bot(f"➖ **移除分发规则**: `{name}`（已热重载生效）")
         return {"status": "success"}
 
     # --- Filters（v2 对齐）---
@@ -434,7 +455,7 @@ def create_app(
     async def update_blacklist(config: AdFilterConfig, username: str = Depends(require_auth)):
         rules_db.ad_filter = config
         await config_repo.save("ad_filter", config.model_dump())
-        await notify_bot("🛡 **黑名单已更新**\n请发送 /reload 以应用更改。")
+        await notify_bot("🛡 **黑名单已更新**\n已热重载生效。")
         return {"status": "success"}
 
     @app.get("/api/whitelist")
@@ -445,7 +466,7 @@ def create_app(
     async def update_whitelist(config: WhitelistConfig, username: str = Depends(require_auth)):
         rules_db.whitelist = config
         await config_repo.save("whitelist", config.model_dump())
-        await notify_bot("🛡 **白名单已更新**\n请发送 /reload 以应用更改。")
+        await notify_bot("🛡 **白名单已更新**\n已热重载生效。")
         return {"status": "success"}
 
     @app.get("/api/content_filter")
@@ -456,7 +477,7 @@ def create_app(
     async def update_content_filter(config: ContentFilterConfig, username: str = Depends(require_auth)):
         rules_db.content_filter = config
         await config_repo.save("content_filter", config.model_dump())
-        await notify_bot("🛡 **内容过滤已更新**\n请发送 /reload 以应用更改。")
+        await notify_bot("🛡 **内容过滤已更新**\n已热重载生效。")
         return {"status": "success"}
 
     @app.get("/api/replacements")
@@ -467,7 +488,7 @@ def create_app(
     async def update_replacements(data: Dict[str, str], username: str = Depends(require_auth)):
         rules_db.replacements = data
         await config_repo.save("replacements", data)
-        await notify_bot("🔁 **替换规则已更新**\n请发送 /reload 以应用更改。")
+        await notify_bot("🔁 **替换规则已更新**\n已热重载生效。")
         return {"status": "success"}
 
     # --- 新增：健康检查（R1，供 Docker HEALTHCHECK）---
@@ -507,11 +528,12 @@ def create_app(
     @app.get("/api/status")
     async def api_status(username: str = Depends(require_auth)):
         """运行状态：每账号 connected/authorized/flood_wait/proxy_level/last_error、
-        proxy_fallback 生效级别、uptime、bot_status。"""
+        proxy_fallback 生效级别、uptime、bot_status、message_stats。"""
         accounts: List[Dict[str, Any]] = []
         proxy_fallback: Dict[str, Any] = {}
         uptime: Any = None
         bot_status: Any = "未启用"
+        message_stats: Dict[str, Any] = {}
 
         fwd = app_state.get("forwarder")
         if fwd is not None:
@@ -524,6 +546,7 @@ def create_app(
                     proxy_fallback = res.get("proxy_fallback") or {}
                     uptime = res.get("uptime")
                     bot_status = res.get("bot_status", bot_status)
+                    message_stats = res.get("message_stats") or {}
             except Exception as e:
                 logger.warning(f"/api/status 读取 forwarder 状态失败: {e}")
 
@@ -532,7 +555,23 @@ def create_app(
             "proxy_fallback": proxy_fallback,
             "uptime": uptime,
             "bot_status": bot_status,
+            "message_stats": message_stats,
         }
+
+    # --- 新增：热重载（M3，Web 改配置 → reload → 无需重启容器）---
+
+    @app.post("/api/reload")
+    async def reload_config(username: str = Depends(require_auth)):
+        """显式热重载：触发 update_settings 全链路（load→快照替换→web 同步）。"""
+        if not app_state.get("update_settings"):
+            raise HTTPException(status_code=503, detail="热重载回调未注入")
+        try:
+            await app_state["update_settings"]()
+        except Exception as e:
+            logger.error(f"/api/reload 热重载失败: {e}")
+            raise HTTPException(status_code=500, detail=f"热重载失败: {e}")
+        await notify_bot("♻️ **Web 面板触发热重载完成**")
+        return {"status": "success"}
 
     # --- Web UI（v2 对齐）---
 

@@ -632,3 +632,98 @@ class TestBotNotifierWiring:
                 headers=basic_auth(),
             )
             assert res.status_code == 200
+
+
+# ---------------------------------------------------------------------------
+# M3：Web 热重载链路 —— /api/reload + 写操作自动热重载
+# ---------------------------------------------------------------------------
+
+
+class TestReload:
+    def test_reload_success(self):
+        client, ctx = make_client()
+        with client:
+            res = client.post("/api/reload", headers=basic_auth())
+        assert res.status_code == 200
+        assert res.json() == {"status": "success"}
+        assert ctx["calls"]["update_settings"] == 1
+
+    def test_reload_requires_auth(self):
+        """未登录不可触发重载（M3 验收：登录保护覆盖配置类操作）。"""
+        client, ctx = make_client()
+        with client:
+            res = client.post("/api/reload")
+        assert res.status_code == 401
+
+    def test_reload_500_when_update_fails(self):
+        from tg_forwarder.web import server as web_server
+
+        client, ctx = make_client()
+        saved = web_server.app_state["update_settings"]
+
+        async def boom():
+            raise RuntimeError("config broke")
+
+        web_server.app_state["update_settings"] = boom
+        with client:
+            res = client.post("/api/reload", headers=basic_auth())
+        web_server.app_state["update_settings"] = saved
+        assert res.status_code == 500
+
+    def test_reload_503_without_callback(self):
+        from tg_forwarder.web import server as web_server
+
+        client, ctx = make_client()
+        saved = web_server.app_state["update_settings"]
+        web_server.app_state["update_settings"] = None
+        with client:
+            res = client.post("/api/reload", headers=basic_auth())
+        web_server.app_state["update_settings"] = saved
+        assert res.status_code == 503
+
+
+class TestWriteAutoReload:
+    """M3：源/规则写操作落表成功后自动触发热重载，无需 Bot /reload。"""
+
+    def test_source_add_and_remove_trigger_reload(self):
+        client, ctx = make_client()
+        with client:
+            client.post("/api/sources/add", json={"identifier": -100999}, headers=basic_auth())
+            assert ctx["calls"]["update_settings"] == 1
+            client.post("/api/sources/remove", json={"identifier": -100999}, headers=basic_auth())
+            assert ctx["calls"]["update_settings"] == 2
+
+    def test_rule_full_lifecycle_triggers_reload(self):
+        client, ctx = make_client()
+        with client:
+            client.post("/api/rules/add", json=RULE, headers=basic_auth())
+            assert ctx["calls"]["update_settings"] == 1
+            client.post(
+                "/api/rules/update_single?name_to_replace=rule1",
+                json=dict(RULE, name="r2"),
+                headers=basic_auth(),
+            )
+            assert ctx["calls"]["update_settings"] == 2
+            client.post("/api/rules/add", json=dict(RULE, name="r3"), headers=basic_auth())
+            client.post(
+                "/api/rules/reorder", json={"names": ["r3", "r2"]}, headers=basic_auth()
+            )
+            assert ctx["calls"]["update_settings"] == 4
+            client.post("/api/rules/remove", json={"name": "r3"}, headers=basic_auth())
+            assert ctx["calls"]["update_settings"] == 5
+
+    def test_api_status_includes_message_stats_and_uptime(self):
+        class _Fwd:
+            def all_status(self):
+                return {
+                    "accounts": [],
+                    "uptime": "1天 2小时",
+                    "message_stats": {"processed": 10, "forwarded": 8},
+                }
+
+        client, ctx = make_client(forwarder=_Fwd())
+        with client:
+            res = client.get("/api/status", headers=basic_auth())
+        data = res.json()
+        assert data["uptime"] == "1天 2小时"
+        assert data["message_stats"] == {"processed": 10, "forwarded": 8}
