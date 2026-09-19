@@ -2384,6 +2384,25 @@ class TestMessageStats:
         assert fwd.all_status()["message_stats"]["failed"] == 1
         await db.close()
 
+    async def test_post_send_db_error_not_double_counted(self, tmp_path):
+        """Codex review nit：转发成功后 add_hash 抛错不得再计 failed（防 forwarded/failed 双计）。"""
+        fwd, db, client = await self._forwarding_fwd(tmp_path)
+        fwd.update_snapshot(_cross_snap(cross=False, single=True))  # 开单源去重 → 走 add_hash 路径
+
+        async def boom(*a, **k):
+            raise RuntimeError("db busy")
+
+        orig_add_hash = fwd.db.add_hash
+        fwd.db.add_hash = boom
+        try:
+            await fwd.process_message(_Msg(11, text="hello 世界 " * 10))
+        finally:
+            fwd.db.add_hash = orig_add_hash
+        stats = fwd.all_status()["message_stats"]
+        assert stats["forwarded"] == 1
+        assert stats["failed"] == 0
+        await db.close()
+
     async def test_all_status_uptime_is_real(self, tmp_path):
         fwd, db, client = await self._forwarding_fwd(tmp_path)
         status = fwd.all_status()

@@ -460,6 +460,10 @@ class Forwarder:
         text = message.text or ""
         media = message.media
 
+        # 是否已进入发送路径：发送成功后（含 _send_message 内部失败计数）的
+        # post-send 异常不得再计 failed，防止同一条消息 forwarded/failed 双计
+        send_attempted = False
+
         try:
             # 过滤
             filter_reason, filter_keyword = should_filter(text, media, snapshot)
@@ -507,6 +511,7 @@ class Forwarder:
                 new_text = rendered
 
             # 发送（相册取整组）
+            send_attempted = True
             to_send = all_messages_in_group if all_messages_in_group else message
             await self._send_message(to_send, new_text, target_id, topic_id, snapshot)
 
@@ -529,10 +534,15 @@ class Forwarder:
 
         except Exception as e:
             logger.error(f"处理消息失败: {e}", exc_info=True)
-            self._msg_stats["failed"] += 1
+            # 仅「未发起发送」路径计 failed：发送后的登记/进度异常不得再来一次
+            if not send_attempted:
+                self._msg_stats["failed"] += 1
         finally:
-            # 断点续传（v2 对齐）
-            await self.db.set_progress(numeric_chat_id, message.id)
+            # 断点续传（v2 对齐）；进度写入失败不阻塞后续消息也不影响计数
+            try:
+                await self.db.set_progress(numeric_chat_id, message.id)
+            except Exception as e:
+                logger.warning(f"进度写入失败（不阻塞）: {e}")
 
     # --- 发送（copy 无痕 / forward 模式，对齐 v2 _send_message）---
 

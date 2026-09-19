@@ -231,7 +231,8 @@ def create_app(
         """R8 热重载：触发 update_settings 回调（重建 RuntimeConfig + 快照替换）。
 
         M3：写操作落表成功后调用，实现「Web 改配置 → 自动热重载 → 无需重启容器」。
-        失败仅记日志（数据已持久化，不阻断响应）；显式 /api/reload 才向上抛错。
+        与 /api/reload 一致，热重载失败向上抛：数据已持久化，响应如实标注
+        「已保存但热重载失败需手动重载」，不再静默吞错（Codex review major）。
         """
         cb = app_state.get("update_settings")
         if cb is None:
@@ -239,7 +240,11 @@ def create_app(
         try:
             await cb()
         except Exception as e:
-            logger.warning(f"update_settings 回调失败: {e}")
+            logger.error(f"热重载失败（配置已保存，需手动重载）: {e}")
+            raise HTTPException(
+                status_code=500,
+                detail=f"配置已保存，但热重载失败: {e}（请手动重载）",
+            )
 
     # --- 新增：登录签发 session token（P5/R9）---
 
@@ -343,12 +348,8 @@ def create_app(
         rules_db.settings = settings
         # 2. await 落表成功（R4，不 fire-and-forget）
         await config_repo.save("system_settings", settings.model_dump())
-        # 3. 触发 RuntimeConfig 重建 + forwarder.update_snapshot（R8 原子化）
-        if app_state.get("update_settings"):
-            try:
-                await app_state["update_settings"]()
-            except Exception as e:
-                logger.warning(f"update_settings 回调失败: {e}")
+        # 3. 触发 RuntimeConfig 重建 + forwarder.update_snapshot（R8 原子化，失败上抛如实标注）
+        await _reload_runtime()
         await notify_bot("✅ **系统设置已更新**\n已热重载生效。")
         return {"status": "success"}
 

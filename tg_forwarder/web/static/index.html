@@ -246,6 +246,13 @@
         <!-- ============ Tab: 实时仪表盘 ============ -->
         <div x-show="currentTab === 'status'" x-transition:enter="transition ease-out duration-300 transform" x-transition:enter-start="opacity-0 scale-95" x-transition:enter-end="opacity-100 scale-100">
 
+            <!-- 离线横幅（Codex review minor：后端不可用不再静默陈旧，自动重试中） -->
+            <div x-show="offline" class="glass-card px-5 py-3 mb-6 flex items-center gap-3 border-l-4 border-apple-orange" role="status">
+                <span class="w-2.5 h-2.5 rounded-full bg-apple-orange animate-pulse flex-shrink-0"></span>
+                <span class="text-sm font-bold text-surface-900 dark:text-white">后端连接中断</span>
+                <span class="text-xs text-surface-500">数据可能已过期，正在自动重试…</span>
+            </div>
+
             <!-- 加载失败（带重试） -->
             <div x-show="!loadedOnce && error" class="glass-card p-12 text-center">
                 <div class="w-14 h-14 mx-auto mb-4 rounded-2xl bg-apple-red/10 text-apple-red flex items-center justify-center">
@@ -677,11 +684,13 @@
 
     <script>
         const SafeStorage = { getItem(k) { try { return localStorage.getItem(k); } catch(e) { return null; } }, setItem(k, v) { try { localStorage.setItem(k, v); } catch(e) {} }, removeItem(k) { try { localStorage.removeItem(k); } catch(e) {} } };
+        // Codex review nit：口令不再持久化，改用 /api/login 签发的 X-Session-Token（sessionStorage 会话级）
+        const SessionStorage = { get(k) { try { return sessionStorage.getItem(k); } catch(e) { return null; } }, set(k, v) { try { sessionStorage.setItem(k, v); } catch(e) {} }, remove(k) { try { sessionStorage.removeItem(k); } catch(e) {} } };
 
         function app() {
             return {
                 authenticated: false, password: '', loading: false, loadingData: false,
-                loadedOnce: false, error: null, syncing: false,
+                loadedOnce: false, error: null, syncing: false, offline: false,
                 theme: 'dark',
                 currentTab: 'status',
                 stats: {}, status: { accounts: [], message_stats: {} },
@@ -751,8 +760,11 @@
                     window.matchMedia('(prefers-color-scheme: dark)').addEventListener('change', e => {
                         if (this.theme === 'system') this.applyTheme('system');
                     });
-                    const savedPwd = SafeStorage.getItem('tgf_pwd');
-                    if (savedPwd) { this.password = savedPwd; await this.login(); }
+                    // 有会话 token 则自动恢复登录（令牌过期由首轮请求 401 踢回登录遮罩）
+                    if (SessionStorage.get('tgf_token')) {
+                        this.authenticated = true;
+                        await this.fetchAllData(true);
+                    }
                     // 仅自动刷新统计与运行状态，不刷新 Rules/Config，避免编辑时输入框跳变
                     setInterval(() => { if (this.authenticated && !document.hidden) this.fetchLive(); }, 5000);
                 },
@@ -760,27 +772,50 @@
                 async login() {
                     this.loading = true;
                     try {
+                        // 口令仅本次提交换 session token，不再把口令放进 localStorage
                         const headers = { 'Authorization': 'Basic ' + btoa('admin:' + this.password) };
-                        const res = await fetch('/api/rules', { headers });
+                        const res = await fetch('/api/login', { method: 'POST', headers });
                         if (res.status === 401) throw new Error('密码错误');
                         if (!res.ok) throw new Error(`连接失败 (${res.status})`);
+                        const data = await res.json();
+                        if (!data.session_token) throw new Error('未签发会话令牌');
+                        SessionStorage.set('tgf_token', data.session_token);
+                        SafeStorage.removeItem('tgf_pwd');
+                        this.password = '';
                         this.authenticated = true;
-                        SafeStorage.setItem('tgf_pwd', this.password);
+                        this.offline = false;
                         await this.fetchAllData(true);
                         this.showToast('欢迎回来', '系统已就绪');
                     } catch (e) {
-                        if (e.message === '密码错误') { this.password = ''; SafeStorage.removeItem('tgf_pwd'); }
+                        if (e.message === '密码错误') { this.password = ''; SessionStorage.remove('tgf_token'); }
                         this.showToast('登录失败', e.message, 'error');
                     } finally {
                         this.loading = false;
                     }
                 },
 
+                logout(reason) {
+                    // 会话失效（401/过期）：清 token 回登录遮罩，杜绝陈旧数据常驻
+                    SessionStorage.remove('tgf_token');
+                    this.password = '';
+                    this.authenticated = false;
+                    this.offline = false;
+                    if (reason) this.showToast('登录已失效', reason, 'error');
+                },
+
                 async api(url, method = 'GET', body = null) {
-                    const headers = { 'Authorization': 'Basic ' + btoa('admin:' + this.password), 'Content-Type': 'application/json' };
+                    // Codex review nit：统一走 X-Session-Token，不透传口令
+                    const token = SessionStorage.get('tgf_token');
+                    if (!token) { this.logout(); throw new Error('未登录'); }
+                    const headers = { 'X-Session-Token': token, 'Content-Type': 'application/json' };
                     const opts = { method, headers }; if (body) opts.body = JSON.stringify(body);
                     const res = await fetch(url, opts);
-                    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+                    if (res.status === 401) { this.logout('会话已过期，请重新登录'); throw new Error('会话已过期'); }
+                    if (!res.ok) {
+                        let msg = `HTTP ${res.status}`;
+                        try { const j = await res.json(); if (j && j.detail) msg = j.detail; } catch(_) {}
+                        throw new Error(msg);
+                    }
                     return await res.json();
                 },
 
@@ -795,8 +830,12 @@
                         if (stats) this.stats = stats;
                         if (status) this.status = status;
                         this.error = null;
+                        this.offline = false;
                     } catch (e) {
-                        // 静默：后台刷新失败不打扰用户
+                        // 401 已由 api() 登出回登录遮罩（带提示），无需再处理
+                        if (!this.authenticated) return;
+                        // 其它持续失败：仪表盘显示离线横幅，不再静默停留陈旧数据
+                        this.offline = true;
                     } finally {
                         this.syncing = false;
                     }
@@ -831,7 +870,8 @@
                         this.error = null;
                     } catch (e) {
                         this.error = e.message || '数据同步失败';
-                        if (showLoading) this.showToast('数据同步失败', e.message, 'error');
+                        // 401 已由 logout() 提示；仅前端在位时补一次同步失败 toast
+                        if (showLoading && this.authenticated) this.showToast('数据同步失败', e.message, 'error');
                     } finally {
                         if (showLoading) this.loadingData = false;
                     }

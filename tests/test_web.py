@@ -712,6 +712,51 @@ class TestWriteAutoReload:
             client.post("/api/rules/remove", json={"name": "r3"}, headers=basic_auth())
             assert ctx["calls"]["update_settings"] == 5
 
+    def test_write_reload_failure_propagates_500(self):
+        """Codex review major：写操作自动热重载失败不再静默 200+「已热重载生效」——上抛 500 如实标注。"""
+        from tg_forwarder.web import server as web_server
+
+        client, ctx = make_client()
+        saved = web_server.app_state["update_settings"]
+
+        async def boom():
+            raise RuntimeError("config broke")
+
+        web_server.app_state["update_settings"] = boom
+        try:
+            with client:
+                res = client.post(
+                    "/api/sources/add", json={"identifier": -100999}, headers=basic_auth()
+                )
+        finally:
+            web_server.app_state["update_settings"] = saved
+        assert res.status_code == 500
+        detail = res.json()["detail"]
+        assert "已保存" in detail and "热重载失败" in detail
+
+    def test_settings_update_reload_failure_propagates_500(self):
+        """settings 写操作热重载失败同样上抛（原 200 静默失效路径已消除）。"""
+        from tg_forwarder.web import server as web_server
+
+        client, ctx = make_client()
+        saved = web_server.app_state["update_settings"]
+
+        async def boom():
+            raise RuntimeError("config broke")
+
+        web_server.app_state["update_settings"] = boom
+        try:
+            with client:
+                res = client.post(
+                    "/api/settings/update",
+                    json={"forwarding_mode": "copy", "dedup_retention_days": 30},
+                    headers=basic_auth(),
+                )
+        finally:
+            web_server.app_state["update_settings"] = saved
+        assert res.status_code == 500
+        assert "热重载失败" in res.json()["detail"]
+
     def test_api_status_includes_message_stats_and_uptime(self):
         class _Fwd:
             def all_status(self):
