@@ -796,11 +796,13 @@
 
                 logout(reason) {
                     // 会话失效（401/过期）：清 token 回登录遮罩，杜绝陈旧数据常驻
+                    const wasAuthed = this.authenticated;
                     SessionStorage.remove('tgf_token');
                     this.password = '';
                     this.authenticated = false;
                     this.offline = false;
-                    if (reason) this.showToast('登录已失效', reason, 'error');
+                    // 并行请求同时 401 时只提示一次
+                    if (reason && wasAuthed) this.showToast('登录已失效', reason, 'error');
                 },
 
                 async api(url, method = 'GET', body = null) {
