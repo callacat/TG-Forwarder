@@ -35,6 +35,29 @@ from tg_forwarder.storage.db import Database
 _regex_cache: "OrderedDict[str, re.Pattern]" = OrderedDict()
 
 
+def fmt_uptime(seconds: float) -> str:
+    """人类可读运行时长（M3 仪表盘/`/api/status` 消费）。防御负数与非法输入。"""
+    if seconds is None or seconds < 0:
+        return "0秒"
+    try:
+        secs = int(seconds)
+    except (TypeError, ValueError):
+        return "0秒"
+    days, secs = divmod(secs, 86400)
+    hours, secs = divmod(secs, 3600)
+    mins, secs = divmod(secs, 60)
+    parts = []
+    if days:
+        parts.append(f"{days}天")
+    if hours:
+        parts.append(f"{hours}小时")
+    if mins:
+        parts.append(f"{mins}分")
+    if not parts:
+        parts.append(f"{secs}秒")
+    return " ".join(parts)
+
+
 def _cached_compile(pattern: str, flags: int = re.IGNORECASE) -> re.Pattern:
     """正则编译缓存（LRU 512），避免每次 reload 重复编译。"""
     key = f"{flags}:{pattern}"
@@ -335,6 +358,15 @@ class Forwarder:
         self._rr_index = 0
         self._processed_lru: "OrderedDict[str, None]" = OrderedDict()
         self._prune_task: Optional[asyncio.Task] = None
+        # M3 仪表盘数据源：进程启动时刻 + 消息处理统计（内存计数）
+        self._start_ts = time.time()
+        self._msg_stats: Dict[str, int] = {
+            "processed": 0,  # 监控源进入流水线
+            "filtered": 0,   # 被过滤模型/黑名单/内容过滤
+            "duplicates": 0, # 单源或跨源去重命中
+            "forwarded": 0,  # 发送成功
+            "failed": 0,     # 无目标/无客户端/发送异常
+        }
 
     # --- 快照（R8 原子化）---
 
@@ -424,6 +456,7 @@ class Forwarder:
         if not source_config:
             return
 
+        self._msg_stats["processed"] += 1  # M3：监控源消息进入流水线
         text = message.text or ""
         media = message.media
 
@@ -435,6 +468,7 @@ class Forwarder:
                     f"消息 {message.id} 被过滤。原因: {filter_reason} | "
                     f"关键词: {filter_keyword}"
                 )
+                self._msg_stats["filtered"] += 1
                 return
 
             # 去重
@@ -442,6 +476,7 @@ class Forwarder:
                 h = message_hash(text, media, message.id)
                 if h and await self.db.check_hash(h):
                     logger.info(f"消息 {message.id} 重复。")
+                    self._msg_stats["duplicates"] += 1
                     return
 
             # F1 跨源内容级去重（默认关；任一指纹已见即跨源丢弃）
@@ -452,12 +487,14 @@ class Forwarder:
                         logger.info(
                             f"消息 {message.id} 跨源重复（{fp.split(':', 1)[0]} 指纹已见）。"
                         )
+                        self._msg_stats["duplicates"] += 1
                         return
 
             # 目标路由
             target_id, topic_id = find_target(text, media, snapshot)
             if not target_id:
                 logger.error(f"消息 {message.id} 无有效目标。")
+                self._msg_stats["failed"] += 1
                 return
 
             # 替换
@@ -492,6 +529,7 @@ class Forwarder:
 
         except Exception as e:
             logger.error(f"处理消息失败: {e}", exc_info=True)
+            self._msg_stats["failed"] += 1
         finally:
             # 断点续传（v2 对齐）
             await self.db.set_progress(numeric_chat_id, message.id)
@@ -510,6 +548,7 @@ class Forwarder:
         client = self._get_next_client()
         if client is None:
             logger.error("无可用客户端发送，放弃本条消息。")
+            self._msg_stats["failed"] += 1
             return
 
         try:
@@ -603,6 +642,10 @@ class Forwarder:
                     pass
         except Exception as e:
             self._handle_send_error(client, e)
+            self._msg_stats["failed"] += 1
+        else:
+            if sent_message:
+                self._msg_stats["forwarded"] += 1  # M3：发送成功计数
 
     # --- 目标解析（对齐 v2 normalize_target，保持行为）---
 
@@ -1015,11 +1058,12 @@ class Forwarder:
             for a in accounts
             if a.get("session_name")
         }
-        uptime = None
+        uptime = fmt_uptime(time.time() - self._start_ts)  # M3：真实运行时长
         flood_total = sum(a.get("flood_wait_count", 0) for a in accounts)
         return {
             "accounts": accounts,
             "proxy_fallback": proxy_fallback,
             "uptime": uptime,
             "flood_wait_total": flood_total,
+            "message_stats": dict(self._msg_stats),  # M3：消息处理统计
         }

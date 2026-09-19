@@ -37,6 +37,7 @@ from tg_forwarder.core.forwarder import (
     content_fingerprints,
     extract_url_tokens,
     find_target,
+    fmt_uptime,
     message_hash,
     should_filter,
 )
@@ -2284,3 +2285,108 @@ class TestBuildDeliveryManager:
 
         dm = build_delivery_manager(None)
         assert dm.enabled is False
+
+
+# ---------------------------------------------------------------------------
+# M3：仪表盘数据源——真实 uptime + 消息处理统计
+# ---------------------------------------------------------------------------
+
+
+class TestFmtUptime:
+    def test_zero_and_negative(self):
+        assert fmt_uptime(0) == "0秒"
+        assert fmt_uptime(-5) == "0秒"
+
+    def test_minutes_mode(self):
+        assert fmt_uptime(65) == "1分"
+
+    def test_hours_and_days(self):
+        assert fmt_uptime(3600 + 120) == "1小时 2分"
+        assert fmt_uptime(86400 * 2 + 3600 * 3 + 60 * 4 + 5) == "2天 3小时 4分"
+
+    def test_invalid_input(self):
+        assert fmt_uptime(None) == "0秒"
+
+
+class TestMessageStats:
+    async def _forwarding_fwd(self, tmp_path):
+        """去重关、过滤关的转发快照（消息直通 _send_message）。"""
+        client = _SendRecordingClient()
+        fwd, db = await _make_fwd(
+            tmp_path,
+            _cross_snap(cross=False, single=False),
+            client,
+        )
+        return fwd, db, client
+
+    async def test_forwarded_and_processed_increment(self, tmp_path):
+        fwd, db, client = await self._forwarding_fwd(tmp_path)
+        await fwd.process_message(_Msg(11, text="hello 世界 " * 10))
+        stats = fwd.all_status()["message_stats"]
+        assert stats["processed"] == 1
+        assert stats["forwarded"] == 1
+        assert stats["filtered"] == 0
+        assert stats["duplicates"] == 0
+        assert stats["failed"] == 0
+        await db.close()
+
+    async def test_filtered_increment(self, tmp_path):
+        from tg_forwarder.config import AdFilterConfig
+
+        snap = _cfg(
+            sources=[SourceConfig(identifier=str(_CHAT), resolved_id=_CHAT)],
+            settings=SystemSettings(default_target="-100999"),
+            targets_resolved_default=-100999,
+            ad_filter=AdFilterConfig(enable=True, keywords_substring=["广告"]),
+            content_filter=ContentFilterConfig(enable=False),
+        )
+        client = _SendRecordingClient()
+        fwd, db = await _make_fwd(tmp_path, snap, client)
+        await fwd.process_message(_Msg(11, text="带广告词的垃圾消息"))
+        stats = fwd.all_status()["message_stats"]
+        assert stats["processed"] == 1
+        assert stats["filtered"] == 1
+        assert stats["forwarded"] == 0
+        await db.close()
+
+    async def test_duplicate_increment(self, tmp_path):
+        """单源去重命中：不同 msg id 同长文本 → text hash 相同 → duplicates=1。"""
+        fwd, db, client = await self._forwarding_fwd(tmp_path)
+        # 手动开单源去重：_forwarding_fwd 是 single=False，这里换 _cross_snap(True 单源)
+        fwd.update_snapshot(_cross_snap(cross=False, single=True))
+        text = "hello world " * 10
+        await fwd.process_message(_Msg(11, text=text))
+        await fwd.process_message(_Msg(12, text=text))
+        stats = fwd.all_status()["message_stats"]
+        assert stats["processed"] == 2
+        assert stats["forwarded"] == 1
+        assert stats["duplicates"] == 1
+        await db.close()
+
+    async def test_failed_on_no_client(self, tmp_path):
+        import os as _os
+
+        from tg_forwarder.storage.db import Database
+
+        class _NoClientAM:
+            def healthy_accounts(self):
+                return []
+
+            def all_status(self):
+                return {"accounts": []}
+
+        db = Database(_os.path.join(str(tmp_path), "noclient.sqlite"))
+        await db.open()
+        await db.migrate()
+        fwd = Forwarder(db, _NoClientAM())
+        fwd.update_snapshot(_cross_snap(cross=False, single=False))
+        await fwd.process_message(_Msg(11, text="hello 世界 " * 10))
+        assert fwd.all_status()["message_stats"]["failed"] == 1
+        await db.close()
+
+    async def test_all_status_uptime_is_real(self, tmp_path):
+        fwd, db, client = await self._forwarding_fwd(tmp_path)
+        status = fwd.all_status()
+        assert status["uptime"] in ("0秒", "1秒")  # 启动瞬时（秒级）
+        assert "message_stats" in status
+        await db.close()
