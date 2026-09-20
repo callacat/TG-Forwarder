@@ -10,3 +10,5 @@ fastapi==0.141.1
 uvicorn==0.52.4
 aiosqlite==0.22.1
 loguru==0.7.3
+# F12 语义去重（默认关；模型缺失/加载失败优雅降级为不启用）
+fastembed==0.8.0

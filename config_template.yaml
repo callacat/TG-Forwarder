@@ -68,6 +68,8 @@ whitelist:
 
 deduplication:
   enable: true
+  # F12 语义去重（fastembed 向量相似度；默认关，模型缺失/加载失败自动降级为不启用）
+  semantic_dedup_enabled: false
 
 link_extraction:
   check_hyperlinks: false
