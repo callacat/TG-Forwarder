@@ -81,9 +81,12 @@ class AiTranslator:
         self.endpoint = (endpoint or DEFAULT_ENDPOINT).rstrip("/")
         self.model = model or DEFAULT_MODEL
         self.timeout = timeout_seconds
-        self._api_key = api_key
-        if not self._api_key and api_key_env:
-            self._api_key = os.getenv(api_key_env, "")
+        # 显式传入空字符串 = 明确「端点无需鉴权/禁用 key」，即使 env 已设也不回填；
+        # None = 未显式指定，回填 api_key_env 环境变量（如无则同样禁用）。
+        if api_key is not None:
+            self._api_key = api_key
+        else:
+            self._api_key = os.getenv(api_key_env, "") if api_key_env else ""
         self.cache = cache or TranslationCache()
 
     # --- 对外接口（fail-open）---

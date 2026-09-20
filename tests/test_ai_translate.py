@@ -245,11 +245,28 @@ class TestAiTranslator:
 
     def test_missing_key_disables_translation(self, monkeypatch):
         """api_key 为空（如 env 未配）→ 直接返回 None，绝不发起 HTTP 调用。"""
+        # 确定性：显式空字符串即禁用 key，env 是否有值都不回填（Codex minor）
+        monkeypatch.delenv("AXONHUB_API_KEY", raising=False)
         fake = _patch_httpx(monkeypatch, _FakeResp({"choices": []}))
         t = AiTranslator(endpoint="http://example.invalid/v1", api_key="")
         out = asyncio.run(t.translate("hello"))
         assert out is None
         assert fake.calls == []
+
+    def test_explicit_empty_key_wins_over_env(self, monkeypatch):
+        """显式空 api_key = 明确禁用 key；即使 env 已导出也不回填，不发请求。"""
+        monkeypatch.setenv("AXONHUB_API_KEY", "leaked-secret")
+        fake = _patch_httpx(monkeypatch, _FakeResp({"choices": []}))
+        t = AiTranslator(endpoint="http://example.invalid/v1", api_key="")
+        out = asyncio.run(t.translate("hello"))
+        assert out is None
+        assert fake.calls == []
+
+    def test_none_backfills_env_key(self, monkeypatch):
+        """api_key=None（未显式指定）→ 回填 api_key_env 环境变量。"""
+        monkeypatch.setenv("AXONHUB_API_KEY", "env-secret")
+        t = AiTranslator(endpoint="http://example.invalid/v1")
+        assert t._api_key == "env-secret"
 
 
 # ---------------------------------------------------------------------------
