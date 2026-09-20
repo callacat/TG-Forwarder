@@ -70,6 +70,8 @@ deduplication:
   enable: true
   # F12 语义去重（fastembed 向量相似度；默认关，模型缺失/加载失败自动降级为不启用）
   semantic_dedup_enabled: false
+  # F12 相似度阈值（>= 判重；Web 面板「实验功能」可调并落表覆盖此默认值）
+  semantic_dedup_threshold: 0.85
 
 link_extraction:
   check_hyperlinks: false
@@ -78,6 +80,7 @@ link_checker:
   enabled: false
 
 # F10 AI digest（默认关=现网行为零变化；per 源开关 digest_enabled 经 yaml bootstrap 配置）
+# 也可在 Web 面板「实验功能」里开关与调聚合间隔（落表覆盖 digest.enabled/interval_seconds）。
 # 命名偏差说明：功能契约 digest_enabled/digest_interval 对应此处 enabled/interval_seconds；
 # per 源开关字段名即契约名 digest_enabled（SourceConfig 字段，sources[i] 项里配）。
 # 注意：Web 源表单不含 digest_enabled 字段，经 Web 新增/编辑源会按默认 false 保存并覆盖；

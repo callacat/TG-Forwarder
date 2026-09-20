@@ -38,7 +38,9 @@ def _build_semantic_engine(config):
         return None
     from tg_forwarder.core.semantic_dedup import SemanticDedup, SemanticDedupEngine
 
-    return SemanticDedup(engine=SemanticDedupEngine())
+    # 阈值来自配置（默认 0.85 = SIMILARITY_THRESHOLD；Web 面板实验功能可调）
+    threshold = float(getattr(dedup_cfg, "semantic_dedup_threshold", 0.85) or 0.85)
+    return SemanticDedup(engine=SemanticDedupEngine(threshold=threshold))
 
 
 def _sync_web_rules_db(cfg) -> None:
