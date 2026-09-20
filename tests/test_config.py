@@ -152,3 +152,128 @@ class TestRuntimeConfig:
         cfg = RuntimeConfig()
         assert cfg.bot_service.bot_api_id is None
         assert cfg.bot_service.bot_api_hash is None
+
+
+class TestM4ExperimentalMerging:
+    """M4 实验功能：面板落表覆盖 yaml 摘要段 + bootstrap 不预置键的回落语义。"""
+
+    async def test_fresh_bootstrap_does_not_clobber_yaml_state(self, tmp_path):
+        """yaml 里 digest.enabled=true，空库 bootstrap 后 reload 不覆盖为 false（面板如实显示）。"""
+        yp = _write_yaml(
+            tmp_path,
+            FULL_YAML
+            + "\ndigest:\n  enabled: true\n  interval_seconds: 900\n",
+        )
+        db = await _fresh_db(tmp_path)
+        cfg = await load_runtime_config(db, yp)
+        # 首次加载即触发 bootstrap：digest 摘要段来自 yaml（true/900）
+        assert cfg.digest.enabled is True
+        assert cfg.digest.interval_seconds == 900
+        # 展示值同步为 yaml 实际状态 —— 面板开关如实显示「开」
+        assert cfg.settings.digest_enabled is True
+        assert cfg.settings.digest_interval_seconds == 900
+        # 二次加载（模拟重启/reload）依旧不被 bootstrap 默认键覆盖
+        cfg2 = await load_runtime_config(db, yp)
+        assert cfg2.digest.enabled is True
+        assert cfg2.settings.digest_enabled is True
+        await db.close()
+
+    async def test_web_saved_values_override_yaml(self, tmp_path):
+        """面板落表 M4 键后，reload 以落表值为准（热重载生效）。"""
+        yp = _write_yaml(tmp_path, FULL_YAML)
+        db = await _fresh_db(tmp_path)
+        cfg = await load_runtime_config(db, yp)
+
+        from tg_forwarder.storage.repositories import ConfigRepository
+
+        repo = ConfigRepository(db)
+        settings = cfg.settings.model_dump()
+        settings.update(
+            digest_enabled=True,
+            digest_interval_seconds=7200,
+            translate_enabled=True,
+            semantic_dedup_enabled=True,
+            semantic_dedup_threshold=0.88,
+        )
+        await repo.save("system_settings", settings)
+
+        cfg2 = await load_runtime_config(db, yp)
+        assert cfg2.digest.enabled is True
+        assert cfg2.digest.interval_seconds == 7200
+        assert cfg2.translate.enabled is True
+        assert cfg2.deduplication.semantic_dedup_enabled is True
+        assert cfg2.deduplication.semantic_dedup_threshold == 0.88
+        # 展示值同步为生效值
+        assert cfg2.settings.digest_enabled is True
+        assert cfg2.settings.digest_interval_seconds == 7200
+        await db.close()
+
+    async def test_yaml_translate_dedup_display_fallback(self, tmp_path):
+        """yaml 摘要段开启的项目，未存过 M4 键时展示值一并回落（语义去重/翻译）。"""
+        yaml_cfg = (
+            FULL_YAML
+            + "\ntranslate:\n  enabled: true\n"
+            + "deduplication:\n  semantic_dedup_enabled: true\n  semantic_dedup_threshold: 0.9\n"
+        )
+        yp = _write_yaml(tmp_path, yaml_cfg)
+        db = await _fresh_db(tmp_path)
+        cfg = await load_runtime_config(db, yp)
+        assert cfg.translate.enabled is True
+        assert cfg.deduplication.semantic_dedup_enabled is True
+        assert cfg.deduplication.semantic_dedup_threshold == 0.9
+        assert cfg.settings.translate_enabled is True
+        assert cfg.settings.semantic_dedup_enabled is True
+        assert cfg.settings.semantic_dedup_threshold == 0.9
+        await db.close()
+
+    async def test_translate_sources_override_and_fallback(self, tmp_path):
+        """translate.sources：面板落表覆盖 yaml；未存过该键时回落 yaml 源列表。"""
+        yaml_cfg = FULL_YAML + "\ntranslate:\n  enabled: true\n  sources: [-1001, -1002]\n"
+        yp = _write_yaml(tmp_path, yaml_cfg)
+        db = await _fresh_db(tmp_path)
+
+        # 未存过 M4 键：源列表回落 yaml，且展示值同步
+        cfg1 = await load_runtime_config(db, yp)
+        assert cfg1.translate.sources == [-1001, -1002]
+        assert cfg1.settings.translate_sources == [-1001, -1002]
+
+        # 面板保存（含 translate_sources 新列表）→ 覆盖 yaml
+        from tg_forwarder.storage.repositories import ConfigRepository
+
+        repo = ConfigRepository(db)
+        s = cfg1.settings.model_dump()
+        s["translate_sources"] = [-1003, "-1004"]
+        await repo.save("system_settings", s)
+        cfg2 = await load_runtime_config(db, yp)
+        assert cfg2.translate.sources == [-1003, "-1004"]
+        assert cfg2.settings.translate_sources == [-1003, "-1004"]
+        await db.close()
+
+    async def test_old_db_partial_m4_keys_do_not_wipe_yaml(self, tmp_path):
+        """升级防御：旧库仅存过部分 M4 键（如 digest_enabled），缺失的其他键不回退
+        默认值清掉 yaml 里仍开启的实验功能与源列表（Codex minor 配套）。"""
+        yaml_cfg = (
+            FULL_YAML
+            + "\ndigest:\n  enabled: true\n  interval_seconds: 900\n"
+            + "\ntranslate:\n  enabled: true\n  sources: [-1001]\n"
+        )
+        yp = _write_yaml(tmp_path, yaml_cfg)
+        db = await _fresh_db(tmp_path)
+        cfg = await load_runtime_config(db, yp)
+        assert cfg.digest.enabled is True
+        assert cfg.translate.enabled is True
+        assert cfg.translate.sources == [-1001]
+
+        # 模拟旧版面板只保存过 digest_enabled（其他 M4 键未落表）
+        from tg_forwarder.storage.repositories import ConfigRepository
+
+        repo = ConfigRepository(db)
+        await repo.save("system_settings", {"digest_enabled": False, "default_target": "0"})
+        cfg2 = await load_runtime_config(db, yp)
+        # digest 被面板管理过 → 以落表值为准
+        assert cfg2.digest.enabled is False
+        # translate/semantic 从未被面板管理过 → 保持 yaml 状态（旧实现会误清掉）
+        assert cfg2.translate.enabled is True
+        assert cfg2.translate.sources == [-1001]
+        assert cfg2.deduplication.semantic_dedup_enabled is False
+        await db.close()

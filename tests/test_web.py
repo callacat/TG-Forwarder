@@ -273,6 +273,95 @@ class TestSettingsUpdate:
             )
         assert res.status_code == 422
 
+    def test_m4_experimental_settings_roundtrip(self):
+        """M4 实验功能键落表 → GET/表存储可见（面板开关即前端 x-model 字段）。"""
+        client, ctx = make_client()
+        with client:
+            payload = {
+                "dedup_retention_days": 30,
+                "forwarding_mode": "copy",
+                "digest_enabled": True,
+                "digest_interval_seconds": 600,
+                "translate_enabled": True,
+                "translate_sources": ["-1001", "-1002"],
+                "semantic_dedup_enabled": True,
+                "semantic_dedup_threshold": 0.9,
+            }
+            res = client.post("/api/settings/update", json=payload, headers=basic_auth())
+            assert res.status_code == 200
+            got = client.get("/api/settings", headers=basic_auth())
+            assert got.status_code == 200
+            data = got.json()
+            assert data["digest_enabled"] is True
+            assert data["digest_interval_seconds"] == 600
+            assert data["translate_enabled"] is True
+            assert data["translate_sources"] == ["-1001", "-1002"]
+            assert data["semantic_dedup_enabled"] is True
+            assert data["semantic_dedup_threshold"] == 0.9
+
+            import json as _json
+
+            stored_raw = asyncio.run(ctx["config_repo"].get("system_settings"))
+            stored = _json.loads(stored_raw) if isinstance(stored_raw, str) else stored_raw
+            assert stored["digest_enabled"] is True
+            assert stored["semantic_dedup_threshold"] == 0.9
+            assert stored["translate_sources"] == ["-1001", "-1002"]
+
+    def test_m4_threshold_out_of_range_422(self):
+        client, ctx = make_client()
+        with client:
+            res = client.post(
+                "/api/settings/update",
+                json={"semantic_dedup_threshold": 1.5},
+                headers=basic_auth(),
+            )
+        assert res.status_code == 422
+
+
+# ---------------------------------------------------------------------------
+# Web 面板静态文件冒烟（渲染/数据流）
+# ---------------------------------------------------------------------------
+
+
+class TestPanelHtml:
+    def test_index_served_with_tg_logo_and_m4_entry(self):
+        """静态面板可服务，且含 TG 品牌图标 + M4 实验功能区全部字段名。"""
+        client, _ = make_client()
+        with client:
+            res = client.get("/")
+            assert res.status_code == 200
+            html = res.text
+            # 蓝底白字 TG 图标
+            assert "bg-apple-blue" in html and ">TG</div>" in html
+            # 实验功能区 + 后端契约字段名（不发明字段）
+            assert "实验功能（M4" in html
+            assert "digest_enabled" in html
+            assert "digest_interval_seconds" in html
+            assert "translate_enabled" in html
+            assert "semantic_dedup_enabled" in html
+            assert "semantic_dedup_threshold" in html
+            # 防闪烁增量合并逻辑存在
+            assert "changedMerge" in html
+
+    def test_panel_merge_logic_node_smoke(self):
+        """前端 fetchLive 增量合并逻辑（node 运行纯 JS）：无变化同引用=零重绘。"""
+        import shutil
+        import subprocess
+
+        node = shutil.which("node")
+        if not node:
+            pytest.skip("node 未安装，跳过 JS 冒烟")
+        repo_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        index = os.path.join(repo_root, "tg_forwarder", "web", "static", "index.html")
+        js = os.path.join(repo_root, "tests", "frontend", "_panel_merge_test.js")
+        proc = subprocess.run(
+            [node, js, index],
+            capture_output=True,
+            text=True,
+            timeout=30,
+        )
+        assert proc.returncode == 0, f"node 冒烟失败:\n{proc.stdout}\n{proc.stderr}"
+
 
 # ---------------------------------------------------------------------------
 # sources 落表对账

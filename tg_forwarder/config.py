@@ -187,12 +187,15 @@ class DeduplicationConfig(BaseModel):
     - cross_source_enable：内容级跨源去重（链接指纹/文件名+大小指纹，v3 新增）；
     - auto_cleanup：自动清理历史重复只留最新（F1 可选开关，默认关）；
     - semantic_dedup_enabled：F12 语义去重（fastembed 向量相似度，默认关；
-      模型缺失/加载失败自动降级为不启用，不影响既有 dedup 行为）。
+      模型缺失/加载失败自动降级为不启用，不影响既有 dedup 行为）；
+    - semantic_dedup_threshold：语义相似度阈值（>= 判重，默认 0.85 与
+      core.semantic_dedup.SIMILARITY_THRESHOLD 一致；Web 面板实验功能可调）。
     """
     enable: bool = True
     cross_source_enable: bool = False
     auto_cleanup: bool = False
     semantic_dedup_enabled: bool = False
+    semantic_dedup_threshold: float = 0.85
 
 
 class WatchdogConfig(BaseModel):
@@ -227,11 +230,33 @@ class SystemSettings(BaseModel):
     default_target: str = ""
     default_topic_id: Optional[int] = None
 
+    # M4 实验功能（Web 面板可编辑镜像，默认关=现网行为零变化）。
+    # 字段名即功能契约：digest_enabled/digest_interval_seconds 映射 digest.enabled/
+    # interval_seconds，translate_enabled 映射 translate.enabled，
+    # semantic_dedup_enabled/-threshold 映射 deduplication.semantic_dedup_*。
+    # load_runtime_config 里落表值覆盖 yaml 摘要段；未显式存过则回落 yaml 实际状态
+    # 并回填展示（保证 UI 如实显示当前状态，详见 load_runtime_config）。
+    digest_enabled: bool = False
+    digest_interval_seconds: int = 1800
+    translate_enabled: bool = False
+    # F11 翻译源列表（Web 面板可编辑镜像，映射 translate.sources 按 resolved_id 匹配；
+    # 未配置=不翻译任何源，与 yaml 留空语义一致）
+    translate_sources: List[Union[int, str]] = Field(default_factory=list)
+    semantic_dedup_enabled: bool = False
+    semantic_dedup_threshold: float = 0.85
+
     @field_validator("forwarding_mode")
     @classmethod
     def check_mode(cls, v):
         if v not in ["forward", "copy"]:
             raise ValueError("mode 必须是 'forward' 或 'copy'")
+        return v
+
+    @field_validator("semantic_dedup_threshold")
+    @classmethod
+    def check_threshold(cls, v):
+        if v is not None and not (0 < v <= 1):
+            raise ValueError("semantic_dedup_threshold 必须在 0~1 之间 (相似度阈值)")
         return v
 
 
@@ -532,6 +557,18 @@ def bootstrap_from_yaml(path: str) -> RuntimeConfig:
     return cfg
 
 
+# M4 实验功能键（Web 面板 SystemSettings 镜像 → 覆盖 digest/translate/dedup 摘要段）。
+# 常量集中定义，bootstrap 剥离与 load_runtime_config 覆盖共用，避免两处漂移。
+_M4_EXPERIMENTAL_KEYS = (
+    "digest_enabled",
+    "digest_interval_seconds",
+    "translate_enabled",
+    "translate_sources",
+    "semantic_dedup_enabled",
+    "semantic_dedup_threshold",
+)
+
+
 def _has_real_rules(cfg: RuntimeConfig) -> bool:
     """yaml 里是否存在真实规则（sources 非空或 default_target 非占位）。"""
     if cfg.sources:
@@ -565,9 +602,14 @@ async def load_runtime_config(db: Database, yaml_path: str) -> RuntimeConfig:
     if not existing_keys and yaml_cfg is not None:
         logger.info("app_config 表为空，从 yaml 首次导入配置（bootstrap）...")
         initial = yaml_cfg
-        # 系统设置
+        # 系统设置（剥离 M4 实验功能键：bootstrap 不预置默认关，否则 reload 时
+        # 会误判「已由 Web 管理」从而覆盖 yaml 摘要段已开启状态；面板首次保存后才
+        # 以其落表值为准——机制见 load_runtime_config M4 段）
         if _has_real_rules(initial) or initial.settings.default_target:
-            await config_repo.save("system_settings", initial.settings.model_dump())
+            _initial_settings = initial.settings.model_dump()
+            for _k in _M4_EXPERIMENTAL_KEYS:
+                _initial_settings.pop(_k, None)
+            await config_repo.save("system_settings", _initial_settings)
         await config_repo.save("ad_filter", initial.ad_filter.model_dump())
         await config_repo.save("whitelist", initial.whitelist.model_dump())
         await config_repo.save("content_filter", initial.content_filter.model_dump())
@@ -603,6 +645,33 @@ async def load_runtime_config(db: Database, yaml_path: str) -> RuntimeConfig:
     settings_json = await config_repo.get("system_settings")
     if settings_json:
         cfg.settings = SystemSettings(**settings_json)
+
+    # M4 实验功能：Web 面板经 SystemSettings 落表的值按「存在性」逐键覆盖 yaml 摘要段；
+    # 旧库可能只存过部分键（如早期面板仅存 digest_enabled），缺失键不回退默认值，
+    # 否则会在升级后把 yaml 里仍开启的实验功能（含 translate.sources 源列表）静默清掉。
+    # 未存过（旧库/未点过保存）则不覆盖，settings 展示值回落 runtime（yaml）实际状态。
+    _settings = cfg.settings
+    if settings_json and any(k in settings_json for k in _M4_EXPERIMENTAL_KEYS):
+        if "digest_enabled" in settings_json or "digest_interval_seconds" in settings_json:
+            cfg.digest.enabled = _settings.digest_enabled
+            cfg.digest.interval_seconds = _settings.digest_interval_seconds
+        if "translate_enabled" in settings_json:
+            cfg.translate.enabled = _settings.translate_enabled
+        if "translate_sources" in settings_json:
+            cfg.translate.sources = list(_settings.translate_sources)
+        if (
+            "semantic_dedup_enabled" in settings_json
+            or "semantic_dedup_threshold" in settings_json
+        ):
+            cfg.deduplication.semantic_dedup_enabled = _settings.semantic_dedup_enabled
+            cfg.deduplication.semantic_dedup_threshold = _settings.semantic_dedup_threshold
+    # 展示值 = runtime 实际生效值（Web 未管过时同步 yaml 状态，避免面板显示与生效值脱节）
+    _settings.digest_enabled = cfg.digest.enabled
+    _settings.digest_interval_seconds = cfg.digest.interval_seconds
+    _settings.translate_enabled = cfg.translate.enabled
+    _settings.translate_sources = list(cfg.translate.sources)
+    _settings.semantic_dedup_enabled = cfg.deduplication.semantic_dedup_enabled
+    _settings.semantic_dedup_threshold = cfg.deduplication.semantic_dedup_threshold
 
     ad_json = await config_repo.get("ad_filter")
     if ad_json:

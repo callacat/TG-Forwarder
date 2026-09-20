@@ -166,6 +166,13 @@
         [x-cloak] { display: none !important; }
         .draggable-source { cursor: grab; } .draggable-source:active { cursor: grabbing; }
         .dragging { opacity: 0.5; border: 2px dashed #007AFF; }
+
+        /* 导航横向滚动条隐藏（此前类被引用但未定义，移动端会露出滚动条） */
+        .no-scrollbar { -ms-overflow-style: none; scrollbar-width: none; }
+        .no-scrollbar::-webkit-scrollbar { display: none; }
+
+        /* 按钮 disabled 态（写操作防重入/连点） */
+        .btn-base:disabled, .btn-sm:disabled { opacity: 0.55; cursor: not-allowed; transform: none !important; box-shadow: none !important; }
     </style>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/alpinejs/3.13.5/cdn.min.js" defer></script>
 </head>
@@ -183,9 +190,7 @@
     <!-- 登录遮罩（配置页登录保护，未登录不可改） -->
     <div x-show="!authenticated" x-transition.opacity class="fixed inset-0 z-50 flex items-center justify-center login-overlay">
         <div class="glass-panel p-10 rounded-3xl w-full max-w-sm text-center shadow-2xl animate-scale-in">
-            <div class="w-16 h-16 bg-gradient-to-br from-apple-blue to-apple-purple rounded-2xl flex items-center justify-center mx-auto mb-6 shadow-lg text-white">
-                <svg class="w-8 h-8" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M12 15v2m-6 4h12a2 2 0 002-2v-6a2 2 0 00-2-2H6a2 2 0 00-2 2v6a2 2 0 002 2zm10-10V7a4 4 0 00-8 0v4h8z"/></svg>
-            </div>
+            <div class="w-16 h-16 bg-apple-blue rounded-2xl flex items-center justify-center mx-auto mb-6 shadow-lg text-white text-2xl font-black tracking-tight select-none" aria-hidden="true">TG</div>
             <h2 class="text-2xl font-bold mb-2 text-surface-900 dark:text-white">安全验证</h2>
             <p class="text-sm text-surface-500 mb-6">登录后才可查看与修改配置</p>
             <form @submit.prevent="login">
@@ -203,7 +208,7 @@
         <!-- 顶部导航 -->
         <header class="flex flex-col md:flex-row justify-between items-start md:items-center mb-10 gap-4 animate-scale-in">
             <div class="flex items-center gap-3">
-                <div class="w-8 h-8 bg-gradient-to-tr from-apple-blue to-apple-teal rounded-lg shadow-lg"></div>
+                <div class="w-8 h-8 bg-apple-blue rounded-lg shadow-lg flex items-center justify-center text-white font-black text-xs tracking-tight select-none" aria-hidden="true">TG</div>
                 <h1 class="text-2xl md:text-3xl font-bold tracking-tight">
                     <span class="bg-clip-text text-transparent bg-gradient-to-r from-surface-900 to-surface-500 dark:from-white dark:to-surface-400">Forwarder Pro</span>
                 </h1>
@@ -228,7 +233,7 @@
                 <span x-show="syncing" class="text-[10px] font-bold text-surface-400 flex items-center gap-1">
                     <span class="w-1.5 h-1.5 rounded-full bg-apple-blue animate-pulse"></span>同步中
                 </span>
-                <button @click="reloadConfig" title="热重载配置" class="btn-base bg-apple-purple/10 hover:bg-apple-purple/20 text-apple-purple dark:text-apple-teal text-xs gap-1.5">
+                <button @click="reloadConfig" :disabled="busy" title="热重载配置" aria-label="热重载配置" class="btn-base bg-apple-purple/10 hover:bg-apple-purple/20 text-apple-purple dark:text-apple-teal text-xs gap-1.5">
                     <svg class="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"/></svg>
                     热重载
                 </button>
@@ -401,32 +406,32 @@
 
                 <!-- 配置概览（点击跳转对应配置页） -->
                 <section class="grid grid-cols-2 md:grid-cols-4 gap-4 md:gap-6">
-                    <div @click="switchTab('sources')" class="glass-card p-5 group interactive">
+                    <div @click="switchTab('sources')" role="button" tabindex="0" @keydown.enter.prevent="switchTab('sources')" class="glass-card p-5 group interactive focus:outline-none focus:ring-2 focus:ring-apple-blue/40">
                         <div class="flex justify-between mb-4"><span class="text-[10px] font-bold text-apple-blue uppercase tracking-widest">活跃监控源</span><div class="w-2 h-2 rounded-full bg-apple-blue"></div></div>
                         <div class="text-3xl font-bold text-surface-900 dark:text-white mb-1 counter-val font-mono" x-text="stats.sources || 0">0</div>
                         <div class="text-xs text-surface-500">Active Channels</div>
                     </div>
-                    <div @click="switchTab('rules')" class="glass-card p-5 group interactive">
+                    <div @click="switchTab('rules')" role="button" tabindex="0" @keydown.enter.prevent="switchTab('rules')" class="glass-card p-5 group interactive focus:outline-none focus:ring-2 focus:ring-apple-blue/40">
                         <div class="flex justify-between mb-4"><span class="text-[10px] font-bold text-apple-purple uppercase tracking-widest">分发规则</span><div class="w-2 h-2 rounded-full bg-apple-purple"></div></div>
                         <div class="text-3xl font-bold text-surface-900 dark:text-white mb-1 counter-val font-mono" x-text="stats.distribution_rules || 0">0</div>
                         <div class="text-xs text-surface-500">Routing Logic</div>
                     </div>
-                    <div @click="switchTab('filter_replace')" class="glass-card p-5 group interactive">
+                    <div @click="switchTab('filter_replace')" role="button" tabindex="0" @keydown.enter.prevent="switchTab('filter_replace')" class="glass-card p-5 group interactive focus:outline-none focus:ring-2 focus:ring-apple-blue/40">
                         <div class="flex justify-between mb-4"><span class="text-[10px] font-bold text-apple-teal uppercase tracking-widest">内容过滤</span><div class="w-2 h-2 rounded-full bg-apple-teal"></div></div>
                         <div class="text-3xl font-bold text-surface-900 dark:text-white mb-1 counter-val font-mono" x-text="stats.content_filter_count || 0">0</div>
                         <div class="text-xs text-surface-500">Filter Words</div>
                     </div>
-                    <div @click="switchTab('filter_replace')" class="glass-card p-5 group interactive">
+                    <div @click="switchTab('filter_replace')" role="button" tabindex="0" @keydown.enter.prevent="switchTab('filter_replace')" class="glass-card p-5 group interactive focus:outline-none focus:ring-2 focus:ring-apple-blue/40">
                         <div class="flex justify-between mb-4"><span class="text-[10px] font-bold text-apple-pink uppercase tracking-widest">文本替换</span><div class="w-2 h-2 rounded-full bg-apple-pink"></div></div>
                         <div class="text-3xl font-bold text-surface-900 dark:text-white mb-1 counter-val font-mono" x-text="stats.replacements_count || 0">0</div>
                         <div class="text-xs text-surface-500">Regex Rules</div>
                     </div>
-                    <div @click="switchTab('blacklist')" class="glass-card p-5 group interactive">
+                    <div @click="switchTab('blacklist')" role="button" tabindex="0" @keydown.enter.prevent="switchTab('blacklist')" class="glass-card p-5 group interactive focus:outline-none focus:ring-2 focus:ring-apple-blue/40">
                         <div class="flex justify-between mb-4"><span class="text-[10px] font-bold text-apple-red uppercase tracking-widest">黑名单词条</span><div class="w-2 h-2 rounded-full bg-apple-red"></div></div>
                         <div class="text-3xl font-bold text-surface-900 dark:text-white mb-1 counter-val font-mono" x-text="stats.blacklist_count || 0">0</div>
                         <div class="text-xs text-surface-500">Blocked Terms</div>
                     </div>
-                    <div @click="switchTab('whitelist')" class="glass-card p-5 group interactive">
+                    <div @click="switchTab('whitelist')" role="button" tabindex="0" @keydown.enter.prevent="switchTab('whitelist')" class="glass-card p-5 group interactive focus:outline-none focus:ring-2 focus:ring-apple-blue/40">
                         <div class="flex justify-between mb-4"><span class="text-[10px] font-bold text-apple-green uppercase tracking-widest">白名单词条</span><div class="w-2 h-2 rounded-full bg-apple-green"></div></div>
                         <div class="text-3xl font-bold text-surface-900 dark:text-white mb-1 counter-val font-mono" x-text="stats.whitelist_count || 0">0</div>
                         <div class="text-xs text-surface-500">Priority Terms</div>
@@ -613,10 +618,10 @@
         <div x-show="currentTab === 'blacklist'" x-cloak class="glass-card p-6">
             <div class="flex justify-between mb-6 border-b border-surface-200 dark:border-white/10 pb-4"><h3 class="font-bold text-lg text-apple-red">广告黑名单</h3><button @click="saveBlacklist" class="btn-base bg-apple-red text-white hover:bg-red-600 shadow-lg">保存更改</button></div>
             <div class="grid grid-cols-1 md:grid-cols-2 gap-6">
-                <div class="space-y-2"><label class="text-xs font-bold text-surface-500 uppercase" for="blSub">中文/部分匹配</label><textarea id="blSub" x-model="blacklist.substring" rows="6" class="form-textarea font-mono text-xs" placeholder="每行一个"></textarea></div>
-                <div class="space-y-2"><label class="text-xs font-bold text-surface-500 uppercase" for="blWord">英文/全词匹配</label><textarea id="blWord" x-model="blacklist.word" rows="6" class="form-textarea font-mono text-xs" placeholder="每行一个"></textarea></div>
-                <div class="space-y-2"><label class="text-xs font-bold text-surface-500 uppercase" for="blFile">文件名过滤</label><textarea id="blFile" x-model="blacklist.file" rows="6" class="form-textarea font-mono text-xs" placeholder="每行一个"></textarea></div>
-                <div class="space-y-2"><label class="text-xs font-bold text-surface-500 uppercase" for="blRegex">正则表达式</label><textarea id="blRegex" x-model="blacklist.regex" rows="6" class="form-textarea font-mono text-xs" placeholder="每行一个"></textarea></div>
+                <div class="space-y-2"><label class="text-xs font-bold text-surface-500 uppercase" for="blSub">中文/部分匹配</label><textarea id="blSub" x-model="blacklist.substring" rows="6" class="form-textarea font-mono text-sm" placeholder="每行一个"></textarea></div>
+                <div class="space-y-2"><label class="text-xs font-bold text-surface-500 uppercase" for="blWord">英文/全词匹配</label><textarea id="blWord" x-model="blacklist.word" rows="6" class="form-textarea font-mono text-sm" placeholder="每行一个"></textarea></div>
+                <div class="space-y-2"><label class="text-xs font-bold text-surface-500 uppercase" for="blFile">文件名过滤</label><textarea id="blFile" x-model="blacklist.file" rows="6" class="form-textarea font-mono text-sm" placeholder="每行一个"></textarea></div>
+                <div class="space-y-2"><label class="text-xs font-bold text-surface-500 uppercase" for="blRegex">正则表达式</label><textarea id="blRegex" x-model="blacklist.regex" rows="6" class="form-textarea font-mono text-sm" placeholder="每行一个"></textarea></div>
             </div>
         </div>
 
@@ -651,7 +656,50 @@
 
                 <div><label class="block text-sm font-bold text-surface-500 mb-3" for="ddDays">去重记录保留天数</label><div class="flex items-center gap-4 bg-surface-100 dark:bg-surface-800 p-4 rounded-xl"><input id="ddDays" type="range" min="1" max="60" x-model="settings.dedup_retention_days" class="flex-grow h-2 bg-surface-300 rounded-lg appearance-none cursor-pointer accent-apple-blue"><span class="font-mono font-bold text-apple-blue w-16 text-right" x-text="settings.dedup_retention_days+' 天'"></span></div></div>
                 <div class="space-y-4 text-surface-700 dark:text-surface-300"><label class="flex items-center justify-between p-4 rounded-xl bg-surface-100 dark:bg-surface-800 cursor-pointer"><span class="font-medium">只处理新消息</span><input type="checkbox" x-model="settings.forward_new_only" class="w-5 h-5 accent-apple-blue rounded"></label><label class="flex items-center justify-between p-4 rounded-xl bg-surface-100 dark:bg-surface-800 cursor-pointer"><span class="font-medium">源频道自动已读</span><input type="checkbox" x-model="settings.mark_as_read" class="w-5 h-5 accent-apple-blue rounded"></label><label class="flex items-center justify-between p-4 rounded-xl bg-surface-100 dark:bg-surface-800 cursor-pointer"><span class="font-medium">目标频道自动已读</span><input type="checkbox" x-model="settings.mark_target_as_read" class="w-5 h-5 accent-apple-blue rounded"></label></div>
-                <button @click="saveSettings" class="btn-base bg-apple-blue text-white hover:bg-blue-600 w-full py-3 text-lg shadow-lg">保存所有设置</button>
+                <!-- M4 实验功能：字段名与后端 SystemSettings 键一致（digest_enabled/digest_interval_seconds/
+                     translate_enabled/semantic_dedup_enabled/semantic_dedup_threshold），保存走现有
+                     /api/settings/update → 热重载生效。默认关=与后端 config 默认一致。 -->
+                <div class="border-t border-surface-200 dark:border-white/10 pt-6">
+                    <h4 class="text-sm font-bold text-surface-900 dark:text-white mb-1">实验功能（M4 · AI）</h4>
+                    <p class="text-xs text-surface-500 mb-4">默认全部关闭，不影响现网既有行为；保存后自动热重载生效。</p>
+                    <div class="space-y-4">
+                        <div class="p-4 rounded-xl bg-surface-100 dark:bg-surface-800">
+                            <label class="flex items-center justify-between cursor-pointer">
+                                <span class="font-medium text-sm">F10 · AI 聚合摘要 <span class="text-surface-400 text-xs">(Digest)</span></span>
+                                <input type="checkbox" x-model="settings.digest_enabled" class="w-5 h-5 accent-apple-blue rounded" aria-label="F10 AI 聚合摘要开关">
+                            </label>
+                            <div x-show="settings.digest_enabled" class="mt-3 flex flex-wrap items-center gap-3">
+                                <label for="digestInterval" class="text-xs font-bold text-surface-500">聚合间隔（秒）</label>
+                                <div class="flex items-center gap-3">
+                                    <input id="digestInterval" type="number" min="60" step="30" x-model.number="settings.digest_interval_seconds" class="app-input w-32">
+                                    <span class="text-xs text-surface-400" x-text="'≈ ' + Math.max(1, Math.round((settings.digest_interval_seconds || 0) / 60)) + ' 分钟'"></span>
+                                </div>
+                            </div>
+                        </div>
+                        <div class="p-4 rounded-xl bg-surface-100 dark:bg-surface-800">
+                            <label class="flex items-center justify-between cursor-pointer">
+                                <span class="font-medium text-sm">F11 · AI 翻译 <span class="text-surface-400 text-xs">(Translate)</span></span>
+                                <input type="checkbox" x-model="settings.translate_enabled" class="w-5 h-5 accent-apple-blue rounded" aria-label="F11 AI 翻译开关">
+                            </label>
+                            <div x-show="settings.translate_enabled" class="mt-3 space-y-1">
+                                <label for="translateSources" class="text-xs font-bold text-surface-500">翻译源 ID（每行一个数字频道 ID）</label>
+                                <textarea id="translateSources" rows="3" :value="arrayToText(settings.translate_sources)" @input="settings.translate_sources = textToArray($event.target.value)" class="form-textarea font-mono" placeholder="-1001234567890&#10;-1009876543210"></textarea>
+                                <p class="text-xs text-surface-500">仅对列表内源生效，留空则不翻译；也可在 config.yaml 的 translate.sources 配置（落表覆盖）。</p>
+                            </div>
+                        </div>
+                        <div class="p-4 rounded-xl bg-surface-100 dark:bg-surface-800">
+                            <label class="flex items-center justify-between cursor-pointer">
+                                <span class="font-medium text-sm">F12 · 语义去重 <span class="text-surface-400 text-xs">(Semantic Dedup)</span></span>
+                                <input type="checkbox" x-model="settings.semantic_dedup_enabled" class="w-5 h-5 accent-apple-blue rounded" aria-label="F12 语义去重开关">
+                            </label>
+                            <div x-show="settings.semantic_dedup_enabled" class="mt-3 flex items-center gap-3">
+                                <label for="dedupThreshold" class="text-xs font-bold text-surface-500">相似度阈值（0~1）</label>
+                                <input id="dedupThreshold" type="number" min="0.1" max="1" step="0.01" x-model.number="settings.semantic_dedup_threshold" class="app-input w-32">
+                            </div>
+                        </div>
+                    </div>
+                </div>
+                <button @click="saveSettings" :disabled="busy" class="btn-base bg-apple-blue text-white hover:bg-blue-600 w-full py-3 text-lg shadow-lg">保存所有设置</button>
             </div>
         </div>
 
@@ -691,11 +739,12 @@
             return {
                 authenticated: false, password: '', loading: false, loadingData: false,
                 loadedOnce: false, error: null, syncing: false, offline: false,
+                busy: false,
                 theme: 'dark',
                 currentTab: 'status',
                 stats: {}, status: { accounts: [], message_stats: {} },
                 rules: { sources: [], distribution_rules: [] },
-                settings: { dedup_retention_days: 30, forwarding_mode: 'copy', forward_new_only: true, mark_as_read: false, mark_target_as_read: false, default_target: '', default_topic_id: null },
+                settings: { dedup_retention_days: 30, forwarding_mode: 'copy', forward_new_only: true, mark_as_read: false, mark_target_as_read: false, default_target: '', default_topic_id: null, digest_enabled: false, digest_interval_seconds: 1800, translate_enabled: false, translate_sources: [], semantic_dedup_enabled: false, semantic_dedup_threshold: 0.85 },
                 blacklist: { substring: '', word: '', file: '', regex: '' }, whitelist: { keywords: '' },
                 content_filter: { enable: true, meaningless_words: [], min_meaningful_length: 5 },
                 replacements: {}, replacements_list: [],
@@ -736,6 +785,25 @@
                     return { text: initials, class: colorClass, img: imgUrl, displayName: name };
                 },
 
+                // --- 局部更新（防闪烁）：无变化返回原引用 → Alpine 零重绘；有变化才返回新对象 ---
+                deepEqual(a, b) {
+                    if (a === b) return true;
+                    if (typeof a === 'object' && a !== null && typeof b === 'object' && b !== null) {
+                        return JSON.stringify(a) === JSON.stringify(b);
+                    }
+                    return false;
+                },
+                changedMerge(oldObj, newObj) {
+                    if (!newObj) return oldObj;
+                    oldObj = oldObj || {};
+                    let changed = false;
+                    const merged = { ...oldObj };
+                    for (const k of Object.keys(newObj)) {
+                        if (!this.deepEqual(oldObj[k], newObj[k])) { merged[k] = newObj[k]; changed = true; }
+                    }
+                    return changed ? merged : oldObj;
+                },
+
                 // --- Theme ---
                 applyTheme(theme) {
                     const root = document.documentElement;
@@ -766,7 +834,8 @@
                         await this.fetchAllData(true);
                     }
                     // 仅自动刷新统计与运行状态，不刷新 Rules/Config，避免编辑时输入框跳变
-                    setInterval(() => { if (this.authenticated && !document.hidden) this.fetchLive(); }, 5000);
+                    // silent=true：后台刷新不闪「同步中」角标（防闪烁一环）
+                    setInterval(() => { if (this.authenticated && !document.hidden) this.fetchLive(true); }, 5000);
                 },
 
                 async login() {
@@ -821,25 +890,33 @@
                     return await res.json();
                 },
 
-                // 轻量后台刷新（5s 周期 + 写操作后），非破坏性
-                async fetchLive() {
-                    this.syncing = true;
+                // 轻量后台刷新（5s 周期 + 写操作后），增量合并：数据无变化则不动对象引用 → Alpine 零重绘不闪烁。
+                // silent=true 为后台周期刷新（不闪「同步中」角标）；写操作后调用不带参，短暂显示同步态。
+                async fetchLive(silent = false) {
+                    if (!silent) this.syncing = true;
                     try {
                         const [stats, status] = await Promise.all([
                             this.api('/api/stats'),
                             this.api('/api/status'),
                         ]);
-                        if (stats) this.stats = stats;
-                        if (status) this.status = status;
-                        this.error = null;
-                        this.offline = false;
+                        const nextStats = this.changedMerge(this.stats, stats);
+                        const nextStatus = this.changedMerge(this.status, status);
+                        const statsChanged = nextStats !== this.stats;
+                        const statusChanged = nextStatus !== this.status;
+                        if (statsChanged) this.stats = nextStats;
+                        if (statusChanged) this.status = nextStatus;
+                        // 仅数据真变化或此前处于错误/离线态时才清标志，避免每轮无谓重绘
+                        if (statsChanged || statusChanged || this.offline || this.error) {
+                            this.error = null;
+                            this.offline = false;
+                        }
                     } catch (e) {
                         // 401 已由 api() 登出回登录遮罩（带提示），无需再处理
                         if (!this.authenticated) return;
                         // 其它持续失败：仪表盘显示离线横幅，不再静默停留陈旧数据
                         this.offline = true;
                     } finally {
-                        this.syncing = false;
+                        if (!silent) this.syncing = false;
                     }
                 },
 
@@ -881,13 +958,15 @@
 
                 // M3：Web 触发热重载（无需重启容器，无需 Bot /reload）
                 async reloadConfig() {
-                    try {
-                        await this.api('/api/reload', 'POST');
-                        this.showToast('热重载完成', '配置已从数据库重新加载');
-                        await this.fetchAllData(true);
-                    } catch (e) {
-                        this.showToast('热重载失败', e.message, 'error');
-                    }
+                    return this._guard(async () => {
+                        try {
+                            await this.api('/api/reload', 'POST');
+                            this.showToast('热重载完成', '配置已从数据库重新加载');
+                            await this.fetchAllData(true);
+                        } catch (e) {
+                            this.showToast('热重载失败', e.message, 'error');
+                        }
+                    });
                 },
 
                 // 写操作成功统一反馈：保存 + 自动热重载生效
@@ -897,9 +976,16 @@
                     this.fetchLive();
                 },
 
+                // 写操作统一防重入（双击/连点不重复提交，按钮同时进入 disabled 态）
+                async _guard(fn) {
+                    if (this.busy) return;
+                    this.busy = true;
+                    try { await fn(); } finally { this.busy = false; }
+                },
+
                 // --- Actions ---
-                async saveSettings() { try { await this.api('/api/settings/update', 'POST', this.settings); await this.afterWrite('配置已保存'); } catch(e) { this.showToast('保存失败', e.message, 'error'); } },
-                async saveDefaultTarget() { try { await this.api('/api/settings/update', 'POST', this.settings); await this.afterWrite('默认目标已更新'); } catch(e) { this.showToast('保存失败', e.message, 'error'); } },
+                async saveSettings() { return this._guard(async () => { try { await this.api('/api/settings/update', 'POST', this.settings); await this.afterWrite('配置已保存'); } catch(e) { this.showToast('保存失败', e.message, 'error'); } }); },
+                async saveDefaultTarget() { return this._guard(async () => { try { await this.api('/api/settings/update', 'POST', this.settings); await this.afterWrite('默认目标已更新'); } catch(e) { this.showToast('保存失败', e.message, 'error'); } }); },
                 async addSource() { try { await this.api('/api/sources/add', 'POST', { identifier: this.newSource }); this.newSource = ''; await this.afterWrite('监控源已添加'); } catch(e) { this.showToast('添加失败', e.message, 'error'); } },
                 async removeSource(id) { if (!confirm('确认删除?')) return; try { await this.api('/api/sources/remove', 'POST', { identifier: id }); await this.afterWrite('监控源已删除'); } catch(e) { this.showToast('删除失败', e.message, 'error'); } },
                 async addRule() { const payload = this.buildRulePayload(this.newRule); try { await this.api('/api/rules/add', 'POST', payload); this.newRule = {name:'', target:'', topic:'', all_kw:'', any_kw:'', files:''}; await this.afterWrite('规则已添加'); } catch(e) { this.showToast('添加失败', e.message, 'error'); } },
