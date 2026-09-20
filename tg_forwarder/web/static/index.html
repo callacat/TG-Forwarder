@@ -1,5 +1,5 @@
 <!DOCTYPE html>
-<html lang="zh-CN" class="dark">
+<html lang="zh-CN">
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
@@ -188,7 +188,7 @@
     </div>
 
     <!-- 登录遮罩（配置页登录保护，未登录不可改） -->
-    <div x-show="!authenticated" x-transition.opacity class="fixed inset-0 z-50 flex items-center justify-center login-overlay">
+    <div x-show="!authenticated" x-cloak x-transition.opacity class="fixed inset-0 z-50 flex items-center justify-center login-overlay">
         <div class="glass-panel p-10 rounded-3xl w-full max-w-sm text-center shadow-2xl animate-scale-in">
             <div class="w-16 h-16 bg-apple-blue rounded-2xl flex items-center justify-center mx-auto mb-6 shadow-lg text-white text-2xl font-black tracking-tight select-none" aria-hidden="true">TG</div>
             <h2 class="text-2xl font-bold mb-2 text-surface-900 dark:text-white">安全验证</h2>
@@ -713,7 +713,7 @@
     </div>
 
     <!-- Edit Modal -->
-    <div x-show="showEditModal" x-transition.opacity class="fixed inset-0 z-50 flex items-center justify-center login-overlay">
+    <div x-show="showEditModal" x-cloak x-transition.opacity class="fixed inset-0 z-50 flex items-center justify-center login-overlay">
         <div class="glass-panel p-8 rounded-3xl w-full max-w-3xl m-4 relative shadow-2xl" @click.outside="showEditModal = false">
             <div class="flex justify-between items-center mb-6"><h3 class="text-2xl font-bold text-surface-900 dark:text-white">编辑规则</h3><button @click="showEditModal = false" class="p-2 rounded-full hover:bg-surface-200 dark:hover:bg-surface-700 transition text-surface-500" aria-label="关闭">×</button></div>
             <div class="grid grid-cols-1 md:grid-cols-3 gap-4 mb-4">
