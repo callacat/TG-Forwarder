@@ -15,8 +15,9 @@ import aiosqlite
 
 from loguru import logger
 
-# 当前 schema 版本：5（v2 现网库=1；v3 初版=2；F2 message_map=3；F4 age_cutoff=4；F5/F6 header+media=5）
-CURRENT_SCHEMA_VERSION = 5
+# 当前 schema 版本：6（v2 现网库=1；v3 初版=2；F2 message_map=3；F4 age_cutoff=4；
+# F5/F6 header+media=5；M4 F10 sources.digest_enabled=6）
+CURRENT_SCHEMA_VERSION = 6
 
 # 迁移对账表（v2 基线表，缺表视为 0 行）
 _AUDIT_TABLES = ("forward_progress", "dedup_hashes", "rules", "sources")
@@ -113,6 +114,7 @@ class Database:
                 await self._migrate_3_forward()
                 await self._migrate_4_forward()
                 await self._migrate_5_forward()
+                await self._migrate_6_forward()
             except Exception:
                 await conn.rollback()
                 raise
@@ -222,6 +224,17 @@ class Database:
             if "max_file_size" not in rule_cols:
                 await conn.execute("ALTER TABLE rules ADD COLUMN max_file_size INTEGER DEFAULT 0")
 
+    async def _migrate_6_forward(self) -> None:
+        """版本 6 的迁移内容（M4 F10）：sources 表补 digest_enabled 列（per 源 AI 摘要开关）。
+
+        幂等：PRAGMA 检查后 ALTER 补列。
+        """
+        conn = self._require_conn()
+        cur = await conn.execute("PRAGMA table_info(sources)")
+        existing = {row[1] for row in await cur.fetchall()}
+        if "digest_enabled" not in existing:
+            await conn.execute("ALTER TABLE sources ADD COLUMN digest_enabled INTEGER DEFAULT 0")
+
     async def _create_v3_schema(self) -> None:
         """全新库：建 v3 全量 schema（与 v2 表结构一致 + 增量）。"""
         conn = self._require_conn()
@@ -263,7 +276,8 @@ class Database:
               sync_edits BOOLEAN DEFAULT 0,
               sync_deletes BOOLEAN DEFAULT 0,
               age_cutoff_hours REAL,
-              header_template TEXT
+              header_template TEXT,
+              digest_enabled INTEGER DEFAULT 0
             )
             """
         )
@@ -294,6 +308,7 @@ class Database:
         await self._migrate_3_forward()
         await self._migrate_4_forward()
         await self._migrate_5_forward()
+        await self._migrate_6_forward()
 
     # --- 基础操作（签名与 v2 database.py 对齐，实例方法，无全局变量）---
 

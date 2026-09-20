@@ -35,8 +35,8 @@ class SourceRepository:
                 INSERT OR REPLACE INTO sources
                 (identifier, check_replies, replies_limit, forward_new_only,
                  resolved_id, cached_title, sync_edits, sync_deletes,
-                 age_cutoff_hours, header_template)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                 age_cutoff_hours, header_template, digest_enabled)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     str(data.get("identifier")),
@@ -49,6 +49,7 @@ class SourceRepository:
                     data.get("sync_deletes", False),
                     data.get("age_cutoff_hours"),
                     data.get("header_template"),
+                    data.get("digest_enabled", False),
                 ),
             )
             await self.db._require_conn().commit()

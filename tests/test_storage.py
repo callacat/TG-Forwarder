@@ -214,6 +214,18 @@ class TestFreshDb:
         assert stats == {"dedup_hashes": 0, "invalid_links": 0}
         await db.close()
 
+    async def test_fresh_db_has_v6_digest_column(self, tmp_path):
+        """全新空库直建 v6：sources 含 digest_enabled 列。"""
+        p = str(tmp_path / "fresh.sqlite")
+        db = Database(p)
+        await db.open()
+        await db.migrate()
+        conn = sqlite3.connect(p)
+        src_cols = {r[1] for r in conn.execute("PRAGMA table_info(sources)").fetchall()}
+        conn.close()
+        assert "digest_enabled" in src_cols
+        await db.close()
+
 
 # ---------------------------------------------------------------------------
 # 仓储
@@ -344,6 +356,18 @@ class TestV2MigrationCreatesMessageMap:
         assert _counts(v2_db_path)["rules"] == 9
         await db.close()
 
+    async def test_v2_migration_creates_v6_digest_column(self, v2_db_path):
+        """v2 库迁移到 v6：sources 含 digest_enabled 列（M4 F10），不崩。"""
+        db = Database(v2_db_path)
+        await db.open()
+        await db.migrate()
+        conn = sqlite3.connect(v2_db_path)
+        src_cols = {r[1] for r in conn.execute("PRAGMA table_info(sources)").fetchall()}
+        conn.close()
+        assert "digest_enabled" in src_cols
+        assert await db._user_version() == CURRENT_SCHEMA_VERSION
+        await db.close()
+
 
 class TestMessageMap:
     async def _db(self, tmp_path):
@@ -382,4 +406,16 @@ class TestMessageMap:
         src = next(r for r in rows if r["identifier"] == "-100123")
         assert src["sync_edits"] in (1, True)
         assert src["sync_deletes"] in (1, True)
+        await db.close()
+
+    async def test_source_repo_digest_flag_roundtrip(self, tmp_path):
+        """F10：sources.digest_enabled 经仓储保存/读取不丢失（Web 面板源开关可持久化）。"""
+        db = await self._db(tmp_path)
+        repo = SourceRepository(db)
+        await repo.save({
+            "identifier": "-100456", "digest_enabled": True,
+        })
+        rows = await repo.get_all()
+        src = next(r for r in rows if r["identifier"] == "-100456")
+        assert src["digest_enabled"] in (1, True)
         await db.close()
