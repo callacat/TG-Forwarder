@@ -283,6 +283,7 @@ class TestSettingsUpdate:
                 "digest_enabled": True,
                 "digest_interval_seconds": 600,
                 "translate_enabled": True,
+                "translate_sources": ["-1001", "-1002"],
                 "semantic_dedup_enabled": True,
                 "semantic_dedup_threshold": 0.9,
             }
@@ -294,6 +295,7 @@ class TestSettingsUpdate:
             assert data["digest_enabled"] is True
             assert data["digest_interval_seconds"] == 600
             assert data["translate_enabled"] is True
+            assert data["translate_sources"] == ["-1001", "-1002"]
             assert data["semantic_dedup_enabled"] is True
             assert data["semantic_dedup_threshold"] == 0.9
 
@@ -303,6 +305,7 @@ class TestSettingsUpdate:
             stored = _json.loads(stored_raw) if isinstance(stored_raw, str) else stored_raw
             assert stored["digest_enabled"] is True
             assert stored["semantic_dedup_threshold"] == 0.9
+            assert stored["translate_sources"] == ["-1001", "-1002"]
 
     def test_m4_threshold_out_of_range_422(self):
         client, ctx = make_client()

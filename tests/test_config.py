@@ -225,3 +225,55 @@ class TestM4ExperimentalMerging:
         assert cfg.settings.semantic_dedup_enabled is True
         assert cfg.settings.semantic_dedup_threshold == 0.9
         await db.close()
+
+    async def test_translate_sources_override_and_fallback(self, tmp_path):
+        """translate.sources：面板落表覆盖 yaml；未存过该键时回落 yaml 源列表。"""
+        yaml_cfg = FULL_YAML + "\ntranslate:\n  enabled: true\n  sources: [-1001, -1002]\n"
+        yp = _write_yaml(tmp_path, yaml_cfg)
+        db = await _fresh_db(tmp_path)
+
+        # 未存过 M4 键：源列表回落 yaml，且展示值同步
+        cfg1 = await load_runtime_config(db, yp)
+        assert cfg1.translate.sources == [-1001, -1002]
+        assert cfg1.settings.translate_sources == [-1001, -1002]
+
+        # 面板保存（含 translate_sources 新列表）→ 覆盖 yaml
+        from tg_forwarder.storage.repositories import ConfigRepository
+
+        repo = ConfigRepository(db)
+        s = cfg1.settings.model_dump()
+        s["translate_sources"] = [-1003, "-1004"]
+        await repo.save("system_settings", s)
+        cfg2 = await load_runtime_config(db, yp)
+        assert cfg2.translate.sources == [-1003, "-1004"]
+        assert cfg2.settings.translate_sources == [-1003, "-1004"]
+        await db.close()
+
+    async def test_old_db_partial_m4_keys_do_not_wipe_yaml(self, tmp_path):
+        """升级防御：旧库仅存过部分 M4 键（如 digest_enabled），缺失的其他键不回退
+        默认值清掉 yaml 里仍开启的实验功能与源列表（Codex minor 配套）。"""
+        yaml_cfg = (
+            FULL_YAML
+            + "\ndigest:\n  enabled: true\n  interval_seconds: 900\n"
+            + "\ntranslate:\n  enabled: true\n  sources: [-1001]\n"
+        )
+        yp = _write_yaml(tmp_path, yaml_cfg)
+        db = await _fresh_db(tmp_path)
+        cfg = await load_runtime_config(db, yp)
+        assert cfg.digest.enabled is True
+        assert cfg.translate.enabled is True
+        assert cfg.translate.sources == [-1001]
+
+        # 模拟旧版面板只保存过 digest_enabled（其他 M4 键未落表）
+        from tg_forwarder.storage.repositories import ConfigRepository
+
+        repo = ConfigRepository(db)
+        await repo.save("system_settings", {"digest_enabled": False, "default_target": "0"})
+        cfg2 = await load_runtime_config(db, yp)
+        # digest 被面板管理过 → 以落表值为准
+        assert cfg2.digest.enabled is False
+        # translate/semantic 从未被面板管理过 → 保持 yaml 状态（旧实现会误清掉）
+        assert cfg2.translate.enabled is True
+        assert cfg2.translate.sources == [-1001]
+        assert cfg2.deduplication.semantic_dedup_enabled is False
+        await db.close()

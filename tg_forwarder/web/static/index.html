@@ -681,6 +681,11 @@
                                 <span class="font-medium text-sm">F11 · AI 翻译 <span class="text-surface-400 text-xs">(Translate)</span></span>
                                 <input type="checkbox" x-model="settings.translate_enabled" class="w-5 h-5 accent-apple-blue rounded" aria-label="F11 AI 翻译开关">
                             </label>
+                            <div x-show="settings.translate_enabled" class="mt-3 space-y-1">
+                                <label for="translateSources" class="text-xs font-bold text-surface-500">翻译源 ID（每行一个数字频道 ID）</label>
+                                <textarea id="translateSources" rows="3" :value="arrayToText(settings.translate_sources)" @input="settings.translate_sources = textToArray($event.target.value)" class="form-textarea font-mono" placeholder="-1001234567890&#10;-1009876543210"></textarea>
+                                <p class="text-xs text-surface-500">仅对列表内源生效，留空则不翻译；也可在 config.yaml 的 translate.sources 配置（落表覆盖）。</p>
+                            </div>
                         </div>
                         <div class="p-4 rounded-xl bg-surface-100 dark:bg-surface-800">
                             <label class="flex items-center justify-between cursor-pointer">
@@ -739,7 +744,7 @@
                 currentTab: 'status',
                 stats: {}, status: { accounts: [], message_stats: {} },
                 rules: { sources: [], distribution_rules: [] },
-                settings: { dedup_retention_days: 30, forwarding_mode: 'copy', forward_new_only: true, mark_as_read: false, mark_target_as_read: false, default_target: '', default_topic_id: null, digest_enabled: false, digest_interval_seconds: 1800, translate_enabled: false, semantic_dedup_enabled: false, semantic_dedup_threshold: 0.85 },
+                settings: { dedup_retention_days: 30, forwarding_mode: 'copy', forward_new_only: true, mark_as_read: false, mark_target_as_read: false, default_target: '', default_topic_id: null, digest_enabled: false, digest_interval_seconds: 1800, translate_enabled: false, translate_sources: [], semantic_dedup_enabled: false, semantic_dedup_threshold: 0.85 },
                 blacklist: { substring: '', word: '', file: '', regex: '' }, whitelist: { keywords: '' },
                 content_filter: { enable: true, meaningless_words: [], min_meaningful_length: 5 },
                 replacements: {}, replacements_list: [],

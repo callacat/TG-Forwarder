@@ -239,6 +239,9 @@ class SystemSettings(BaseModel):
     digest_enabled: bool = False
     digest_interval_seconds: int = 1800
     translate_enabled: bool = False
+    # F11 翻译源列表（Web 面板可编辑镜像，映射 translate.sources 按 resolved_id 匹配；
+    # 未配置=不翻译任何源，与 yaml 留空语义一致）
+    translate_sources: List[Union[int, str]] = Field(default_factory=list)
     semantic_dedup_enabled: bool = False
     semantic_dedup_threshold: float = 0.85
 
@@ -560,6 +563,7 @@ _M4_EXPERIMENTAL_KEYS = (
     "digest_enabled",
     "digest_interval_seconds",
     "translate_enabled",
+    "translate_sources",
     "semantic_dedup_enabled",
     "semantic_dedup_threshold",
 )
@@ -642,20 +646,30 @@ async def load_runtime_config(db: Database, yaml_path: str) -> RuntimeConfig:
     if settings_json:
         cfg.settings = SystemSettings(**settings_json)
 
-    # M4 实验功能：Web 面板经 SystemSettings 落表的值优先覆盖 yaml 摘要段；
-    # 旧库/未存过（无这些键）则不覆盖，settings 展示值回落 runtime（yaml）实际状态，
-    # 保证「面板如实显示当前状态」且不擅自关闭 yaml 里已开启的实验功能。
+    # M4 实验功能：Web 面板经 SystemSettings 落表的值按「存在性」逐键覆盖 yaml 摘要段；
+    # 旧库可能只存过部分键（如早期面板仅存 digest_enabled），缺失键不回退默认值，
+    # 否则会在升级后把 yaml 里仍开启的实验功能（含 translate.sources 源列表）静默清掉。
+    # 未存过（旧库/未点过保存）则不覆盖，settings 展示值回落 runtime（yaml）实际状态。
     _settings = cfg.settings
     if settings_json and any(k in settings_json for k in _M4_EXPERIMENTAL_KEYS):
-        cfg.digest.enabled = _settings.digest_enabled
-        cfg.digest.interval_seconds = _settings.digest_interval_seconds
-        cfg.translate.enabled = _settings.translate_enabled
-        cfg.deduplication.semantic_dedup_enabled = _settings.semantic_dedup_enabled
-        cfg.deduplication.semantic_dedup_threshold = _settings.semantic_dedup_threshold
+        if "digest_enabled" in settings_json or "digest_interval_seconds" in settings_json:
+            cfg.digest.enabled = _settings.digest_enabled
+            cfg.digest.interval_seconds = _settings.digest_interval_seconds
+        if "translate_enabled" in settings_json:
+            cfg.translate.enabled = _settings.translate_enabled
+        if "translate_sources" in settings_json:
+            cfg.translate.sources = list(_settings.translate_sources)
+        if (
+            "semantic_dedup_enabled" in settings_json
+            or "semantic_dedup_threshold" in settings_json
+        ):
+            cfg.deduplication.semantic_dedup_enabled = _settings.semantic_dedup_enabled
+            cfg.deduplication.semantic_dedup_threshold = _settings.semantic_dedup_threshold
     # 展示值 = runtime 实际生效值（Web 未管过时同步 yaml 状态，避免面板显示与生效值脱节）
     _settings.digest_enabled = cfg.digest.enabled
     _settings.digest_interval_seconds = cfg.digest.interval_seconds
     _settings.translate_enabled = cfg.translate.enabled
+    _settings.translate_sources = list(cfg.translate.sources)
     _settings.semantic_dedup_enabled = cfg.deduplication.semantic_dedup_enabled
     _settings.semantic_dedup_threshold = cfg.deduplication.semantic_dedup_threshold
 

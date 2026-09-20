@@ -97,6 +97,8 @@ link_checker:
 # endpoint/model=OpenAI 兼容端点（默认 axonhub glm-5.3-flash，免费）；
 # api_key_env=从环境变量读取 API key（未配置时翻译静默跳过、原文放行）。
 # 翻译失败/端点不可用一律原文放行，绝不丢消息；结果有缓存避免重复计费。
+# 也可在 Web 面板「实验功能」里开关翻译并维护源列表（settings.translate_sources
+# 落表后覆盖本段 sources；未存过则回落 yaml 实际值）。
 # translate:
 #   enabled: false
 #   sources: []                    # 例: [-1001234567890, "https://t.me/xxx"]
