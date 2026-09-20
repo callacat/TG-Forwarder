@@ -43,6 +43,77 @@ def _build_semantic_engine(config):
     return SemanticDedup(engine=SemanticDedupEngine(threshold=threshold))
 
 
+def _build_digest_pipeline(config, forwarder=None):
+    """F10：按给定配置构建 AI digest 管线（默认关=不装配）。
+
+    与 _build_semantic_engine 同类：装配期一次性组件，热重载需按新配置重建
+    （Codex major：原只在 cmd_run 启动时构建）。仅在 config.digest.enabled 时
+    返回管线；LLMClient 仅持有配置不发起网络请求。
+    """
+    digest_cfg = getattr(config, "digest", None)
+    if digest_cfg is None or not getattr(digest_cfg, "enabled", False):
+        return None
+    from tg_forwarder.core.digest import DigestPipeline, LLMClient
+
+    pipeline = DigestPipeline(
+        llm=LLMClient(
+            base_url=digest_cfg.base_url,
+            model=digest_cfg.model,
+            api_key=getattr(digest_cfg, "api_key", None),
+        ),
+        now_fn=time.time,
+    )
+    if forwarder is not None:
+        pipeline._fwd = forwarder  # flush 集成（也可显式传）
+    return pipeline
+
+
+def _reconcile_ai_features(forwarder, new_cfg) -> None:
+    """F10/F12 热重载对齐：按新配置重建/摘除装配期一次性组件。
+
+    背景（Codex major）：F12 语义引擎与 F10 digest 管线仅在 cmd_run 启动时构建，
+    原 update_settings_cb 只换快照不重建 → 面板开启/关闭/改阈值后实际行为不变
+    （需重启），与面板「保存后自动热重载生效」声明不符。F11 翻译读快照动态生效，
+    无需重建。
+
+    设计：
+    - F12 引擎仅在 dedup 开关或阈值变化时重建——无变化保留，不丢已加载模型与内存窗口；
+    - F10 管线仅在「关闭→开启」时新建、关闭时摘除——已启用未变化时保留原管线
+      与滚动窗口缓冲（普通设置保存不丢摘要进度；间隔改动由快照驱动，新窗口即用新间隔）。
+    """
+    # --- F12 语义引擎 ---
+    dedup = getattr(new_cfg, "deduplication", None)
+    want = bool(dedup and getattr(dedup, "semantic_dedup_enabled", False))
+    cur = getattr(forwarder, "semantic_engine", None)
+    if want:
+        new_th = float(getattr(dedup, "semantic_dedup_threshold", 0.85) or 0.85)
+        cur_th = None
+        if cur is not None:
+            try:
+                cur_th = float(getattr(cur.engine, "threshold", 0.85))
+            except Exception:  # noqa: BLE001 —— 兼容假引擎/测试替身
+                cur_th = None
+        if cur is None or cur_th != new_th:
+            forwarder.semantic_engine = _build_semantic_engine(new_cfg)
+            logger.info(f"F12 语义去重引擎已热重载重建（threshold={new_th}）")
+    elif cur is not None:
+        forwarder.semantic_engine = None
+        logger.info("F12 语义去重已热重载关闭（引擎摘除）")
+
+    # --- F10 digest 管线 ---
+    new_pipe = _build_digest_pipeline(new_cfg, forwarder)
+    if new_pipe is not None:
+        if getattr(forwarder, "digest_pipeline", None) is None:
+            forwarder.digest_pipeline = new_pipe
+            logger.info(
+                f"F10 AI digest 已热重载启用: {new_cfg.digest.base_url} / "
+                f"{new_cfg.digest.model}, 间隔 {new_cfg.digest.interval_seconds}s"
+            )
+    elif getattr(forwarder, "digest_pipeline", None) is not None:
+        forwarder.digest_pipeline = None
+        logger.info("F10 AI digest 已热重载关闭（管线摘除）")
+
+
 def _sync_web_rules_db(cfg) -> None:
     """把 RuntimeConfig 的 Web 可编辑段同步进 web 层内存 rules_db。"""
     from tg_forwarder.web import server as web_server
@@ -185,27 +256,12 @@ async def cmd_run(db: Database, yaml_path: str) -> None:
     forwarder.start_prune_task()  # P8：dedup TTL 清理
 
     # F10：AI digest 滚动窗口聚合（默认关=不装配，零影响现网）
-    digest_pipeline = None
-    if (
-        config.digest is not None
-        and getattr(config.digest, "enabled", False)
-    ):
-        from tg_forwarder.core.digest import DigestPipeline, LLMClient
-
-        llm_cfg = config.digest
-        digest_pipeline = DigestPipeline(
-            llm=LLMClient(
-                base_url=llm_cfg.base_url,
-                model=llm_cfg.model,
-                api_key=getattr(llm_cfg, "api_key", None),
-            ),
-            now_fn=time.time,
-        )
-        digest_pipeline._fwd = forwarder  # flush 集成（也可显式传）
-        forwarder.digest_pipeline = digest_pipeline
+    digest_pipeline = _build_digest_pipeline(config, forwarder)
+    forwarder.digest_pipeline = digest_pipeline
+    if digest_pipeline is not None:
         logger.info(
-            f"F10 AI digest 已启用: 端点 {llm_cfg.base_url}, "
-            f"模型 {llm_cfg.model}, 间隔 {llm_cfg.interval_seconds}s"
+            f"F10 AI digest 已启用: 端点 {config.digest.base_url}, "
+            f"模型 {config.digest.model}, 间隔 {config.digest.interval_seconds}s"
         )
 
     # 4. 主账号解析源/目标 + 注册事件（保持 v2 行为）
@@ -220,12 +276,14 @@ async def cmd_run(db: Database, yaml_path: str) -> None:
     _sync_web_rules_db(config)
 
     # R8 热重载回调：Web 改配置落表成功后 → 重建配置 → 整体替换快照
+    # → 重建 F10/F12 装配期一次性组件（Codex major：原只换快照，面板开关/阈值修改需重启才生效）
     async def update_settings_cb() -> None:
         try:
             new_cfg = await load_runtime_config(db, yaml_path)
             forwarder.update_snapshot(new_cfg)
             _sync_web_rules_db(new_cfg)
-            logger.info("♻️ Web 配置变更已热重载（快照整体替换）。")
+            _reconcile_ai_features(forwarder, new_cfg)
+            logger.info("♻️ Web 配置变更已热重载（快照 + 实验功能组件重建）。")
         except Exception as e:
             logger.error(f"热重载失败: {e}")
             raise
@@ -310,22 +368,24 @@ async def cmd_run(db: Database, yaml_path: str) -> None:
         except Exception as e:
             logger.warning(f"catchup 排程失败（忽略）: {e}")
 
-        # F10：AI digest 滚动窗口 flush（仅启用时排程；间隔取配置）
-        if digest_pipeline is not None:
-            try:
-                digest_interval = max(
-                    int(getattr(config.digest, "interval_seconds", 1800) or 1800), 1
-                )
-                scheduler.add_job(
-                    digest_pipeline.flush,
-                    IntervalTrigger(seconds=digest_interval),
-                    name="ai_digest",
-                )
-                logger.info(
-                    f"F10 AI digest 已排程: 每 {digest_interval}s 滚动窗口出摘要"
-                )
-            except Exception as e:
-                logger.warning(f"F10 digest 排程失败（忽略）: {e}")
+        # F10：AI digest 滚动窗口 flush——固定 60s 扫一次，wrapper 读当前管线
+        # （Codex major：原仅启用时排程且绑定启动实例 → 面板后开 digest 永不
+        #  flush；现关闭态 no-op、热重载开启后即时生效；窗口到期间隔由快照
+        #  驱动，面板改间隔无需重排）。
+        async def _digest_flush_cb() -> None:
+            pipe = forwarder.digest_pipeline
+            if pipe is not None:
+                await pipe.flush()
+
+        try:
+            scheduler.add_job(
+                _digest_flush_cb,
+                IntervalTrigger(seconds=60),
+                name="ai_digest",
+            )
+            logger.info("F10 AI digest 排程就绪: 每 60s 扫描滚动窗口（按配置间隔出摘要）")
+        except Exception as e:
+            logger.warning(f"F10 digest 排程失败（忽略）: {e}")
 
         # 死链检测（复用实例）
         if link_checker is not None:
