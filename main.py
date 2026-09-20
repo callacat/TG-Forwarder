@@ -120,6 +120,7 @@ def _sync_web_rules_db(cfg) -> None:
 
     rules_db = web_server.app_state.get("rules_db")
     if rules_db is None:
+        logger.warning("rules_db 尚未创建（create_app 未调用），Web 规则库同步被跳过")
         return
     rules_db.sources = cfg.sources
     rules_db.distribution_rules = cfg.distribution_rules
@@ -272,9 +273,6 @@ async def cmd_run(db: Database, yaml_path: str) -> None:
     else:
         logger.warning("无可用用户账号，看门狗将在超时后触发退出。")
 
-    # 5. Web 层 rules_db 初始装载
-    _sync_web_rules_db(config)
-
     # R8 热重载回调：Web 改配置落表成功后 → 重建配置 → 整体替换快照
     # → 重建 F10/F12 装配期一次性组件（Codex major：原只换快照，面板开关/阈值修改需重启才生效）
     async def update_settings_cb() -> None:
@@ -324,6 +322,11 @@ async def cmd_run(db: Database, yaml_path: str) -> None:
         forwarder=forwarder,
         bot_notifier=bot_notify,
     )
+    # 5. Web 层 rules_db 初始装载：必须紧随 create_app（彼时 app_state["rules_db"]
+    #    才被创建）。放在 create_app 之前会被 _sync_web_rules_db 的
+    #    `rules_db is None` 早退静默跳过 → 面板黑名单/白名单/过滤显示为空
+    #    （运行时过滤正常，纯展示层 bug，t_57f13176）。
+    _sync_web_rules_db(config)
     server = run_server(app)
 
     tasks = [server.serve()]

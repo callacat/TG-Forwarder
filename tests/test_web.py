@@ -17,6 +17,14 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from fastapi.testclient import TestClient
 
+from main import _sync_web_rules_db
+from tg_forwarder.config import load_runtime_config
+from tg_forwarder.storage.db import Database
+from tg_forwarder.storage.repositories import (
+    ConfigRepository,
+    RuleRepository,
+    SourceRepository,
+)
 from tg_forwarder.web.server import _sessions, create_app, verify_password
 from tg_forwarder.web.uvicorn_runner import run_server
 from tests.helpers import (
@@ -524,6 +532,115 @@ class TestFilters:
             assert res.status_code == 200
             got = client.get("/api/replacements", headers=basic_auth()).json()
             assert got == {"foo": "bar"}
+
+
+# ---------------------------------------------------------------------------
+# 启动装载（t_57f13176：rules_db 未从 app_config 加载 → 面板黑/白名单/过滤显示为空）
+# ---------------------------------------------------------------------------
+
+class TestStartupLoadsRulesFromAppConfig:
+    """回归：cmd_run 启动链 load_runtime_config → create_app → _sync_web_rules_db。
+
+    此前 _sync_web_rules_db(config) 被放在 create_app 之前——彼时
+    app_state["rules_db"] 尚为 None，同步被静默跳过，随后 create_app 创建的是
+    空 RulesDatabase，面板/API 永远读到空默认（运行时过滤正常，纯展示 bug）。
+    这里走真实 Database + 真实仓储 + load_runtime_config（与 cmd_run 同一读路径），
+    按修复后的顺序装配，断言 /api/blacklist 等返回完整数据；空库返回空默认不崩。
+    """
+
+    AD_FILTER = {
+        "enable": True,
+        "keywords_substring": [f"kw{i:02d}" for i in range(77)],
+        "keywords_word": ["推广", "广告"],
+        "patterns": [],
+        "file_name_keywords": [],
+    }
+    WHITELIST = {"enable": True, "keywords": ["#MyKeep", "重要"]}
+    CONTENT_FILTER = {"enable": True, "meaningless_words": ["哈哈"], "min_meaningful_length": 5}
+    REPLACEMENTS = {"旧词": "新词"}
+
+    @staticmethod
+    def _assembled_app(base_dir: str, seed: bool):
+        """真实启动链装配：返回 rules_db 已装载的 FastAPI app（不启动网络服务）。
+
+        同步测试内用 asyncio.run 完成异步装配（真实 aiosqlite 绑定装配时的事件
+        循环）；TestClient 阶段只 GET 内存快照路由，不触碰 DB 写通道，跨 loop 安全。
+        """
+
+        async def _setup():
+            db = Database(os.path.join(base_dir, "start.sqlite"))
+            await db.open()
+            await db.migrate()
+            config_repo = ConfigRepository(db)
+            source_repo = SourceRepository(db)
+            rule_repo = RuleRepository(db)
+
+            if seed:
+                await config_repo.save("ad_filter", TestStartupLoadsRulesFromAppConfig.AD_FILTER)
+                await config_repo.save("whitelist", TestStartupLoadsRulesFromAppConfig.WHITELIST)
+                await config_repo.save(
+                    "content_filter", TestStartupLoadsRulesFromAppConfig.CONTENT_FILTER
+                )
+                await config_repo.save(
+                    "replacements", TestStartupLoadsRulesFromAppConfig.REPLACEMENTS
+                )
+
+            # 同一读路径：config.py 从 app_config 表装配 RuntimeConfig（yaml 缺失可忽略）
+            config = await load_runtime_config(db, "/nonexistent/config.yaml")
+
+            def get_snapshot():
+                cfg = type("Cfg", (), {})
+                cfg.web_ui = type("WebUI", (), {})()
+                cfg.web_ui.password = TEST_PASSWORD
+                return cfg()
+
+            async def update_settings():
+                return None
+
+            app = create_app(
+                db=db,
+                config_repo=config_repo,
+                source_repo=source_repo,
+                rule_repo=rule_repo,
+                get_snapshot=get_snapshot,
+                update_settings=update_settings,
+            )
+            _sync_web_rules_db(config)  # 修复后位置：紧随 create_app
+            await db.close()
+            return app
+
+        return asyncio.run(_setup())
+
+    def test_seeded_db_api_returns_full_data(self, tmp_path):
+        app = self._assembled_app(str(tmp_path), seed=True)
+        with TestClient(app) as client:
+            bl = client.get("/api/blacklist", headers=basic_auth())
+            assert bl.status_code == 200
+            assert bl.json()["keywords_substring"] == self.AD_FILTER["keywords_substring"]
+            assert bl.json()["keywords_word"] == ["推广", "广告"]
+
+            wl = client.get("/api/whitelist", headers=basic_auth()).json()
+            assert wl["keywords"] == ["#MyKeep", "重要"]
+
+            rules = client.get("/api/rules", headers=basic_auth()).json()
+            assert rules["ad_filter"]["keywords_substring"] == self.AD_FILTER["keywords_substring"]
+            assert rules["whitelist"]["keywords"] == ["#MyKeep", "重要"]
+            assert rules["content_filter"]["meaningless_words"] == ["哈哈"]
+            assert rules["replacements"] == {"旧词": "新词"}
+
+    def test_fresh_db_returns_empty_defaults(self, tmp_path):
+        app = self._assembled_app(str(tmp_path), seed=False)
+        with TestClient(app) as client:
+            bl = client.get("/api/blacklist", headers=basic_auth())
+            assert bl.status_code == 200
+            assert bl.json()["keywords_substring"] == []
+
+            wl = client.get("/api/whitelist", headers=basic_auth()).json()
+            assert wl["keywords"] == []
+
+            rules = client.get("/api/rules", headers=basic_auth()).json()
+            assert rules["ad_filter"]["keywords_substring"] == []
+            assert rules["replacements"] == {}
 
 
 # ---------------------------------------------------------------------------
