@@ -1,0 +1,3 @@
+# TG-Forwarder v3 requirements-dev（仅 CI/本地测试用，不入运行镜像）
+pytest==8.4.2
+pytest-asyncio==1.2.0

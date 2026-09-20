@@ -1,0 +1,21 @@
+[project]
+name = "tg-forwarder"
+version = "3.0.0"
+description = "TG-Forwarder v3（全量重写方案B）"
+requires-python = ">=3.11"
+dependencies = [
+    "telethon==1.45.0",
+    "pydantic==2.13.5",
+    "pyyaml==6.0.3",
+    "httpx==0.28.1",
+    "beautifulsoup4==4.15.0",
+    "apscheduler==3.11.3",
+    "fastapi==0.141.1",
+    "uvicorn==0.52.4",
+    "aiosqlite==0.22.1",
+    "loguru==0.7.3",
+]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]

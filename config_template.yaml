@@ -68,9 +68,35 @@ whitelist:
 
 deduplication:
   enable: true
+  # F12 语义去重（fastembed 向量相似度；默认关，模型缺失/加载失败自动降级为不启用）
+  semantic_dedup_enabled: false
 
 link_extraction:
   check_hyperlinks: false
 
 link_checker:
   enabled: false
+
+# F10 AI digest（默认关=现网行为零变化；per 源开关 digest_enabled 经 yaml bootstrap 配置）
+# 命名偏差说明：功能契约 digest_enabled/digest_interval 对应此处 enabled/interval_seconds；
+# per 源开关字段名即契约名 digest_enabled（SourceConfig 字段，sources[i] 项里配）。
+# 注意：Web 源表单不含 digest_enabled 字段，经 Web 新增/编辑源会按默认 false 保存并覆盖；
+# 如需给某源开 digest，在首次 bootstrap 的 sources 段里配置 digest_enabled: true。
+# digest:
+#   enabled: false
+#   interval_seconds: 1800          # 滚动窗口间隔（秒）
+#   base_url: "http://100.64.0.2:8091/v1"  # OpenAI 兼容端点（axonhub）
+#   model: "glm-5.3-flash"          # 免费模型
+#   # api_key: ""                   # 端点需鉴权时填写（可选）
+
+# F11 AI 翻译（默认关=现网行为零变化；经 yaml bootstrap 配置）
+# 字段说明：sources=要翻译的监控源 resolved_id 列表（留空=不翻译任何源）；
+# endpoint/model=OpenAI 兼容端点（默认 axonhub glm-5.3-flash，免费）；
+# api_key_env=从环境变量读取 API key（未配置时翻译静默跳过、原文放行）。
+# 翻译失败/端点不可用一律原文放行，绝不丢消息；结果有缓存避免重复计费。
+# translate:
+#   enabled: false
+#   sources: []                    # 例: [-1001234567890, "https://t.me/xxx"]
+#   endpoint: "http://100.64.0.2:8091/v1"
+#   api_key_env: "AXONHUB_API_KEY"
+#   model: "glm-5.3-flash"
