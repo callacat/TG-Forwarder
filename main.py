@@ -9,6 +9,7 @@ import argparse
 import asyncio
 import os
 import sys
+import time
 from datetime import datetime, timezone
 
 from loguru import logger
@@ -158,6 +159,30 @@ async def cmd_run(db: Database, yaml_path: str) -> None:
     forwarder.update_snapshot(config)
     forwarder.start_prune_task()  # P8：dedup TTL 清理
 
+    # F10：AI digest 滚动窗口聚合（默认关=不装配，零影响现网）
+    digest_pipeline = None
+    if (
+        config.digest is not None
+        and getattr(config.digest, "enabled", False)
+    ):
+        from tg_forwarder.core.digest import DigestPipeline, LLMClient
+
+        llm_cfg = config.digest
+        digest_pipeline = DigestPipeline(
+            llm=LLMClient(
+                base_url=llm_cfg.base_url,
+                model=llm_cfg.model,
+                api_key=getattr(llm_cfg, "api_key", None),
+            ),
+            now_fn=time.time,
+        )
+        digest_pipeline._fwd = forwarder  # flush 集成（也可显式传）
+        forwarder.digest_pipeline = digest_pipeline
+        logger.info(
+            f"F10 AI digest 已启用: 端点 {llm_cfg.base_url}, "
+            f"模型 {llm_cfg.model}, 间隔 {llm_cfg.interval_seconds}s"
+        )
+
     # 3. 主账号解析源/目标 + 注册事件（保持 v2 行为）
     healthy = accounts.healthy_accounts()
     if healthy:
@@ -257,6 +282,23 @@ async def cmd_run(db: Database, yaml_path: str) -> None:
             )
         except Exception as e:
             logger.warning(f"catchup 排程失败（忽略）: {e}")
+
+        # F10：AI digest 滚动窗口 flush（仅启用时排程；间隔取配置）
+        if digest_pipeline is not None:
+            try:
+                digest_interval = max(
+                    int(getattr(config.digest, "interval_seconds", 1800) or 1800), 1
+                )
+                scheduler.add_job(
+                    digest_pipeline.flush,
+                    IntervalTrigger(seconds=digest_interval),
+                    name="ai_digest",
+                )
+                logger.info(
+                    f"F10 AI digest 已排程: 每 {digest_interval}s 滚动窗口出摘要"
+                )
+            except Exception as e:
+                logger.warning(f"F10 digest 排程失败（忽略）: {e}")
 
         # 死链检测（复用实例）
         if link_checker is not None:

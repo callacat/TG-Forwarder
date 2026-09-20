@@ -374,6 +374,8 @@ class Forwarder:
         self._prune_task: Optional[asyncio.Task] = None
         # F12 语义去重引擎（默认 None=不启用；main.py 装配时注入 SemanticDedupEngine）
         self.semantic_engine = semantic_engine
+        # F10：AI digest 滚动窗口聚合（默认 None=不启用；main.py 装配时注入）
+        self.digest_pipeline: Optional[Any] = None
         # M3 仪表盘数据源：进程启动时刻 + 消息处理统计（内存计数）
         self._start_ts = time.time()
         self._msg_stats: Dict[str, int] = {
@@ -570,6 +572,16 @@ class Forwarder:
                     await self._collect_reply_links(message, source_config)
                 except Exception as e:
                     logger.warning(f"F7 评论区抓取异常（不阻塞转发）: {e}")
+
+            # F10：AI digest 缓冲（全局+per 源 AND，默认关=零缓冲零 API 调用）
+            if (
+                self.digest_pipeline is not None
+                and self.digest_pipeline.should_buffer(source_config, snapshot)
+            ):
+                try:
+                    self.digest_pipeline.add_message(source_config, snapshot, to_send)
+                except Exception as e:
+                    logger.error(f"F10 digest 入窗失败（不阻塞转发）: {e}")
 
             # 标记已见
             if snapshot.deduplication.enable:

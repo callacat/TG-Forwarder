@@ -592,6 +592,7 @@ async def load_runtime_config(db: Database, yaml_path: str) -> RuntimeConfig:
         ),
         watchdog=yaml_cfg.watchdog if yaml_cfg else WatchdogConfig(),
         delivery=yaml_cfg.delivery if yaml_cfg else DeliveryConfig(),
+        digest=yaml_cfg.digest if yaml_cfg else DigestConfig(),
         translate=yaml_cfg.translate if yaml_cfg else TranslateConfig(),
     )
 

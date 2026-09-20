@@ -76,3 +76,11 @@ link_extraction:
 
 link_checker:
   enabled: false
+
+# F10 AI digest（默认关=现网行为零变化；启用需在 Web 源配置里对目标源开 digest_enabled）
+# digest:
+#   enabled: false
+#   interval_seconds: 1800          # 滚动窗口间隔（秒）
+#   base_url: "http://100.64.0.2:8091/v1"  # OpenAI 兼容端点（axonhub）
+#   model: "glm-5.3-flash"          # 免费模型
+#   # api_key: ""                   # 端点需鉴权时填写（可选）
