@@ -78,6 +78,22 @@ class BotServiceConfig(BaseModel):
     bot_api_hash: Optional[str] = None
 
 
+class DigestConfig(BaseModel):
+    """F10 AI digest 配置（yaml 基础设施段；默认关=现网行为零变化）。
+
+    - enabled: 是否启用 AI 摘要聚合（全局开关；源的 digest_enabled 为 per 源开关，AND）；
+    - interval_seconds: 滚动窗口间隔（默认 1800s=30min）；
+    - base_url / model: OpenAI 兼容端点（axonhub 默认，免费 glm-5.3-flash）；
+    - api_key: 可选 Bearer 密钥（端点无需鉴权时留空）。
+    """
+
+    enabled: bool = False
+    interval_seconds: int = 1800
+    base_url: str = "http://100.64.0.2:8091/v1"
+    model: str = "glm-5.3-flash"
+    api_key: Optional[str] = None
+
+
 class LinkCheckerConfig(BaseModel):
     """死链检测器（对齐 v2）+ F3 安全策略（默认开/默认向后兼容）。
 
@@ -127,6 +143,34 @@ class ForwardingConfig(BaseModel):
         return v
 
 
+class TranslateConfig(BaseModel):
+    """F11 AI 翻译（同 axonhub OpenAI 兼容端点；默认关=现网行为零变化）。
+
+    - enabled：全局开关，默认关；
+    - sources：仅对列表内的源生效（按 resolved_id 匹配）；
+    - endpoint/api_key_env/model：OpenAI 兼容端点（默认 axonhub glm-5.3-flash）；
+    - api_key_env：从 OS 环境变量读取 API key（为空则翻译静默降级，不阻塞）；
+    - timeout_seconds：单次请求超时（默认 8s）；
+    - cache_max_entries/cache_ttl_seconds：结果缓存，避免重复计费。
+    """
+
+    enabled: bool = False
+    sources: List[Union[int, str]] = Field(default_factory=list)
+    endpoint: str = "http://100.64.0.2:8091/v1"
+    api_key_env: str = "AXONHUB_API_KEY"
+    model: str = "glm-5.3-flash"
+    timeout_seconds: float = 8.0
+    cache_max_entries: int = 128
+    cache_ttl_seconds: int = 3600
+
+    @field_validator("timeout_seconds", "cache_max_entries", "cache_ttl_seconds")
+    @classmethod
+    def check_positive(cls, v):
+        if v is not None and v < 0:
+            raise ValueError("timeout/cache 参数不能为负")
+        return v
+
+
 class LinkExtractionConfig(BaseModel):
     check_hyperlinks: bool = True
     check_bots: bool = True
@@ -137,11 +181,14 @@ class DeduplicationConfig(BaseModel):
 
     - enable：既有单源 hash 去重（v2 语义）；
     - cross_source_enable：内容级跨源去重（链接指纹/文件名+大小指纹，v3 新增）；
-    - auto_cleanup：自动清理历史重复只留最新（F1 可选开关，默认关）。
+    - auto_cleanup：自动清理历史重复只留最新（F1 可选开关，默认关）；
+    - semantic_dedup_enabled：F12 语义去重（fastembed 向量相似度，默认关；
+      模型缺失/加载失败自动降级为不启用，不影响既有 dedup 行为）。
     """
     enable: bool = True
     cross_source_enable: bool = False
     auto_cleanup: bool = False
+    semantic_dedup_enabled: bool = False
 
 
 class WatchdogConfig(BaseModel):
@@ -198,6 +245,8 @@ class SourceConfig(BaseModel):
     age_cutoff_hours: Optional[float] = None
     # F6 源标注模板（默认 None=不标注；占位符 {title}/{link}/{time}）
     header_template: Optional[str] = None
+    # F10 AI digest per 源开关（默认关=现网行为零变化；与全局 digest.enabled AND）
+    digest_enabled: bool = False
 
 
 class TargetDistributionRule(BaseModel):
@@ -389,6 +438,9 @@ class RuntimeConfig(BaseModel):
     deduplication: DeduplicationConfig = Field(default_factory=DeduplicationConfig)
     watchdog: WatchdogConfig = Field(default_factory=WatchdogConfig)
     delivery: DeliveryConfig = Field(default_factory=DeliveryConfig)
+    # F10：AI digest（默认关=现网行为零变化）
+    digest: DigestConfig = Field(default_factory=DigestConfig)
+    translate: TranslateConfig = Field(default_factory=TranslateConfig)
 
     # Web 可编辑（app_config 表权威）
     sources: List[SourceConfig] = Field(default_factory=list)
@@ -442,6 +494,10 @@ def bootstrap_from_yaml(path: str) -> RuntimeConfig:
         cfg.watchdog = WatchdogConfig(**data["watchdog"])
     if data.get("delivery"):
         cfg.delivery = DeliveryConfig(**data["delivery"])
+    if data.get("digest"):
+        cfg.digest = DigestConfig(**data["digest"])
+    if data.get("translate"):
+        cfg.translate = TranslateConfig(**data["translate"])
 
     # 规则段（仅 bootstrap 时有意义；表已有数据时不会覆盖，见 load_runtime_config）
     if data.get("sources"):
@@ -536,6 +592,7 @@ async def load_runtime_config(db: Database, yaml_path: str) -> RuntimeConfig:
         ),
         watchdog=yaml_cfg.watchdog if yaml_cfg else WatchdogConfig(),
         delivery=yaml_cfg.delivery if yaml_cfg else DeliveryConfig(),
+        translate=yaml_cfg.translate if yaml_cfg else TranslateConfig(),
     )
 
     settings_json = await config_repo.get("system_settings")

@@ -335,6 +335,20 @@ def find_target(text: str, media: Any, snapshot) -> Tuple[Optional[int], Optiona
 # ---------------------------------------------------------------------------
 
 
+def _source_in_translate_list(source_id: Any, translate_cfg: Any) -> bool:
+    """F11：源（resolved_id）是否在 translate.sources 启用列表内。"""
+    if translate_cfg is None:
+        return False
+    sources = getattr(translate_cfg, "sources", None) or []
+    for s in sources:
+        try:
+            if int(s) == int(source_id):
+                return True
+        except (TypeError, ValueError):
+            continue
+    return False
+
+
 class Forwarder:
     """事件驱动转发 + catchup 兜底；快照原子替换（R8）。
 
@@ -350,7 +364,7 @@ class Forwarder:
     _CATCHUP_INTERVAL_SECONDS = 300  # 兜底扫描周期（对齐 v2 IntervalTrigger 300s）
     _CATCHUP_LIMIT = 50          # 每源每轮上限（对齐 v2 50 条/次）
 
-    def __init__(self, db: Database, account_manager: Any):
+    def __init__(self, db: Database, account_manager: Any, semantic_engine: Any = None):
         self.db = db
         self._am = account_manager
         self._snapshot = None
@@ -358,6 +372,8 @@ class Forwarder:
         self._rr_index = 0
         self._processed_lru: "OrderedDict[str, None]" = OrderedDict()
         self._prune_task: Optional[asyncio.Task] = None
+        # F12 语义去重引擎（默认 None=不启用；main.py 装配时注入 SemanticDedupEngine）
+        self.semantic_engine = semantic_engine
         # M3 仪表盘数据源：进程启动时刻 + 消息处理统计（内存计数）
         self._start_ts = time.time()
         self._msg_stats: Dict[str, int] = {
@@ -494,6 +510,21 @@ class Forwarder:
                         self._msg_stats["duplicates"] += 1
                         return
 
+            # F12 语义去重（默认关；模型缺失/加载失败自动降级为不启用）。
+            # 仅当开关开启且引擎可用才做 embedding 比对；任何失败都放行不阻塞。
+            sem = getattr(snapshot.deduplication, "semantic_dedup_enabled", False)
+            if (
+                sem
+                and self.semantic_engine is not None
+                and await self.semantic_engine.ensure_ready()
+            ):
+                if await self.semantic_engine.check_duplicate(text, message.id, self.db):
+                    logger.info(
+                        f"消息 {message.id} 语义重复（F12 引擎命中），丢弃。"
+                    )
+                    self._msg_stats["duplicates"] += 1
+                    return
+
             # 目标路由
             target_id, topic_id = find_target(text, media, snapshot)
             if not target_id:
@@ -503,6 +534,24 @@ class Forwarder:
 
             # 替换
             new_text = apply_replacements(text, snapshot)
+
+            # F11 AI 翻译（默认关；仅对 translate.sources 内源生效；
+            # 失败/无 key/端点异常 → 原文放行，绝不丢消息）
+            translate_cfg = getattr(snapshot, "translate", None)
+            if (
+                translate_cfg is not None
+                and getattr(translate_cfg, "enabled", False)
+                and source_config is not None
+                and _source_in_translate_list(numeric_chat_id, translate_cfg)
+            ):
+                try:
+                    translator = self._get_translator(translate_cfg)
+                    if translator is not None:
+                        translated = await translator.translate(new_text)
+                        if translated is not None:
+                            new_text = translated
+                except Exception as e:
+                    logger.warning(f"F11 翻译失败，原文放行: {e}")
 
             # F6 源标注模板（默认关=不标注；有模板时前置 header）
             header = build_header(source_config, message)
@@ -531,6 +580,16 @@ class Forwarder:
             if snapshot.deduplication.cross_source_enable:
                 for fp in content_fingerprints(text, media):
                     await self.db.add_hash(fp)
+            # F12：发送成功后登记语义向量指纹（后续语义重复被拦；失败不阻塞）
+            if (
+                sem
+                and self.semantic_engine is not None
+                and self.semantic_engine.enabled
+            ):
+                try:
+                    await self.semantic_engine.add(text, self.db)
+                except Exception as e:
+                    logger.warning(f"F12 语义指纹登记失败（不阻塞）: {e}")
 
         except Exception as e:
             logger.error(f"处理消息失败: {e}", exc_info=True)
@@ -763,6 +822,25 @@ class Forwarder:
                 logger.error(f"无法解析源 '{s.identifier}': {e}")
 
     # --- F2：编辑/删除实时同步（telemirror/appro 模式）---
+
+    def _get_translator(self, translate_cfg: Any):
+        """F11：按需构建翻译器（懒加载，构建失败降级 None=原文放行）。
+
+        测试/装配可注入 ``fwd.translator`` 覆盖（与 F12 semantic_engine 同模式）；
+        否则按 config 构建并缓存于实例；热重载换配置会重建（id 变更）。
+        """
+        injected = getattr(self, "translator", None)
+        if injected is not None:
+            return injected
+        cache_key = id(translate_cfg)
+        cached = getattr(self, "_translator_cache", None)
+        if cached and cached[0] == cache_key:
+            return cached[1]
+        from tg_forwarder.core.ai_translate import build_translator
+
+        translator = build_translator(translate_cfg)
+        self._translator_cache = (cache_key, translator)
+        return translator
 
     @staticmethod
     def _source_sync_enabled(snapshot, original_message) -> bool:
