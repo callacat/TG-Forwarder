@@ -121,15 +121,21 @@ class SemanticDedupEngine:
             emb = self._embed_fn([text])
             if not emb:
                 return False
-            vec = list(emb[0])
-            for prev in self._recent:
-                if prev and cosine_similarity(vec, prev) >= self.threshold:
-                    return True
-            self._recent.append(vec)
-            return False
+            return self.check_window(list(emb[0]))
         except Exception as e:  # noqa: BLE001 —— 运行期异常也降级放行
             logger.warning(f"F12 语义比对异常（放行）: {e}")
             return False
+
+    def check_window(self, vec: List[float]) -> bool:
+        """窗口内相似比对（复用调用方已算向量，避免二次 embed）。
+
+        命中 → True；未命中 → 追加进窗口（随消息数自然滚动）。
+        """
+        for prev in self._recent:
+            if prev and cosine_similarity(vec, prev) >= self.threshold:
+                return True
+        self._recent.append(vec)
+        return False
 
 
 class SemanticDedup:
@@ -146,7 +152,7 @@ class SemanticDedup:
         return await self.engine.ensure_ready()
 
     async def check_duplicate(self, text: str, marker: object, db) -> bool:
-        """check：先查 dedup_hashes 精确指纹，再查窗口相似。"""
+        """check：先查 dedup_hashes 精确指纹，再查窗口相似（复用单次 embed）。"""
         if not self.engine.enabled:
             return False
         try:
@@ -156,8 +162,8 @@ class SemanticDedup:
             fp = embedding_fingerprint(emb)
             if await db.check_hash(fp):
                 return True
-            # 窗口查询（引擎内部维护 deque）
-            return await self.engine.check_duplicate(text, marker)
+            # 窗口查询：复用已算向量，不再二次 embed（Codex minor #2）
+            return self.engine.check_window(emb)
         except Exception:
             return False
 
@@ -177,10 +183,8 @@ class SemanticDedup:
     async def _embed_one(self, text: str):
         if not self.engine.enabled:
             return None
-        try:
-            self.engine.ensure_ready()  # noqa
-        except Exception:
-            pass
+        # 补 await：缺省会让 ensure_ready 协程从未执行（Codex minor #2）
+        await self.engine.ensure_ready()
         if not self.engine.enabled:
             return None
         try:

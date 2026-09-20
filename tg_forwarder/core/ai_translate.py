@@ -170,19 +170,3 @@ def build_translator(translate_cfg: Any) -> Optional[AiTranslator]:
     except Exception as e:
         logger.warning(f"F11 翻译器构建失败（翻译降级为关闭）: {e}")
         return None
-
-
-def should_translate_source(source_id: Any, translate_cfg: Any) -> bool:
-    """该源是否在启用翻译的源列表内（resolved_id 整数匹配）。"""
-    if translate_cfg is None or not getattr(translate_cfg, "enabled", False):
-        return False
-    sources = getattr(translate_cfg, "sources", None) or []
-    if not sources:
-        return False
-    for s in sources:
-        try:
-            if int(s) == int(source_id):
-                return True
-        except (TypeError, ValueError):
-            continue
-    return False

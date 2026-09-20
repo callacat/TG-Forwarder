@@ -570,11 +570,12 @@ class TestDigestForwarderIntegration:
         """digest 关：process_message 照常转发（legacy 等价），零缓冲。"""
         client = _SendRecordingClient()
         fwd, db = await _make_fwd(tmp_path, _forward_snap(False, True), client)
-        fwd._digest = DigestPipeline(llm=_LLM(), now_fn=_Clock(0.0))
+        # process_message 读的是 self.digest_pipeline（Codex minor #3：原 _digest 赋值是空洞断言）
+        fwd.digest_pipeline = DigestPipeline(llm=_LLM(), now_fn=_Clock(0.0))
         await fwd.process_message(_Msg(11, "普通文本", chat_id=-1001))
         assert len(client.calls) == 1  # 照常转发
         assert client.calls[0]["message"] == "普通文本"
-        assert fwd._digest._windows == {}  # 零缓冲
+        assert fwd.digest_pipeline._windows == {}  # 零缓冲（digest 关，should_buffer=False）
         await db.close()
 
     async def test_enabled_buffers_and_forwarding_continues(self, tmp_path):
