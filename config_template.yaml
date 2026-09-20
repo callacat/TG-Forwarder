@@ -78,6 +78,8 @@ link_checker:
   enabled: false
 
 # F10 AI digest（默认关=现网行为零变化；启用需在 Web 源配置里对目标源开 digest_enabled）
+# 命名偏差说明：功能契约 digest_enabled/digest_interval 对应此处 enabled/interval_seconds；
+# per 源开关字段名即契约名 digest_enabled；默认值 false/1800 与语义一致。
 # digest:
 #   enabled: false
 #   interval_seconds: 1800          # 滚动窗口间隔（秒）

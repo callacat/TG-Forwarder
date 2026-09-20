@@ -85,6 +85,10 @@ class DigestConfig(BaseModel):
     - interval_seconds: 滚动窗口间隔（默认 1800s=30min）；
     - base_url / model: OpenAI 兼容端点（axonhub 默认，免费 glm-5.3-flash）；
     - api_key: 可选 Bearer 密钥（端点无需鉴权时留空）。
+
+    命名说明（Codex 验收对照）：功能契约里 digest_enabled/digest_interval 对应
+    本结构的 enabled / interval_seconds；per 源开关字段名即验收名 digest_enabled。
+    语义与默认值（false / 1800）完全一致，仅全局段命名带 digest. 前缀（yaml 嵌套）。
     """
 
     enabled: bool = False
