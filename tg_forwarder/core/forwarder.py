@@ -372,7 +372,9 @@ class Forwarder:
         self._rr_index = 0
         self._processed_lru: "OrderedDict[str, None]" = OrderedDict()
         self._prune_task: Optional[asyncio.Task] = None
-        # F12 语义去重引擎（默认 None=不启用；main.py 装配时注入 SemanticDedupEngine）
+        # F12 语义去重引擎（默认 None=不启用；main.py 装配时注入外观类
+        # SemanticDedup，内部含 SemanticDedupEngine——勿注入裸 Engine，其
+        # check_duplicate 签名为 (text, marker)，与下方三参调用不匹配）
         self.semantic_engine = semantic_engine
         # F10：AI digest 滚动窗口聚合（默认 None=不启用；main.py 装配时注入）
         self.digest_pipeline: Optional[Any] = None
@@ -515,17 +517,27 @@ class Forwarder:
             # F12 语义去重（默认关；模型缺失/加载失败自动降级为不启用）。
             # 仅当开关开启且引擎可用才做 embedding 比对；任何失败都放行不阻塞。
             sem = getattr(snapshot.deduplication, "semantic_dedup_enabled", False)
-            if (
-                sem
-                and self.semantic_engine is not None
-                and await self.semantic_engine.ensure_ready()
-            ):
-                if await self.semantic_engine.check_duplicate(text, message.id, self.db):
-                    logger.info(
-                        f"消息 {message.id} 语义重复（F12 引擎命中），丢弃。"
-                    )
-                    self._msg_stats["duplicates"] += 1
-                    return
+            if sem and self.semantic_engine is not None:
+                # 全程 fail-open：注入 API 不匹配/引擎异常 → 放行，不丢消息不计 failed
+                try:
+                    engine_ready = await self.semantic_engine.ensure_ready()
+                except Exception as e:
+                    logger.warning(f"F12 引擎就绪检查失败（放行）: {e}")
+                    engine_ready = False
+                if engine_ready:
+                    try:
+                        is_sem_dup = await self.semantic_engine.check_duplicate(
+                            text, message.id, self.db
+                        )
+                    except Exception as e:
+                        logger.warning(f"F12 语义比对失败（放行）: {e}")
+                        is_sem_dup = False
+                    if is_sem_dup:
+                        logger.info(
+                            f"消息 {message.id} 语义重复（F12 引擎命中），丢弃。"
+                        )
+                        self._msg_stats["duplicates"] += 1
+                        return
 
             # 目标路由
             target_id, topic_id = find_target(text, media, snapshot)
@@ -593,13 +605,15 @@ class Forwarder:
                 for fp in content_fingerprints(text, media):
                     await self.db.add_hash(fp)
             # F12：发送成功后登记语义向量指纹（后续语义重复被拦；失败不阻塞）
-            if (
-                sem
-                and self.semantic_engine is not None
-                and self.semantic_engine.enabled
-            ):
+            eng_enabled = False
+            try:
+                eng_enabled = bool(getattr(self.semantic_engine, "enabled", False))
+            except Exception:
+                pass
+            if sem and self.semantic_engine is not None and eng_enabled:
                 try:
-                    await self.semantic_engine.add(text, self.db)
+                    # marker=消息 id：add 复用 check 阶段已算向量，避免二次 embed
+                    await self.semantic_engine.add(text, message.id, self.db)
                 except Exception as e:
                     logger.warning(f"F12 语义指纹登记失败（不阻塞）: {e}")
 

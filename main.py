@@ -26,6 +26,21 @@ DOCKER_CONTAINER_NAME = "tgf"
 START_TIME = datetime.now(timezone.utc)
 
 
+def _build_semantic_engine(config):
+    """F12 语义去重装配（默认关=不构造；开启时注入外观类，惰性不触发模型下载）。
+
+    main.py 是 F12 唯一生产装配点（Codex critical：先前 Forwarder 从不注入引擎，
+    开关开与不开行为完全相同）。引擎内 ensure_ready 惰性加载模型，缺失/加载失败
+    自动降级为不启用，不影响既有 dedup 行为。
+    """
+    dedup_cfg = getattr(config, "deduplication", None)
+    if dedup_cfg is None or not getattr(dedup_cfg, "semantic_dedup_enabled", False):
+        return None
+    from tg_forwarder.core.semantic_dedup import SemanticDedup, SemanticDedupEngine
+
+    return SemanticDedup(engine=SemanticDedupEngine())
+
+
 def _sync_web_rules_db(cfg) -> None:
     """把 RuntimeConfig 的 Web 可编辑段同步进 web 层内存 rules_db。"""
     from tg_forwarder.web import server as web_server
@@ -154,8 +169,16 @@ async def cmd_run(db: Database, yaml_path: str) -> None:
     accounts = AccountManager(db)
     await accounts.start(config)
 
-    # 2. 转发引擎（R8：快照原子替换）
-    forwarder = Forwarder(db, accounts)
+    # 2. F12 语义去重装配（默认关=不构造；开启时惰性注入 + 启动预热）
+    semantic_engine = _build_semantic_engine(config)
+    preheat_task = None
+    if semantic_engine is not None:
+        # 预热：启动协程内线程加载模型，避免装配后首条消息在事件循环内同步加载阻塞
+        preheat_task = asyncio.create_task(semantic_engine.ensure_ready())
+        logger.info("F12 语义去重已接线，模型预热任务已启动（缺失/失败自动降级）。")
+
+    # 3. 转发引擎（R8：快照原子替换）
+    forwarder = Forwarder(db, accounts, semantic_engine)
     forwarder.update_snapshot(config)
     forwarder.start_prune_task()  # P8：dedup TTL 清理
 
@@ -183,7 +206,7 @@ async def cmd_run(db: Database, yaml_path: str) -> None:
             f"模型 {llm_cfg.model}, 间隔 {llm_cfg.interval_seconds}s"
         )
 
-    # 3. 主账号解析源/目标 + 注册事件（保持 v2 行为）
+    # 4. 主账号解析源/目标 + 注册事件（保持 v2 行为）
     healthy = accounts.healthy_accounts()
     if healthy:
         await forwarder.resolve_targets(healthy[0])
@@ -191,7 +214,7 @@ async def cmd_run(db: Database, yaml_path: str) -> None:
     else:
         logger.warning("无可用用户账号，看门狗将在超时后触发退出。")
 
-    # 4. Web 层 rules_db 初始装载
+    # 5. Web 层 rules_db 初始装载
     _sync_web_rules_db(config)
 
     # R8 热重载回调：Web 改配置落表成功后 → 重建配置 → 整体替换快照
@@ -205,14 +228,14 @@ async def cmd_run(db: Database, yaml_path: str) -> None:
             logger.error(f"热重载失败: {e}")
             raise
 
-    # 5. 死链检测器实例（/check 命令与 scheduler 共用，避免双实例）
+    # 6. 死链检测器实例（/check 命令与 scheduler 共用，避免双实例）
     link_checker = None
     if config.link_checker and config.link_checker.enabled and healthy:
         from tg_forwarder.core.link_checker import LinkChecker
 
         link_checker = LinkChecker(db, healthy[0], config)
 
-    # 6. Bot 服务（T1：修复 v3 从未接线 BotService；R6 独立凭据；/reload 全链路）
+    # 7. Bot 服务（T1：修复 v3 从未接线 BotService；R6 独立凭据；/reload 全链路）
     async def reload_func() -> str:
         await update_settings_cb()  # 热重载全链路：load→update_snapshot→_sync_web
         return "配置与规则已从 app_config 表重载并生效。"
@@ -229,7 +252,7 @@ async def cmd_run(db: Database, yaml_path: str) -> None:
     )
     bot_notify = bot_service.notify_admin if bot_service else None
 
-    # 7. Web（写配置成功经 bot_notify 推送 admin，T1 通知通道）
+    # 8. Web（写配置成功经 bot_notify 推送 admin，T1 通知通道）
     app = create_app(
         db=db,
         config_repo=config_repo,
@@ -244,6 +267,8 @@ async def cmd_run(db: Database, yaml_path: str) -> None:
     server = run_server(app)
 
     tasks = [server.serve()]
+    if preheat_task is not None:
+        tasks.append(preheat_task)
 
     # 运行期维护循环（R2/P2 修复）：探活断连账号→立即置 unhealthy→后台重连。
     # 与看门狗并存：维护循环把真实连接态写回 state，看门狗据此判"无可用账号"超时退出。

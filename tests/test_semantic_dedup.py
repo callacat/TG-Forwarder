@@ -6,7 +6,8 @@
   行为与 M3 完全一致（回归断言：语义模块根本不被 import/实例化路径不触发）。
 - 开关 True 且模型可用（mock）：语义相同（embedding 相近）的消息被拦，
   语义不同（embedding 距离远）放行；仍然复用既有 dedup_hashes 表承载向量
-  指纹（"sem:<sha256(低位二进制)>"），不新增表/迁移（绕开 db.py 迁移缺陷）。
+  指纹（"sem:<sha256(低位二进制)>"），不新增表、无 schema 变更（db 迁移链
+  已含 _migrate_6_forward，无需绕开）。
 - 模型缺失/加载失败（mock raise）：静默禁用（enabled 语义 = off），
   不抛异常、不影响既有 dedup 行为、不阻塞转发主线。
 
@@ -277,3 +278,132 @@ class TestSemanticDedupEnabled:
         assert sent == ["A", "B"]
         assert engine.checked == 0  # 关键：没有一次语义检查
         await db.close()
+
+
+# ---------------------------------------------------------------------------
+# 生产装配（Codex critical）：main._build_semantic_engine + Forwarder 三参注入
+# ---------------------------------------------------------------------------
+
+
+class TestProductionAssembly:
+    def test_build_semantic_engine_disabled_returns_none(self):
+        """默认关：装配函数不构造引擎（生产语义引擎零构造，保持默认态零影响）。"""
+        from main import _build_semantic_engine
+
+        assert _build_semantic_engine(_sem_cfg(semantic=False)) is None
+
+    def test_build_semantic_engine_enabled_returns_facade(self):
+        """开启时：返回外观类 SemanticDedup（惰性，构造不触发模型下载）。"""
+        from main import _build_semantic_engine
+
+        eng = _build_semantic_engine(_sem_cfg(semantic=True))
+        assert isinstance(eng, SemanticDedup)
+        assert eng.engine is not None
+
+    async def test_production_assembly_engine_invoked(self, tmp_path):
+        """模拟 main 装配：Forwarder(db, accounts, facade) + 开关开 → 引擎被调用。
+
+        真实外观类 + 真实引擎 + mock embed（避免真实模型），语义重复第二条被拦。
+        """
+        facade = SemanticDedup(
+            engine=SemanticDedupEngine(
+                embed_fn=lambda texts, **k: [
+                    [1.0, 0.0] if "青蛙" in t else [0.0, 1.0] for t in texts
+                ],
+                model_name="fake/model",
+            )
+        )
+        import os
+
+        from tg_forwarder.storage.db import Database
+
+        db = Database(os.path.join(str(tmp_path), "prod.sqlite"))
+        await db.open()
+        await db.migrate()
+        try:
+            fwd = Forwarder(db, _AM(), facade)  # 生产三参注入
+            fwd.update_snapshot(_sem_cfg(semantic=True))
+            sent = []
+
+            async def stub_send(original, text, target_id, topic_id, snap):
+                sent.append(text)
+
+            fwd._send_message = stub_send
+            await fwd.process_message(_Msg(1, text="今天天气很好，适合出门散步看青蛙"))
+            await fwd.process_message(_Msg(2, text="今天天气很好，适合出门散步看青蛙（近似说法）"))
+            assert sent == ["今天天气很好，适合出门散步看青蛙"]
+        finally:
+            await db.close()
+
+    async def test_wrong_type_engine_fail_open(self, tmp_path):
+        """注入 API 不匹配的引擎（check_duplicate 缺 db 形参→TypeError）→ 放行不丢消息。"""
+        class _WrongTypeEngine:
+            def __init__(self):
+                self.enabled = True
+
+            async def ensure_ready(self):
+                return True
+
+            async def check_duplicate(self, text, count):
+                return True
+
+            async def add(self, text, db=None):
+                pass
+
+        import os
+
+        from tg_forwarder.storage.db import Database
+
+        db = Database(os.path.join(str(tmp_path), "wrong.sqlite"))
+        await db.open()
+        await db.migrate()
+        try:
+            fwd = Forwarder(db, _AM(), _WrongTypeEngine())
+            fwd.update_snapshot(_sem_cfg(semantic=True))
+            sent = []
+
+            async def stub_send(original, text, target_id, topic_id, snap):
+                sent.append(text)
+
+            fwd._send_message = stub_send
+            await fwd.process_message(_Msg(1, text="hello"))
+            assert sent == ["hello"]  # 未丢弃、未计入 failed
+            assert fwd._msg_stats["failed"] == 0
+        finally:
+            await db.close()
+
+
+# ---------------------------------------------------------------------------
+# 单次 embed 复用（Codex minor：#2 add 复用 check 阶段向量）
+# ---------------------------------------------------------------------------
+
+
+class TestSingleEmbedReuse:
+    async def test_add_reuses_check_vector(self, tmp_path):
+        """同消息 check→add：embed 只执行一次；未 check 过的消息才重算。"""
+        import os
+
+        from tg_forwarder.storage.db import Database
+
+        calls = {"n": 0}
+
+        def embed_fn(texts, **k):
+            calls["n"] += 1
+            return [[0.5] * 4 for _ in texts]
+
+        eng = SemanticDedupEngine(embed_fn=embed_fn, model_name="fake/model")
+        await eng.ensure_ready()
+        calls["n"] = 0  # 排除探活调用计数
+
+        db = Database(os.path.join(str(tmp_path), "vec.sqlite"))
+        await db.open()
+        await db.migrate()
+        try:
+            facade = SemanticDedup(engine=eng)
+            assert await facade.check_duplicate("hello", 1, db) is False
+            await facade.add("hello", 1, db)  # 复用 check 向量 → 不二次 embed
+            assert calls["n"] == 1
+            await facade.add("world", 2, db)  # 未 check 过 → 重算
+            assert calls["n"] == 2
+        finally:
+            await db.close()

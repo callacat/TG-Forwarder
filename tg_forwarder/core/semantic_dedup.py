@@ -4,17 +4,18 @@
 设计契约（对齐 tests/test_semantic_dedup.py）：
 - 惰性加载：fastembed 只在首次真正需要时才 import + 拉模型；
   import/构造失败 → enabled=False，绝不抛异常、绝不阻塞转发主线。
-- 向量指纹复用 dedup_hashes 表（"sem:<sha256>"），不建新表、
-  不迁移 schema（绕开 db.py _migrate_6_forward 已知缺陷）。
+- 向量指纹复用 dedup_hashes 表（"sem:<sha256>"），不建新表、无 schema 变更
+  （db._migrate_6_forward 已在 4ff1b05 修复并入迁移链，无需绕开）。
 - 相似判定：与"最近窗口"内既有向量做余弦相似度，>= 阈值视为重复。
   窗口为内存 deque（上限 _WINDOW_SIZE），随消息数自然滚动；
   跨重启去重依赖 dedup_hashes 里已落的 sem: 指纹（精确命中）。
 - embed_fn 依赖注入便于单测（生产默认走 fastembed.TextEmbedding）。
 """
+import asyncio
 import hashlib
 import math
 from collections import deque
-from typing import Callable, Deque, List, Optional, Sequence
+from typing import Callable, Deque, Dict, List, Optional, Sequence
 
 from loguru import logger
 
@@ -74,39 +75,66 @@ class SemanticDedupEngine:
         self.enabled = False
         self._load_error: Optional[str] = None
         self._recent: Deque[List[float]] = deque(maxlen=WINDOW_SIZE)
+        # 并发预热/消息触发的就绪互斥（首条消息在预热加载未完成时会等待而非重复加载）
+        self._ready_lock: Optional[asyncio.Lock] = None
+
+    async def _embed_async(self, texts: Sequence[str]) -> Optional[List[List[float]]]:
+        """线程内执行 embed（不阻塞事件循环）；未加载/异常 → None。"""
+        if not self.enabled or self._embed_fn is None:
+            return None
+        try:
+            return await asyncio.to_thread(self._embed_fn, list(texts))
+        except Exception as e:  # noqa: BLE001 —— 运行期异常也降级放行
+            logger.warning(f"F12 embed 异常（放行）: {e}")
+            return None
 
     async def ensure_ready(self) -> bool:
-        """加载模型（幂等）。失败 → enabled=False + 记录原因，不抛。"""
+        """加载模型（幂等，线程内执行不阻塞事件循环）。失败 → enabled=False + 记录原因，不抛。
+
+        首次启用时的模型构造/下载（fastembed，~90MB）在 executor 线程完成，
+        避免装配后首条消息在事件循环内同步加载阻塞转发主循环。
+        并发调用（启动预热 + 首条消息）经 _ready_lock 互斥，只加载一次。
+        """
         if self.enabled:
             return True
         if self._load_error is not None:
             return False
-        try:
-            if self._embed_fn is None:
-                # 惰性 import fastembed；缺包时 ImportError → 静默降级
-                from fastembed import TextEmbedding
+        if self._ready_lock is None:
+            self._ready_lock = asyncio.Lock()
+        async with self._ready_lock:
+            if self.enabled:
+                return True
+            if self._load_error is not None:
+                return False
+            try:
+                if self._embed_fn is None:
+                    # 惰性 import fastembed；缺包时 ImportError → 静默降级
+                    from fastembed import TextEmbedding
 
-                kwargs = {}
-                if self.cache_dir:
-                    kwargs["cache_dir"] = self.cache_dir
-                model = TextEmbedding(self.model_name, **kwargs)
+                    def _init() -> Callable[[Sequence[str]], List[List[float]]]:
+                        kwargs = {}
+                        if self.cache_dir:
+                            kwargs["cache_dir"] = self.cache_dir
+                        model = TextEmbedding(self.model_name, **kwargs)
 
-                def _embed(texts: Sequence[str]) -> List[List[float]]:
-                    return [list(v) for v in model.embed(list(texts))]
+                        def _embed(texts: Sequence[str]) -> List[List[float]]:
+                            return [list(v) for v in model.embed(list(texts))]
 
-                self._embed_fn = _embed
-            # 探活：真正调用一次（若模型文件缺失会在 embed 时暴露）
-            _ = self._embed_fn(["探活"])
-            self.enabled = True
-            logger.info(
-                f"F12 语义去重已启用（model={self.model_name}）"
-            )
-        except Exception as e:  # noqa: BLE001 —— 任何加载失败都降级
-            self._load_error = f"{type(e).__name__}: {e}"
-            self.enabled = False
-            logger.warning(
-                f"F12 语义去重不可用，已降级为不启用（不影响既有 dedup）: {self._load_error}"
-            )
+                        return _embed
+
+                    self._embed_fn = await asyncio.to_thread(_init)
+                # 探活：真正调用一次（若模型文件缺失会在 embed 时暴露）
+                await asyncio.to_thread(self._embed_fn, ["探活"])
+                self.enabled = True
+                logger.info(
+                    f"F12 语义去重已启用（model={self.model_name}）"
+                )
+            except Exception as e:  # noqa: BLE001 —— 任何加载失败都降级
+                self._load_error = f"{type(e).__name__}: {e}"
+                self.enabled = False
+                logger.warning(
+                    f"F12 语义去重不可用，已降级为不启用（不影响既有 dedup）: {self._load_error}"
+                )
         return self.enabled
 
     async def check_duplicate(self, text: str, marker: object) -> bool:
@@ -118,7 +146,7 @@ class SemanticDedupEngine:
         if not self.enabled or not text:
             return False
         try:
-            emb = self._embed_fn([text])
+            emb = await self._embed_async([text])
             if not emb:
                 return False
             return self.check_window(list(emb[0]))
@@ -143,10 +171,18 @@ class SemanticDedup:
 
     提供与现有 dedup 相同的「check / add」语义，但全部可选。
     未启用/加载失败 → check 恒 False、add 恒 no-op。
+    生产装配点：main.py 注入本外观（内部含 SemanticDedupEngine）。
     """
 
     def __init__(self, engine: Optional[SemanticDedupEngine] = None):
         self.engine = engine or SemanticDedupEngine()
+        # 最近 check 阶段已算向量按消息 id 暂存，add 复用避免同消息二次 embed
+        self._vec_cache: Dict[object, List[float]] = {}
+
+    @property
+    def enabled(self) -> bool:
+        """镜像引擎状态（forwarder 读取；未启用即 False）。"""
+        return self.engine.enabled
 
     async def ensure_ready(self) -> bool:
         return await self.engine.ensure_ready()
@@ -162,17 +198,25 @@ class SemanticDedup:
             fp = embedding_fingerprint(emb)
             if await db.check_hash(fp):
                 return True
+            if len(self._vec_cache) >= 256:
+                self._vec_cache.clear()
+            self._vec_cache[marker] = emb
             # 窗口查询：复用已算向量，不再二次 embed（Codex minor #2）
             return self.engine.check_window(emb)
         except Exception:
             return False
 
-    async def add(self, text: str, db) -> None:
-        """add：登记向量指纹（走现有 dedup_hashes 表，无 schema 变更）。"""
+    async def add(self, text: str, marker: object, db) -> None:
+        """add：登记向量指纹（复用 check 阶段已算向量；未 check 过则重算）。
+
+        走现有 dedup_hashes 表，无 schema 变更。
+        """
         if not self.engine.enabled or not text:
             return
         try:
-            emb = await self._embed_one(text)
+            emb = self._vec_cache.pop(marker, None)
+            if emb is None:
+                emb = await self._embed_one(text)
             if emb is None:
                 return
             fp = embedding_fingerprint(emb)
@@ -188,9 +232,7 @@ class SemanticDedup:
         if not self.engine.enabled:
             return None
         try:
-            if self.engine._embed_fn is None:
-                return None
-            emb = self.engine._embed_fn([text])
+            emb = await self.engine._embed_async([text])
             return list(emb[0]) if emb else None
         except Exception:
             return None
