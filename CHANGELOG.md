@@ -12,9 +12,7 @@
 
 ### Fixed
 
-### Fixed
-
-- **ad_judge 热重载字段覆盖**：`/reload` 现按 `(base_url, model, threshold, fuzzy_low, timeout)` 全字段变化重建判别器；原先只比 `threshold`，改端点/模型/模糊下界/超时后不重建、静默沿用旧配置（ad_judge 不经面板表，`/reload` 是唯一生效通道）。
+- **ad_judge 热重载字段覆盖**：`/reload` 现按 `(base_url, model, threshold, fuzzy_low, timeout)` 全字段变化重建判别器；原先只比 `threshold`，改端点/模型/模糊下界/超时后不重建、静默沿用旧配置（当时 ad_judge 只能由 yaml 段配置，`/reload` 是唯一生效通道；F13 面板入口上线后，yaml 与面板两条路径均可触发热重载，且都走同一套全字段重建逻辑）。
 
 ## [v3.0.0-rc.1] - 2026-09-20
 
