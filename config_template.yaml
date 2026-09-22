@@ -111,7 +111,8 @@ link_checker:
 # fail-open：jev 判定模糊/超时/异常 → None → 消息放行，绝不因 AI 不可用丢消息。
 # threshold=广告判定阈值（>= 判广告，默认 0.85；实测硬广 0.98+、正常 0.03-0.07、
 #   「附网盘链接」0.69 在模糊区）；fuzzy_low=模糊区下界（[fuzzy_low, threshold) 放行）。
-# 仅 yaml 配置（不经 Web 面板编辑）；改后经 /reload 或面板任意保存即热重载生效。
+# 配置来源二选一：yaml 本段（首次 bootstrap）或 Web 面板「AI 判别」tab（落表后以其为准，
+# 未在面板保存过的键保持 yaml 值）；两者改后均即时热重载生效，无需重启容器。
 # ad_judge:
 #   enabled: false
 #   base_url: "http://100.64.0.2:28880"   # 本机 opencode-free 容器（无需 key）

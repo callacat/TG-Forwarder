@@ -126,7 +126,8 @@ def _reconcile_ai_features(forwarder, new_cfg) -> None:
     cur_aj = getattr(forwarder, "ad_judge", None)
     if want_aj:
         # 重建条件 = 全配置元组变化（Codex minor：原先只比 threshold，其它字段
-        # 改动后 /reload 静默无效——ad_judge 仅 yaml 不经面板，/reload 是唯一通道）。
+        # 改动后 /reload 静默无效）。改动来源有两条——yaml + /reload，或面板
+        # 「AI 判别」tab 保存（落表 → 热重载），两条最终都走这里按全字段重建。
         # base_url 归一化与 AdJudge.__init__ 的 rstrip("/") 对齐，避免无谓重建。
         new_key = (
             str(getattr(aj, "base_url", "") or "").rstrip("/"),

@@ -6,7 +6,7 @@
 
 ### Added
 
-- **AI 广告判别器（jev-1.13）**：转发前用 System One 决策模型判断广告并过滤（默认关=现网行为零变化）。位置在 `should_filter` 之后、去重之前；`verdict=True` 拦截、`False` 放行、`None`（模糊区 0.60-0.85 / 超时 / 异常）fail-open 放行。仅 yaml 配置（`ad_judge:` 段），经 `/reload` 或面板保存热重载生效。
+- **AI 广告判别器（jev-1.13）**：转发前用 System One 决策模型判断广告并过滤（默认关=现网行为零变化）。位置在 `should_filter` 之后、去重之前；`verdict=True` 拦截、`False` 放行、`None`（模糊区 0.60-0.85 / 超时 / 异常）fail-open 放行。配置入口：yaml `ad_judge:` 段或 Web 面板「AI 判别」tab，两者均即时热重载生效。
 - **F13 AI 广告判别面板入口**：sidebar 新增「AI 判别」tab，可开关并按 `AdJudgeConfig` 全字段配置（`base_url`/`model`/`threshold`/`fuzzy_low`/`timeout`），保存走既有 `/api/settings/update` → 热重载生效。字段以 `SystemSettings` 镜像键（`ad_judge_*`）落表，沿用 F10-F12 的「存在性逐键覆盖 yaml」机制；`fuzzy_low > threshold` 由模型校验直接 422 拒绝，不放到热重载期才失败。默认关=现网行为零变化。
 - **面板版本号（单一事实源）**：新增 `tg_forwarder/version.py` 统一解析版本（镜像注入 `TG_FORWARDER_VERSION` → `git describe` → dev 占位），新增 `GET /api/version`，FastAPI 元信息同步取该值（原先硬编码 `version="3.0"`）；系统设置页展示「当前版本」。Dockerfile 与两个 workflow 经 `build-args` 注入 `git describe --tags --always` 结果，前端不硬编码第二份版本号。
 
