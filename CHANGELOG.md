@@ -8,6 +8,10 @@
 
 - **AI 广告判别器（jev-1.13）**：转发前用 System One 决策模型判断广告并过滤（默认关=现网行为零变化）。位置在 `should_filter` 之后、去重之前；`verdict=True` 拦截、`False` 放行、`None`（模糊区 0.60-0.85 / 超时 / 异常）fail-open 放行。仅 yaml 配置（`ad_judge:` 段），经 `/reload` 或面板保存热重载生效。
 
+### Fixed
+
+- **ad_judge 热重载字段覆盖**：`/reload` 现按 `(base_url, model, threshold, fuzzy_low, timeout)` 全字段变化重建判别器；原先只比 `threshold`，改端点/模型/模糊下界/超时后不重建、静默沿用旧配置（ad_judge 不经面板表，`/reload` 是唯一生效通道）。
+
 ## [v3.0.0-rc.1] - 2026-09-20
 
 v3 全量重写（方案 B）首个候选版本。默认配置与现网 v2.5 行为零变化，所有新能力默认关闭、需显式启用。

@@ -117,5 +117,5 @@ link_checker:
 #   base_url: "http://100.64.0.2:28880"   # 本机 opencode-free 容器（无需 key）
 #   model: "jev-1.13"
 #   threshold: 0.85
-#   fuzzy_low: 0.60
+#   fuzzy_low: 0.60                      # 必须 <= threshold（否则模糊区反转，配置校验直接拒绝）
 #   timeout: 20
