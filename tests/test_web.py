@@ -325,6 +325,72 @@ class TestSettingsUpdate:
             )
         assert res.status_code == 422
 
+    # --- F13 AI 广告判别面板镜像 ---
+
+    def test_ad_judge_panel_settings_roundtrip(self):
+        """F13 面板镜像键落表 → GET/表存储可见（面板开关即前端 x-model 字段）。"""
+        client, ctx = make_client()
+        with client:
+            payload = {
+                "dedup_retention_days": 30,
+                "forwarding_mode": "copy",
+                "ad_judge_enabled": True,
+                "ad_judge_base_url": "http://10.0.0.9:28880",
+                "ad_judge_model": "jev-1.13",
+                "ad_judge_threshold": 0.9,
+                "ad_judge_fuzzy_low": 0.5,
+                "ad_judge_timeout": 15,
+            }
+            res = client.post("/api/settings/update", json=payload, headers=basic_auth())
+            assert res.status_code == 200
+            data = client.get("/api/settings", headers=basic_auth()).json()
+            assert data["ad_judge_enabled"] is True
+            assert data["ad_judge_base_url"] == "http://10.0.0.9:28880"
+            assert data["ad_judge_threshold"] == 0.9
+            assert data["ad_judge_fuzzy_low"] == 0.5
+            assert data["ad_judge_timeout"] == 15
+
+            import json as _json
+
+            stored_raw = asyncio.run(ctx["config_repo"].get("system_settings"))
+            stored = _json.loads(stored_raw) if isinstance(stored_raw, str) else stored_raw
+            assert stored["ad_judge_enabled"] is True
+            assert stored["ad_judge_model"] == "jev-1.13"
+
+    def test_ad_judge_fuzzy_zone_reversed_422(self):
+        """模糊区下界 > 阈值：面板存不下非法组合（否则热重载期才炸）。"""
+        client, _ = make_client()
+        with client:
+            res = client.post(
+                "/api/settings/update",
+                json={"ad_judge_threshold": 0.5, "ad_judge_fuzzy_low": 0.8},
+                headers=basic_auth(),
+            )
+        assert res.status_code == 422
+
+    def test_ad_judge_timeout_non_positive_422(self):
+        client, _ = make_client()
+        with client:
+            res = client.post(
+                "/api/settings/update",
+                json={"ad_judge_timeout": 0},
+                headers=basic_auth(),
+            )
+        assert res.status_code == 422
+
+    def test_version_endpoint_matches_single_source(self):
+        """/api/version 返回 APP_VERSION（= version.py 单一事实源），且需鉴权。"""
+        from tg_forwarder.web.server import APP_VERSION
+
+        client, _ = make_client()
+        with client:
+            assert client.get("/api/version").status_code == 401
+            res = client.get("/api/version", headers=basic_auth())
+            assert res.status_code == 200
+            assert res.json() == {"version": APP_VERSION}
+            # 非空且非占位以外均可，唯一硬约束：与单一事实源同值、不带 v 前缀
+            assert APP_VERSION and not APP_VERSION.startswith("v")
+
 
 # ---------------------------------------------------------------------------
 # Web 面板静态文件冒烟（渲染/数据流）
@@ -350,6 +416,29 @@ class TestPanelHtml:
             assert "semantic_dedup_threshold" in html
             # 防闪烁增量合并逻辑存在
             assert "changedMerge" in html
+
+    def test_panel_has_ai_tab_entry_and_version_footer(self):
+        """F13：sidebar 有 AI 判别入口 + 面板含后端契约字段名 + 系统设置有版本号展示位。
+
+        版本号展示位只认 x-text="appVersion"（值来自 /api/version），
+        断言面板内不含硬编码版本串，防「第二份事实源」回归。
+        """
+        client, _ = make_client()
+        with client:
+            html = client.get("/").text
+            # sidebar 入口（tabs 数组渲染的导航条）
+            assert "{ id: 'ai', name: 'AI 判别' }" in html
+            # F13 面板 + 后端契约字段名（与 SystemSettings 镜像键一致，不发明字段）
+            assert "AI 广告判别（F13）" in html
+            assert "ad_judge_enabled" in html
+            assert "ad_judge_base_url" in html
+            assert "ad_judge_model" in html
+            assert "ad_judge_threshold" in html
+            assert "ad_judge_fuzzy_low" in html
+            assert "ad_judge_timeout" in html
+            # 版本号展示位：读 /api/version，不硬编码
+            assert 'x-text="appVersion' in html
+            assert "this.api('/api/version')" in html
 
     def test_panel_merge_logic_node_smoke(self):
         """前端 fetchLive 增量合并逻辑（node 运行纯 JS）：无变化同引用=零重绘。"""

@@ -700,6 +700,50 @@
                     </div>
                 </div>
                 <button @click="saveSettings" :disabled="busy" class="btn-base bg-apple-blue text-white hover:bg-blue-600 w-full py-3 text-lg shadow-lg">保存所有设置</button>
+                <!-- 版本号：单一事实源 = git tag（镜像构建期注入，见 tg_forwarder/version.py），
+                     经 /api/version 取回；此处禁止硬编码第二份。 -->
+                <p class="text-center text-xs text-surface-400 pt-2">当前版本 <span class="font-mono font-bold text-surface-500 dark:text-surface-300" x-text="appVersion || '未知'"></span></p>
+            </div>
+        </div>
+
+        <!-- ============ Tab: AI 判别（F13 · jev-1.13，默认关） ============ -->
+        <div x-show="currentTab === 'ai'" x-cloak class="glass-card p-8 max-w-2xl mx-auto">
+            <h3 class="text-xl font-bold mb-2 text-surface-900 dark:text-white">AI 广告判别（F13）</h3>
+            <p class="text-xs text-surface-500 mb-8">jev-1.13 System One 决策模型：转发前判定广告并拦截。<b>默认关</b>；判定失败/超时一律放行（fail-open，绝不因 AI 不可用丢消息）。保存后自动热重载生效，无需重启容器。</p>
+            <div class="space-y-8">
+                <div class="p-4 rounded-xl bg-surface-100 dark:bg-surface-800">
+                    <label class="flex items-center justify-between cursor-pointer">
+                        <span class="font-medium text-sm">启用 AI 广告判别 <span class="text-surface-400 text-xs">(ad_judge)</span></span>
+                        <input type="checkbox" x-model="settings.ad_judge_enabled" class="w-5 h-5 accent-apple-blue rounded" aria-label="AI 广告判别开关">
+                    </label>
+                </div>
+                <div x-show="settings.ad_judge_enabled" class="space-y-6">
+                    <div>
+                        <label class="block text-xs font-bold text-surface-500 uppercase mb-1" for="ajBaseUrl">模型端点 (base_url)</label>
+                        <input id="ajBaseUrl" type="text" x-model="settings.ad_judge_base_url" class="app-input font-mono text-sm" placeholder="http://100.64.0.2:28880">
+                        <p class="text-xs text-surface-500 mt-1">默认本机 opencode-free 容器，无需 key。</p>
+                    </div>
+                    <div>
+                        <label class="block text-xs font-bold text-surface-500 uppercase mb-1" for="ajModel">模型名 (model)</label>
+                        <input id="ajModel" type="text" x-model="settings.ad_judge_model" class="app-input font-mono text-sm" placeholder="jev-1.13">
+                    </div>
+                    <div class="grid grid-cols-1 sm:grid-cols-3 gap-4">
+                        <div>
+                            <label class="block text-xs font-bold text-surface-500 uppercase mb-1" for="ajThreshold">广告阈值</label>
+                            <input id="ajThreshold" type="number" min="0.01" max="1" step="0.01" x-model.number="settings.ad_judge_threshold" class="app-input w-full">
+                        </div>
+                        <div>
+                            <label class="block text-xs font-bold text-surface-500 uppercase mb-1" for="ajFuzzyLow">模糊区下界</label>
+                            <input id="ajFuzzyLow" type="number" min="0.01" max="1" step="0.01" x-model.number="settings.ad_judge_fuzzy_low" class="app-input w-full">
+                        </div>
+                        <div>
+                            <label class="block text-xs font-bold text-surface-500 uppercase mb-1" for="ajTimeout">超时（秒）</label>
+                            <input id="ajTimeout" type="number" min="1" step="1" x-model.number="settings.ad_judge_timeout" class="app-input w-full">
+                        </div>
+                    </div>
+                    <p class="text-xs text-surface-500">得分 ≥ 阈值判广告拦截；落在 [模糊区下界, 阈值) 视为不可靠 → 放行。下界不得大于阈值，否则保存会被拒绝。</p>
+                </div>
+                <button @click="saveSettings" :disabled="busy" class="btn-base bg-apple-blue text-white hover:bg-blue-600 w-full py-3 text-lg shadow-lg">保存设置</button>
             </div>
         </div>
 
@@ -744,7 +788,8 @@
                 currentTab: 'status',
                 stats: {}, status: { accounts: [], message_stats: {} },
                 rules: { sources: [], distribution_rules: [] },
-                settings: { dedup_retention_days: 30, forwarding_mode: 'copy', forward_new_only: true, mark_as_read: false, mark_target_as_read: false, default_target: '', default_topic_id: null, digest_enabled: false, digest_interval_seconds: 1800, translate_enabled: false, translate_sources: [], semantic_dedup_enabled: false, semantic_dedup_threshold: 0.85 },
+                settings: { dedup_retention_days: 30, forwarding_mode: 'copy', forward_new_only: true, mark_as_read: false, mark_target_as_read: false, default_target: '', default_topic_id: null, digest_enabled: false, digest_interval_seconds: 1800, translate_enabled: false, translate_sources: [], semantic_dedup_enabled: false, semantic_dedup_threshold: 0.85, ad_judge_enabled: false, ad_judge_base_url: 'http://100.64.0.2:28880', ad_judge_model: 'jev-1.13', ad_judge_threshold: 0.85, ad_judge_fuzzy_low: 0.6, ad_judge_timeout: 20 },
+                appVersion: '',
                 blacklist: { substring: '', word: '', file: '', regex: '' }, whitelist: { keywords: '' },
                 content_filter: { enable: true, meaningless_words: [], min_meaningful_length: 5 },
                 replacements: {}, replacements_list: [],
@@ -757,6 +802,7 @@
                     { id: 'status', name: '仪表盘' }, { id: 'sources', name: '监控源' },
                     { id: 'rules', name: '转发规则' }, { id: 'filter_replace', name: '过滤与替换' },
                     { id: 'blacklist', name: '黑名单' }, { id: 'whitelist', name: '白名单' },
+                    { id: 'ai', name: 'AI 判别' },
                     { id: 'settings', name: '系统设置' }
                 ],
 
@@ -930,13 +976,14 @@
                 async fetchAllData(showLoading = false) {
                     if (showLoading) this.loadingData = true;
                     try {
-                        const [rules, stats, sysSettings, bl, wl, cf, rep, status] = await Promise.all([
+                        const [rules, stats, sysSettings, bl, wl, cf, rep, status, ver] = await Promise.all([
                             this.api('/api/rules'), this.api('/api/stats'), this.api('/api/settings'),
                             this.api('/api/blacklist'), this.api('/api/whitelist'),
                             this.api('/api/content_filter'), this.api('/api/replacements'),
-                            this.api('/api/status'),
+                            this.api('/api/status'), this.api('/api/version'),
                         ]);
                         this.rules = rules; this.stats = stats || {}; this.settings = sysSettings;
+                        this.appVersion = (ver && ver.version) || '';
                         this.blacklist.substring = this.arrayToText(bl.keywords_substring);
                         this.blacklist.word = this.arrayToText(bl.keywords_word);
                         this.blacklist.file = this.arrayToText(bl.file_name_keywords);

@@ -42,6 +42,12 @@ from tg_forwarder.config import (
     TargetDistributionRule,
     WhitelistConfig,
 )
+from tg_forwarder.version import resolve_version
+
+# 版本号单一事实源（启动期解析一次，见 tg_forwarder/version.py）：
+# 优先镜像构建期注入的 TG_FORWARDER_VERSION，其次 git tag，最后 dev 占位。
+# FastAPI 元信息与 /api/version、面板展示全部取此处——禁止再写第二份。
+APP_VERSION = resolve_version()
 
 # ---------------------------------------------------------------------------
 # 鉴权（P5/R9 加固）
@@ -205,7 +211,7 @@ def create_app(
     app = FastAPI(
         title="TG Forwarder Web UI",
         description="TG 终极转发器管理面板",
-        version="3.0",
+        version=APP_VERSION,
         docs_url=None,
         redoc_url=None,
         openapi_url=None,
@@ -341,6 +347,15 @@ def create_app(
     @app.get("/api/settings")
     async def get_settings(username: str = Depends(require_auth)):
         return rules_db.settings
+
+    @app.get("/api/version")
+    async def get_version(username: str = Depends(require_auth)):
+        """面板当前版本号（系统设置页展示）。
+
+        唯一来源 = APP_VERSION（镜像注入 / git tag，见 tg_forwarder/version.py），
+        前端不得硬编码第二份。
+        """
+        return {"version": APP_VERSION}
 
     @app.post("/api/settings/update")
     async def update_settings_endpoint(settings: SystemSettings, username: str = Depends(require_auth)):

@@ -6,6 +6,12 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
     TZ=Asia/Shanghai
 
+# 版本号单一事实源：CI 用 `git describe --tags --always` 取值经 build-args 传入
+# （见 .github/workflows/*.yml），运行时由 tg_forwarder/version.py 读取并展示在
+# 面板系统设置页 / /api/version。不传则回退源码 git describe（本地调试）。
+ARG TG_FORWARDER_VERSION=""
+ENV TG_FORWARDER_VERSION=${TG_FORWARDER_VERSION}
+
 WORKDIR /app
 
 # curl 保留给 HEALTHCHECK

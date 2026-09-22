@@ -277,3 +277,71 @@ class TestM4ExperimentalMerging:
         assert cfg2.translate.sources == [-1001]
         assert cfg2.deduplication.semantic_dedup_enabled is False
         await db.close()
+
+    async def test_ad_judge_panel_values_override_yaml(self, tmp_path):
+        """F13：面板落表 ad_judge_* 覆盖 yaml ad_judge 段；未存过则回落 yaml 并如实展示。"""
+        yaml_cfg = FULL_YAML + (
+            "\nad_judge:\n  enabled: true\n  base_url: \"http://yaml-host:28880\"\n"
+            "  model: \"yaml-model\"\n  threshold: 0.7\n  fuzzy_low: 0.4\n  timeout: 30\n"
+        )
+        yp = _write_yaml(tmp_path, yaml_cfg)
+        db = await _fresh_db(tmp_path)
+
+        # 未存过镜像键：runtime 取 yaml，展示值同步（面板如实显示当前状态）
+        cfg1 = await load_runtime_config(db, yp)
+        assert cfg1.ad_judge.enabled is True
+        assert cfg1.ad_judge.base_url == "http://yaml-host:28880"
+        assert cfg1.ad_judge.fuzzy_low == 0.4
+        assert cfg1.settings.ad_judge_enabled is True
+        assert cfg1.settings.ad_judge_threshold == 0.7
+        assert cfg1.settings.ad_judge_model == "yaml-model"
+
+        # 面板保存 → 以落表值为准（热重载生效路径）
+        from tg_forwarder.storage.repositories import ConfigRepository
+
+        repo = ConfigRepository(db)
+        s = cfg1.settings.model_dump()
+        s.update(
+            ad_judge_enabled=False,
+            ad_judge_base_url="http://panel-host:28880",
+            ad_judge_model="panel-model",
+            ad_judge_threshold=0.95,
+            ad_judge_fuzzy_low=0.55,
+            ad_judge_timeout=12,
+        )
+        await repo.save("system_settings", s)
+        cfg2 = await load_runtime_config(db, yp)
+        assert cfg2.ad_judge.enabled is False
+        assert cfg2.ad_judge.base_url == "http://panel-host:28880"
+        assert cfg2.ad_judge.model == "panel-model"
+        assert cfg2.ad_judge.threshold == 0.95
+        assert cfg2.ad_judge.fuzzy_low == 0.55
+        assert cfg2.ad_judge.timeout == 12
+        assert cfg2.settings.ad_judge_enabled is False
+        await db.close()
+
+    async def test_ad_judge_partial_keys_do_not_wipe_yaml(self, tmp_path):
+        """升级防御：旧库只存过 ad_judge_enabled 时，缺失的参数键不得回退默认值
+        清掉 yaml 里的端点/模型（与 M4 部分键同款语义）。"""
+        yaml_cfg = FULL_YAML + (
+            "\nad_judge:\n  enabled: true\n  base_url: \"http://yaml-host:28880\"\n"
+            "  model: \"yaml-model\"\n"
+        )
+        yp = _write_yaml(tmp_path, yaml_cfg)
+        db = await _fresh_db(tmp_path)
+        await load_runtime_config(db, yp)
+
+        from tg_forwarder.storage.repositories import ConfigRepository
+
+        repo = ConfigRepository(db)
+        # 模拟旧版面板只保存过开关（其余 ad_judge 键未落表）
+        await repo.save(
+            "system_settings",
+            {"ad_judge_enabled": True, "default_target": "0"},
+        )
+        cfg2 = await load_runtime_config(db, yp)
+        assert cfg2.ad_judge.enabled is True
+        # 未被面板管过的参数键 → 保持 yaml 值（旧实现会误清成 AdJudgeConfig 默认）
+        assert cfg2.ad_judge.base_url == "http://yaml-host:28880"
+        assert cfg2.ad_judge.model == "yaml-model"
+        await db.close()

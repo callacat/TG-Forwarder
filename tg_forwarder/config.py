@@ -290,6 +290,15 @@ class SystemSettings(BaseModel):
     translate_sources: List[Union[int, str]] = Field(default_factory=list)
     semantic_dedup_enabled: bool = False
     semantic_dedup_threshold: float = 0.85
+    # F13 AI 广告判别（jev-1.13）面板镜像：字段名 = "ad_judge_" + AdJudgeConfig 字段名，
+    # 与 F10-F12 同机制（落表值按存在性逐键覆盖 yaml ad_judge 段，见 load_runtime_config）。
+    # 默认值逐项对齐 AdJudgeConfig，保证「面板从未管过」时现网行为零变化。
+    ad_judge_enabled: bool = False
+    ad_judge_base_url: str = "http://100.64.0.2:28880"
+    ad_judge_model: str = "jev-1.13"
+    ad_judge_threshold: float = 0.85
+    ad_judge_fuzzy_low: float = 0.60
+    ad_judge_timeout: float = 20.0
 
     @field_validator("forwarding_mode")
     @classmethod
@@ -304,6 +313,34 @@ class SystemSettings(BaseModel):
         if v is not None and not (0 < v <= 1):
             raise ValueError("semantic_dedup_threshold 必须在 0~1 之间 (相似度阈值)")
         return v
+
+    @field_validator("ad_judge_threshold", "ad_judge_fuzzy_low")
+    @classmethod
+    def check_ad_judge_threshold(cls, v):
+        if v is not None and not (0 < v <= 1):
+            raise ValueError("ad_judge_threshold/ad_judge_fuzzy_low 必须在 0~1 之间")
+        return v
+
+    @field_validator("ad_judge_timeout")
+    @classmethod
+    def check_ad_judge_timeout(cls, v):
+        if v is not None and v <= 0:
+            raise ValueError("ad_judge_timeout 必须为正数")
+        return v
+
+    @model_validator(mode="after")
+    def check_ad_judge_fuzzy_zone(self):
+        """模糊区 [fuzzy_low, threshold) 必须非空——与 AdJudgeConfig 同款约束。
+
+        没有这层校验，面板能存下非法组合，要等热重载构造 AdJudge 时才炸；
+        这里直接 422 拒绝，把「无告警的静默错判」挡在入口。
+        """
+        if self.ad_judge_fuzzy_low > self.ad_judge_threshold:
+            raise ValueError(
+                f"ad_judge_fuzzy_low({self.ad_judge_fuzzy_low}) 不得大于"
+                f" ad_judge_threshold({self.ad_judge_threshold})——否则模糊区语义反转"
+            )
+        return self
 
 
 class SourceConfig(BaseModel):
@@ -607,7 +644,18 @@ def bootstrap_from_yaml(path: str) -> RuntimeConfig:
     return cfg
 
 
-# M4 实验功能键（Web 面板 SystemSettings 镜像 → 覆盖 digest/translate/dedup 摘要段）。
+# F13 AI 广告判别面板镜像键：命名约定 = "ad_judge_" + AdJudgeConfig 字段名，
+# load_runtime_config 的覆盖/回填循环靠该前缀切片直接 setattr（见 _ad_judge_* 两处）。
+_AD_JUDGE_MIRROR_KEYS = (
+    "ad_judge_enabled",
+    "ad_judge_base_url",
+    "ad_judge_model",
+    "ad_judge_threshold",
+    "ad_judge_fuzzy_low",
+    "ad_judge_timeout",
+)
+
+# 实验功能键（Web 面板 SystemSettings 镜像 → 覆盖摘要段；M4 起，F13 沿用同机制）。
 # 常量集中定义，bootstrap 剥离与 load_runtime_config 覆盖共用，避免两处漂移。
 _M4_EXPERIMENTAL_KEYS = (
     "digest_enabled",
@@ -616,7 +664,7 @@ _M4_EXPERIMENTAL_KEYS = (
     "translate_sources",
     "semantic_dedup_enabled",
     "semantic_dedup_threshold",
-)
+) + _AD_JUDGE_MIRROR_KEYS
 
 
 def _has_real_rules(cfg: RuntimeConfig) -> bool:
@@ -716,6 +764,14 @@ async def load_runtime_config(db: Database, yaml_path: str) -> RuntimeConfig:
         ):
             cfg.deduplication.semantic_dedup_enabled = _settings.semantic_dedup_enabled
             cfg.deduplication.semantic_dedup_threshold = _settings.semantic_dedup_threshold
+
+    # F13 AI 广告判别：同「存在性逐键覆盖」机制（字段名去 "ad_judge_" 前缀 = AdJudgeConfig
+    # 字段名，故直接切片 setattr）。未被面板管过的键保持 yaml 值，面板保存过才以落表为准。
+    if settings_json and any(k in settings_json for k in _AD_JUDGE_MIRROR_KEYS):
+        for _k in _AD_JUDGE_MIRROR_KEYS:
+            if _k in settings_json:
+                setattr(cfg.ad_judge, _k[len("ad_judge_"):], getattr(_settings, _k))
+
     # 展示值 = runtime 实际生效值（Web 未管过时同步 yaml 状态，避免面板显示与生效值脱节）
     _settings.digest_enabled = cfg.digest.enabled
     _settings.digest_interval_seconds = cfg.digest.interval_seconds
@@ -723,6 +779,8 @@ async def load_runtime_config(db: Database, yaml_path: str) -> RuntimeConfig:
     _settings.translate_sources = list(cfg.translate.sources)
     _settings.semantic_dedup_enabled = cfg.deduplication.semantic_dedup_enabled
     _settings.semantic_dedup_threshold = cfg.deduplication.semantic_dedup_threshold
+    for _k in _AD_JUDGE_MIRROR_KEYS:
+        setattr(_settings, _k, getattr(cfg.ad_judge, _k[len("ad_judge_"):]))
 
     ad_json = await config_repo.get("ad_filter")
     if ad_json:

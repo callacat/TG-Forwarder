@@ -15,6 +15,15 @@ jobs:
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
+        with:
+          # git describe 需要 tag 历史（版本号注入用，见 Resolve version）
+          fetch-depth: 0
+
+      - name: Resolve version
+        id: version
+        # 版本号单一事实源 = git tag（本工作流跑 main 分支，通常得
+        # v3.0.0-rc.N-M-gSHA 形态的 dev 串，发版以 v3 CI 的 tag 构建为准）。
+        run: echo "value=$(git describe --tags --always)" >> "$GITHUB_OUTPUT"
 
       - name: Set up QEMU
         uses: docker/setup-qemu-action@v3
@@ -34,6 +43,8 @@ jobs:
           context: .
           file: ./Dockerfile
           push: true
+          build-args: |
+            TG_FORWARDER_VERSION=${{ steps.version.outputs.value }}
           tags: |
             ${{ secrets.DOCKER_USERNAME }}/tgf:latest
           platforms: linux/amd64,linux/arm64 # 构建多种架构
