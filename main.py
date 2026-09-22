@@ -125,16 +125,31 @@ def _reconcile_ai_features(forwarder, new_cfg) -> None:
     want_aj = bool(aj and getattr(aj, "enabled", False))
     cur_aj = getattr(forwarder, "ad_judge", None)
     if want_aj:
-        new_th = float(getattr(aj, "threshold", 0.85) or 0.85)
-        cur_th = None
+        # 重建条件 = 全配置元组变化（Codex minor：原先只比 threshold，其它字段
+        # 改动后 /reload 静默无效——ad_judge 仅 yaml 不经面板，/reload 是唯一通道）。
+        # base_url 归一化与 AdJudge.__init__ 的 rstrip("/") 对齐，避免无谓重建。
+        new_key = (
+            str(getattr(aj, "base_url", "") or "").rstrip("/"),
+            str(getattr(aj, "model", "") or ""),
+            float(getattr(aj, "threshold", 0.85) or 0.85),
+            float(getattr(aj, "fuzzy_low", 0.60) or 0.60),
+            float(getattr(aj, "timeout", 20.0) or 20.0),
+        )
+        cur_key = None
         if cur_aj is not None:
             try:
-                cur_th = float(getattr(cur_aj, "threshold", 0.85))
+                cur_key = (
+                    str(getattr(cur_aj, "base_url", "") or "").rstrip("/"),
+                    str(getattr(cur_aj, "model", "") or ""),
+                    float(getattr(cur_aj, "threshold", 0.85)),
+                    float(getattr(cur_aj, "fuzzy_low", 0.60)),
+                    float(getattr(cur_aj, "timeout", 20.0)),
+                )
             except Exception:  # noqa: BLE001 —— 兼容假实例/测试替身
-                cur_th = None
-        if cur_aj is None or cur_th != new_th:
+                cur_key = None
+        if cur_aj is None or cur_key != new_key:
             forwarder.ad_judge = _build_ad_judge(new_cfg)
-            logger.info(f"AI 广告判别器已热重载重建（threshold={new_th}）")
+            logger.info(f"AI 广告判别器已热重载重建（threshold={new_key[2]}）")
     elif cur_aj is not None:
         forwarder.ad_judge = None
         logger.info("AI 广告判别器已热重载关闭（摘除）")

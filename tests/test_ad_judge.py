@@ -16,10 +16,17 @@ import os
 import sys
 from types import SimpleNamespace
 
+import pytest
+
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from main import _build_ad_judge, _reconcile_ai_features  # noqa: E402
-from tg_forwarder.config import AdJudgeConfig, RuntimeConfig  # noqa: E402
+from tg_forwarder.config import (  # noqa: E402
+    AdJudgeConfig,
+    RuntimeConfig,
+    load_runtime_config,
+)
+from tg_forwarder.storage.db import Database  # noqa: E402
 from tg_forwarder.core.ad_judge import (  # noqa: E402
     AD_THRESHOLD,
     FUZZY_LOW,
@@ -165,6 +172,22 @@ class TestAdJudgeVerdicts:
         assert set(q["criteria"]) == {"true", "false"}
 
 
+class TestAdJudgeConfigValidation:
+    """Codex nit：模糊区 [fuzzy_low, threshold) 必须非空（否则语义反转无告警）。"""
+
+    def test_fuzzy_low_gt_threshold_rejected(self):
+        with pytest.raises(ValueError, match="fuzzy_low"):
+            AdJudgeConfig(enabled=True, threshold=0.5, fuzzy_low=0.7)
+
+    def test_fuzzy_low_eq_threshold_ok(self):
+        """相等合法：模糊区退化为空集，但语义不反转。"""
+        cfg = AdJudgeConfig(enabled=True, threshold=0.7, fuzzy_low=0.7)
+        assert cfg.fuzzy_low == cfg.threshold
+
+    def test_defaults_valid(self):
+        assert AdJudgeConfig().fuzzy_low < AdJudgeConfig().threshold
+
+
 class TestBuildAdJudge:
     """main.py 装配：默认关不构造（现网零变化）、开启注入配置。"""
 
@@ -185,9 +208,9 @@ def _fwd():
     return SimpleNamespace(ad_judge=None)
 
 
-def _with_ad(enabled, threshold=0.85):
+def _with_ad(enabled, threshold=0.85, **fields):
     cfg = RuntimeConfig()
-    cfg.ad_judge = AdJudgeConfig(enabled=enabled, threshold=threshold)
+    cfg.ad_judge = AdJudgeConfig(enabled=enabled, threshold=threshold, **fields)
     return cfg
 
 
@@ -225,6 +248,69 @@ class TestReconcileAdJudge:
         f = _fwd()
         _reconcile_ai_features(f, RuntimeConfig())
         assert f.ad_judge is None
+
+    @pytest.mark.parametrize(
+        "field, value, attr",
+        [
+            ("base_url", "http://10.0.0.9:28880", "base_url"),
+            ("model", "jev-1.14", "model"),
+            ("fuzzy_low", 0.7, "fuzzy_low"),
+            ("timeout", 33.0, "timeout"),
+        ],
+    )
+    def test_other_field_change_rebuilds(self, field, value, attr):
+        """Codex minor：非 threshold 字段改动也必须经 /reload 生效。"""
+        f = _fwd()
+        _reconcile_ai_features(f, _with_ad(True))
+        old = f.ad_judge
+        _reconcile_ai_features(f, _with_ad(True, **{field: value}))
+        assert f.ad_judge is not old
+        assert getattr(f.ad_judge, attr) == value
+
+    def test_base_url_trailing_slash_not_a_change(self):
+        """归一化对齐 AdJudge.__init__ 的 rstrip('/')：不因等价写法抖动重建。"""
+        f = _fwd()
+        _reconcile_ai_features(f, _with_ad(True, base_url="http://100.64.0.2:28880"))
+        old = f.ad_judge
+        _reconcile_ai_features(f, _with_ad(True, base_url="http://100.64.0.2:28880/"))
+        assert f.ad_judge is old
+
+
+class TestReloadFromYaml:
+    """/reload 真实链路实测：改 yaml → load_runtime_config → _reconcile → 生效。
+
+    ad_judge 仅 yaml 配置（不经面板表），/reload 是唯一生效通道——改 base_url
+    后必须重建；旧实现只比 threshold，此处会静默沿用旧端点。
+    """
+
+    async def test_base_url_change_takes_effect_after_reload(self, tmp_path):
+        yaml_path = os.path.join(str(tmp_path), "config.yaml")
+        db = Database(os.path.join(str(tmp_path), "fwd.sqlite"))
+        await db.open()
+        await db.migrate()
+
+        def _write(url: str) -> None:
+            with open(yaml_path, "w", encoding="utf-8") as fh:
+                fh.write(f'ad_judge:\n  enabled: true\n  base_url: "{url}"\n')
+
+        f = _fwd()
+        try:
+            _write("http://127.0.0.1:1111")
+            _reconcile_ai_features(f, await load_runtime_config(db, yaml_path))
+            assert f.ad_judge.base_url == "http://127.0.0.1:1111"
+
+            same = f.ad_judge  # yaml 未变 → 不重建（保留实例状态）
+            _reconcile_ai_features(f, await load_runtime_config(db, yaml_path))
+            assert f.ad_judge is same
+
+            _write("http://127.0.0.1:2222")
+            _reconcile_ai_features(f, await load_runtime_config(db, yaml_path))
+            assert f.ad_judge is not same
+            assert f.ad_judge.base_url == "http://127.0.0.1:2222"
+        finally:
+            # 必须 finally：aiosqlite 连接线程非 daemon，断言失败时漏关会让
+            # pytest 退出时挂死（CI 从 fail 变 hang）。
+            await db.close()
 
 
 # ---------------------------------------------------------------------------

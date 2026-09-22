@@ -12,7 +12,7 @@ import os
 from typing import Any, Dict, List, Optional, Union
 
 import yaml
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
 
 from loguru import logger
 
@@ -214,6 +214,16 @@ class AdJudgeConfig(BaseModel):
         if v is not None and v <= 0:
             raise ValueError("timeout 必须为正数")
         return v
+
+    @model_validator(mode="after")
+    def check_fuzzy_range(self):
+        """模糊区 [fuzzy_low, threshold) 必须非空，否则语义反转（无告警的静默错判）。"""
+        if self.fuzzy_low > self.threshold:
+            raise ValueError(
+                f"fuzzy_low({self.fuzzy_low}) 不得大于 threshold({self.threshold})"
+                "——否则模糊区为空且语义反转"
+            )
+        return self
 
 
 class DeduplicationConfig(BaseModel):
