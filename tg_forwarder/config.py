@@ -180,6 +180,42 @@ class LinkExtractionConfig(BaseModel):
     check_bots: bool = True
 
 
+class AdJudgeConfig(BaseModel):
+    """AI 广告判别器（jev-1.13 System One 决策模型；默认关=现网行为零变化）。
+
+    - enabled：全局开关，默认关（不构造任何组件、零请求零日志）；
+    - base_url/model：System One 端点（默认本机 opencode-free 容器，无需 key）；
+    - threshold：广告判定阈值（得分 >= threshold 判广告，默认 0.85——避开
+      「附网盘链接」0.69 的边界误伤，实测硬广 0.98+、正常 0.03-0.07）；
+    - fuzzy_low：模糊区下界（[fuzzy_low, threshold) 判模糊返回 None → fail-open
+      放行，默认 0.60）；
+    - timeout：单次请求超时（秒）。
+
+    fail-open 铁律：判定/请求任何失败 → None → 调用方放行，绝不因 AI 不可用丢消息。
+    """
+
+    enabled: bool = False
+    base_url: str = "http://100.64.0.2:28880"
+    model: str = "jev-1.13"
+    threshold: float = 0.85
+    fuzzy_low: float = 0.60
+    timeout: float = 20.0
+
+    @field_validator("threshold", "fuzzy_low")
+    @classmethod
+    def check_threshold_range(cls, v):
+        if v is not None and not (0 < v <= 1):
+            raise ValueError("threshold/fuzzy_low 必须在 0~1 之间")
+        return v
+
+    @field_validator("timeout")
+    @classmethod
+    def check_positive(cls, v):
+        if v is not None and v <= 0:
+            raise ValueError("timeout 必须为正数")
+        return v
+
+
 class DeduplicationConfig(BaseModel):
     """跨源内容级去重（F1，默认全关=现网行为零变化）。
 
@@ -470,6 +506,8 @@ class RuntimeConfig(BaseModel):
     # F10：AI digest（默认关=现网行为零变化）
     digest: DigestConfig = Field(default_factory=DigestConfig)
     translate: TranslateConfig = Field(default_factory=TranslateConfig)
+    # AI 广告判别器（jev-1.13，默认关=现网行为零变化；仅 yaml 配置，不经 Web 面板）
+    ad_judge: AdJudgeConfig = Field(default_factory=AdJudgeConfig)
 
     # Web 可编辑（app_config 表权威）
     sources: List[SourceConfig] = Field(default_factory=list)
@@ -527,6 +565,8 @@ def bootstrap_from_yaml(path: str) -> RuntimeConfig:
         cfg.digest = DigestConfig(**data["digest"])
     if data.get("translate"):
         cfg.translate = TranslateConfig(**data["translate"])
+    if data.get("ad_judge"):
+        cfg.ad_judge = AdJudgeConfig(**data["ad_judge"])
 
     # 规则段（仅 bootstrap 时有意义；表已有数据时不会覆盖，见 load_runtime_config）
     if data.get("sources"):
@@ -640,6 +680,7 @@ async def load_runtime_config(db: Database, yaml_path: str) -> RuntimeConfig:
         delivery=yaml_cfg.delivery if yaml_cfg else DeliveryConfig(),
         digest=yaml_cfg.digest if yaml_cfg else DigestConfig(),
         translate=yaml_cfg.translate if yaml_cfg else TranslateConfig(),
+        ad_judge=yaml_cfg.ad_judge if yaml_cfg else AdJudgeConfig(),
     )
 
     settings_json = await config_repo.get("system_settings")

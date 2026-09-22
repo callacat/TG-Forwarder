@@ -43,6 +43,26 @@ def _build_semantic_engine(config):
     return SemanticDedup(engine=SemanticDedupEngine(threshold=threshold))
 
 
+def _build_ad_judge(config):
+    """AI 广告判别器（jev）装配：仅 ad_judge.enabled 时构造，否则 None。
+
+    与 _build_semantic_engine 同范式：main.py 唯一生产装配点。构造只持配置
+    不发请求（请求在首次 is_ad 时发生），默认关=现网零变化。
+    """
+    aj = getattr(config, "ad_judge", None)
+    if aj is None or not getattr(aj, "enabled", False):
+        return None
+    from tg_forwarder.core.ad_judge import AdJudge
+
+    return AdJudge(
+        base_url=aj.base_url,
+        model=aj.model,
+        threshold=float(getattr(aj, "threshold", 0.85) or 0.85),
+        fuzzy_low=float(getattr(aj, "fuzzy_low", 0.60) or 0.60),
+        timeout=float(getattr(aj, "timeout", 20.0) or 20.0),
+    )
+
+
 def _build_digest_pipeline(config, forwarder=None):
     """F10：按给定配置构建 AI digest 管线（默认关=不装配）。
 
@@ -99,6 +119,25 @@ def _reconcile_ai_features(forwarder, new_cfg) -> None:
     elif cur is not None:
         forwarder.semantic_engine = None
         logger.info("F12 语义去重已热重载关闭（引擎摘除）")
+
+    # --- AI 广告判别器（jev） ---
+    aj = getattr(new_cfg, "ad_judge", None)
+    want_aj = bool(aj and getattr(aj, "enabled", False))
+    cur_aj = getattr(forwarder, "ad_judge", None)
+    if want_aj:
+        new_th = float(getattr(aj, "threshold", 0.85) or 0.85)
+        cur_th = None
+        if cur_aj is not None:
+            try:
+                cur_th = float(getattr(cur_aj, "threshold", 0.85))
+            except Exception:  # noqa: BLE001 —— 兼容假实例/测试替身
+                cur_th = None
+        if cur_aj is None or cur_th != new_th:
+            forwarder.ad_judge = _build_ad_judge(new_cfg)
+            logger.info(f"AI 广告判别器已热重载重建（threshold={new_th}）")
+    elif cur_aj is not None:
+        forwarder.ad_judge = None
+        logger.info("AI 广告判别器已热重载关闭（摘除）")
 
     # --- F10 digest 管线 ---
     new_pipe = _build_digest_pipeline(new_cfg, forwarder)
@@ -252,9 +291,14 @@ async def cmd_run(db: Database, yaml_path: str) -> None:
         logger.info("F12 语义去重已接线，模型预热任务已启动（缺失/失败自动降级）。")
 
     # 3. 转发引擎（R8：快照原子替换）
-    forwarder = Forwarder(db, accounts, semantic_engine)
+    forwarder = Forwarder(db, accounts, semantic_engine, _build_ad_judge(config))
     forwarder.update_snapshot(config)
     forwarder.start_prune_task()  # P8：dedup TTL 清理
+    if forwarder.ad_judge is not None:
+        logger.info(
+            f"AI 广告判别器已接线: {config.ad_judge.base_url} / "
+            f"{config.ad_judge.model}, threshold={config.ad_judge.threshold}"
+        )
 
     # F10：AI digest 滚动窗口聚合（默认关=不装配，零影响现网）
     digest_pipeline = _build_digest_pipeline(config, forwarder)

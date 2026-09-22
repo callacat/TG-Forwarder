@@ -105,3 +105,17 @@ link_checker:
 #   endpoint: "http://100.64.0.2:8091/v1"
 #   api_key_env: "AXONHUB_API_KEY"
 #   model: "glm-5.3-flash"
+
+# AI 广告判别器（jev-1.13 System One 决策模型；默认关=现网行为零变化）。
+# 转发前判断消息是否广告，是则过滤（位置：should_filter 之后、去重之前）。
+# fail-open：jev 判定模糊/超时/异常 → None → 消息放行，绝不因 AI 不可用丢消息。
+# threshold=广告判定阈值（>= 判广告，默认 0.85；实测硬广 0.98+、正常 0.03-0.07、
+#   「附网盘链接」0.69 在模糊区）；fuzzy_low=模糊区下界（[fuzzy_low, threshold) 放行）。
+# 仅 yaml 配置（不经 Web 面板编辑）；改后经 /reload 或面板任意保存即热重载生效。
+# ad_judge:
+#   enabled: false
+#   base_url: "http://100.64.0.2:28880"   # 本机 opencode-free 容器（无需 key）
+#   model: "jev-1.13"
+#   threshold: 0.85
+#   fuzzy_low: 0.60
+#   timeout: 20

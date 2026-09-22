@@ -364,7 +364,13 @@ class Forwarder:
     _CATCHUP_INTERVAL_SECONDS = 300  # 兜底扫描周期（对齐 v2 IntervalTrigger 300s）
     _CATCHUP_LIMIT = 50          # 每源每轮上限（对齐 v2 50 条/次）
 
-    def __init__(self, db: Database, account_manager: Any, semantic_engine: Any = None):
+    def __init__(
+        self,
+        db: Database,
+        account_manager: Any,
+        semantic_engine: Any = None,
+        ad_judge: Any = None,
+    ) -> None:
         self.db = db
         self._am = account_manager
         self._snapshot = None
@@ -376,6 +382,9 @@ class Forwarder:
         # SemanticDedup，内部含 SemanticDedupEngine——勿注入裸 Engine，其
         # check_duplicate 签名为 (text, marker)，与下方三参调用不匹配）
         self.semantic_engine = semantic_engine
+        # AI 广告判别器（jev；默认 None=不启用；main.py 装配时注入 AdJudge，
+        # 构造不发请求。None=绝对零路径，现网默认配置下无任何相关日志/请求）
+        self.ad_judge = ad_judge
         # F10：AI digest 滚动窗口聚合（默认 None=不启用；main.py 装配时注入）
         self.digest_pipeline: Optional[Any] = None
         # M3 仪表盘数据源：进程启动时刻 + 消息处理统计（内存计数）
@@ -494,6 +503,23 @@ class Forwarder:
                 )
                 self._msg_stats["filtered"] += 1
                 return
+
+            # AI 广告判别（jev-1.13；默认关=不装配，绝对零路径）。
+            # 位置：should_filter 之后、去重之前（spec 契约）。verdict=True → 拦截；
+            # False → 放行；None（模糊/失败/异常）→ fail-open 放行，绝不丢消息。
+            # 不新建独立统计键：复用 filtered 计数（与既有过滤同路径）。
+            if self.ad_judge is not None:
+                try:
+                    ad_verdict = await self.ad_judge.is_ad(text)
+                except Exception as e:
+                    logger.warning(f"AI 广告判别失败（fail-open 放行）: {e}")
+                    ad_verdict = None
+                if ad_verdict is True:
+                    logger.info(
+                        f"消息 {message.id} 被 AI 广告过滤（jev 判定 is_ad=true）。"
+                    )
+                    self._msg_stats["filtered"] += 1
+                    return
 
             # 去重
             if snapshot.deduplication.enable:
