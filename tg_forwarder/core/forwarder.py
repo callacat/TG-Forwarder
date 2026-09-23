@@ -364,6 +364,8 @@ class Forwarder:
     _CATCHUP_INTERVAL_SECONDS = 300  # 兜底扫描周期（对齐 v2 IntervalTrigger 300s）
     _CATCHUP_LIMIT = 50          # 每源每轮上限（对齐 v2 50 条/次）
     _CATCHUP_HOLE_WINDOW = 50    # 空洞对账窗口：progress 前 50 条（事件间隙漏收+被后续消息推过 progress 的漏网）
+    _CATCHUP_HOLE_MAX_AGE = 6 * 3600  # 空洞段年龄闸：超 6h 不补。事件间隙是分钟级；按 id 50 条对低频源
+                                       # 会跨数月，撞上 dedup TTL 已清 + LRU 重启清零 → 历史倒灌（rc.9 实锤）
 
     def __init__(
         self,
@@ -1134,11 +1136,15 @@ class Forwarder:
         # finally set_progress 受 db 单调保护，不回拉水位。age_cutoff 现网未启用，此段不走 F4。
         hole_min = last - self._CATCHUP_HOLE_WINDOW
         if hole_min > 0:
+            age_cutoff = time.time() - self._CATCHUP_HOLE_MAX_AGE
             before = self._msg_stats["processed"]
             async for m in client.iter_messages(
                 chat_id, min_id=hole_min, max_id=last,
                 limit=self._CATCHUP_HOLE_WINDOW, reverse=True,
             ):
+                m_date = getattr(m, "date", None)
+                if m_date is not None and m_date.timestamp() < age_cutoff:
+                    continue  # 超 6h=历史（间隙漏收是分钟级），跳过防倒灌（dup hash TTL 外兜不住）
                 await self.process_message(m)
             delta = self._msg_stats["processed"] - before
             if delta:

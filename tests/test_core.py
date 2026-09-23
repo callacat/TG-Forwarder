@@ -746,12 +746,13 @@ _CHAT = -100555
 
 
 class _Msg:
-    def __init__(self, id, chat_id=_CHAT, text="", media=None, grouped_id=None):
+    def __init__(self, id, chat_id=_CHAT, text="", media=None, grouped_id=None, date=None):
         self.id = id
         self.chat_id = chat_id
         self.text = text
         self.media = media
         self.grouped_id = grouped_id
+        self.date = date  # datetime（可选）：空洞段年龄闸测试用；None=不过闸（fail-open）
 
 
 class _CatchupClient:
@@ -982,6 +983,28 @@ class TestCatchup:
         fwd.process_message = spy
         await fwd.catchup_once(limit=50)
         assert calls == list(range(31, 41))  # 只补增量；1..29 历史未被空洞段倒灌
+        await db.close()
+
+    async def test_hole_age_gate_skips_old_messages(self, tmp_path):
+        """年龄闸（rc.9 事故修复）：空洞段超 6h 的历史消息不补，近的照常补。"""
+        import datetime as dt
+        now = dt.datetime.now(dt.timezone.utc)
+        old = now - dt.timedelta(hours=7)   # 超 6h → 跳过
+        fresh = now - dt.timedelta(minutes=5)  # 6h 内 → 照常补
+        client = _CatchupClient([
+            _Msg(60, text="old60", date=old),
+            _Msg(61, text="fresh61", date=fresh),
+            _Msg(120, text="head120", date=now),
+        ])
+        fwd, db = await _make_fwd(tmp_path, _catchup_snap(forward_new_only=False), client)
+        await db.set_progress(_CHAT, 100)  # 窗口 (50,100) 含 60/61；100-50=50>0 启用
+        calls = []
+        async def spy(m, all_messages_in_group=None):
+            calls.append(m.id)
+        fwd.process_message = spy
+        await fwd.catchup_once(limit=50)
+        assert 60 not in calls, "超 6h 历史消息不应进空洞段"
+        assert 61 in calls, "6h 内的漏收消息应被补收"
         await db.close()
 
 
