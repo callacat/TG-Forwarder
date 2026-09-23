@@ -213,6 +213,20 @@ async def _resolve_targets_on_reload(forwarder, accounts, prev_snapshot=None) ->
             logger.warning(f"规则 '{rule.name}' 目标重解析无结果，沿用上次解析值 {last}。")
 
 
+async def _apply_hot_reload(forwarder, accounts, new_cfg) -> None:
+    """热重载落盘后的统一动作（cmd_run 回调与测试共用同一条路径）。
+
+    顺序契约：换快照 → 同步 Web 规则库 → 重建实验功能组件 → 重解析目标。
+    测试直接覆盖本函数，确保「回调调没调」这一接线点不会静默丢失
+    （rc.6 事故正是接线缺失，非算法错误）。
+    """
+    prev_snap = forwarder.get_snapshot()  # 降级来源：必须在替换前取
+    forwarder.update_snapshot(new_cfg)
+    _sync_web_rules_db(new_cfg)
+    _reconcile_ai_features(forwarder, new_cfg)
+    await _resolve_targets_on_reload(forwarder, accounts, prev_snap)
+
+
 def _sync_web_rules_db(cfg) -> None:
     """把 RuntimeConfig 的 Web 可编辑段同步进 web 层内存 rules_db。"""
     from tg_forwarder.web import server as web_server
@@ -384,11 +398,7 @@ async def cmd_run(db: Database, yaml_path: str) -> None:
     async def update_settings_cb() -> None:
         try:
             new_cfg = await load_runtime_config(db, yaml_path)
-            prev_snap = forwarder.get_snapshot()  # 降级来源：必须在替换前取
-            forwarder.update_snapshot(new_cfg)
-            _sync_web_rules_db(new_cfg)
-            _reconcile_ai_features(forwarder, new_cfg)
-            await _resolve_targets_on_reload(forwarder, accounts, prev_snap)
+            await _apply_hot_reload(forwarder, accounts, new_cfg)
             logger.info("♻️ Web 配置变更已热重载（快照 + 实验功能组件重建 + 目标重解析）。")
         except Exception as e:
             logger.error(f"热重载失败: {e}")

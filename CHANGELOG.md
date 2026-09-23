@@ -13,6 +13,7 @@
 ### Fixed
 
 - **热重载后规则目标丢失（rc.6 回归，现网 2026-09-23 面板保存致转发全停）**：面板保存/规则写操作触发的热重载只整体替换配置快照，`config.snapshot()` 返回的新规则对象 `resolved_target_id` 默认为 None，而重解析目标的 `resolve_targets` 原先只在启动路径调用 → `find_target` 命中规则仍返回 `(None, ...)` → 「无有效目标」丢弃全部消息（现网 08:33/08:35 两次面板保存后丢 9 条）。修复：热重载链路补调 `resolve_targets(healthy[0])` 重解析默认目标与全部分发规则；无健康账号或解析失败时按 `target_identifier` 沿用上一份快照的解析值并告警（标识符改过的规则不沿用），不因一次重载清空可用目标。
+- **热重载链路接线回归测试（rc.7 补强）**：rc.7 的用例只覆盖辅助函数 `_resolve_targets_on_reload`，未覆盖「回调实际调用它」这一接线点——而 rc.6 事故正是接线缺失。现将热重载落盘后动作抽为模块级 `_apply_hot_reload(forwarder, accounts, new_cfg)`（`update_settings_cb` 与 `/reload` 共用），测试直接打真实链路；故障注入验证：移除重解析调用后接线用例必红（2 failed），恢复即 373 passed。
 - **ad_judge 热重载字段覆盖**：`/reload` 现按 `(base_url, model, threshold, fuzzy_low, timeout)` 全字段变化重建判别器；原先只比 `threshold`，改端点/模型/模糊下界/超时后不重建、静默沿用旧配置（当时 ad_judge 只能由 yaml 段配置，`/reload` 是唯一生效通道；F13 面板入口上线后，yaml 与面板两条路径均可触发热重载，且都走同一套全字段重建逻辑）。
 
 ## [v3.0.0-rc.1] - 2026-09-20

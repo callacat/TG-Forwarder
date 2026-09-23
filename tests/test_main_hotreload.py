@@ -7,9 +7,9 @@
 - F10 digest 管线：开启装配 / 关闭摘除 / 无变化保留（不丢滚动窗口缓冲）；
 - 两者默认关闭时保持不装配（现网行为零变化）。
 
-二、目标重解析（rc.6 回归根治）——覆盖 `_resolve_targets_on_reload`：
-- 热重载换新规则对象（resolved_target_id=None）后重解析，验收 1；
-- 热重载后新消息命中规则可正常转发，验收 2；
+二、目标重解析（rc.6 回归根治）——覆盖 `_apply_hot_reload` 与 `_resolve_targets_on_reload`：
+- ★接线回归：真实热重载链路必须重解析目标（rc.6 事故即接线缺失），验收 1；
+- 连续两次保存不清空目标、热重载后新消息命中规则可正常转发，验收 2；
 - 无健康账号 / 解析失败时降级沿用上次解析值；标识符变了不沿用。
 """
 import os
@@ -18,7 +18,11 @@ from types import SimpleNamespace
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from main import _reconcile_ai_features, _resolve_targets_on_reload  # noqa: E402
+from main import (  # noqa: E402
+    _apply_hot_reload,
+    _reconcile_ai_features,
+    _resolve_targets_on_reload,
+)
 from tg_forwarder.config import (  # noqa: E402
     AdFilterConfig,
     ContentFilterConfig,
@@ -187,6 +191,42 @@ def _new_fwd(clients, db=None):
 
 
 class TestReloadTargetResolution:
+    async def test_apply_hot_reload_wires_resolution(self):
+        """★接线回归：真实热重载链路 `_apply_hot_reload` 必须重解析目标。
+
+        rc.6 事故是回调漏调 resolve_targets（接线缺失），故这里打真实链路而非
+        辅助函数——若有人删掉 _apply_hot_reload 里的重解析调用，本用例必红。
+        """
+        client = _ResolveClient({"-100111": -100111})
+        fwd = _new_fwd([client])
+
+        cfg = RuntimeConfig()
+        cfg.distribution_rules = [_rule("r1", "电影", "-100111")]
+        cfg.settings.default_target = "-100111"
+        await _apply_hot_reload(fwd, fwd._am, cfg)
+
+        snap = fwd.get_snapshot()
+        assert snap.distribution_rules[0].resolved_target_id == -100111
+        assert snap.targets_resolved_default == -100111
+
+    async def test_apply_hot_reload_second_save_keeps_targets(self):
+        """连续两次保存（模拟现网 08:33/08:35）：第二次也不得把目标清空。"""
+        client = _ResolveClient({"-100111": -100111})
+        fwd = _new_fwd([client])
+
+        first = RuntimeConfig()
+        first.distribution_rules = [_rule("r1", "电影", "-100111")]
+        first.settings.default_target = "-100111"
+        await _apply_hot_reload(fwd, fwd._am, first)
+        assert fwd.get_snapshot().distribution_rules[0].resolved_target_id == -100111
+
+        second = RuntimeConfig()  # 全新对象，规则 resolved_target_id=None
+        second.distribution_rules = [_rule("r1", "电影", "-100111")]
+        second.settings.default_target = "-100111"
+        await _apply_hot_reload(fwd, fwd._am, second)
+        assert fwd.get_snapshot().distribution_rules[0].resolved_target_id == -100111
+        assert fwd.get_snapshot().targets_resolved_default == -100111
+
     async def test_reload_reresolves_all_rule_targets(self):
         """验收 1：面板保存换新规则对象后重解析 → resolved_target_id 全有值。"""
         client = _ResolveClient({"-100111": -100111, "chan2": -100222})
