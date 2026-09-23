@@ -4,6 +4,18 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- **空洞对账历史倒灌（rc.9 事故止血，rc.10）**：rc.9 的 catchup 空洞段按「progress 前 50 条 id」开窗，对低频源 50 条 = 数月跨度，叠加 LRU 重启清零 + dedup hash TTL 已清 → 三层防线同时失效，现网 2026-09-23 23:33-23:37 向目标群重发 254 条历史（东哥实锤）。修复：空洞段加 `_CATCHUP_HOLE_MAX_AGE=6h` 年龄闸——事件间隙漏收是分钟级，超 6h 一律不补。rc.10 上线首轮 catchup 验证：「命中分发规则」=0、重复拦 40，零倒灌（对照 rc.9 同期命中 185）。
+
+## [v3.0.0-rc.9] - 2026-09-23
+
+### Added
+
+- **catchup 源 id 空洞对账（C 方案）**：根治「事件间隙漏收 + 后续消息推过 progress → 永久跳过」（实锤 QTFXS0/3119）。`_catchup_source` 增量段前反扫 `[progress-50, progress]` 窗口，交 `process_message` 由 LRU 分辨已处理/空洞补处理；`set_progress` 单调不倒退（防空洞 finally 回拉水位）；`_CATCHUP_LRU_SIZE 200→2000`（15 源×50 窗口全量覆盖防互挤）。测试：空洞补收/单调保护/短源守卫 3 例。
+
+## [Unreleased-历史]
+
 ### Added
 
 - **AI 广告判别器（jev-1.13）**：转发前用 System One 决策模型判断广告并过滤（默认关=现网行为零变化）。位置在 `should_filter` 之后、去重之前；`verdict=True` 拦截、`False` 放行、`None`（模糊区 0.60-0.85 / 超时 / 异常）fail-open 放行。配置入口：yaml `ad_judge:` 段或 Web 面板「AI 判别」tab，两者均即时热重载生效。
