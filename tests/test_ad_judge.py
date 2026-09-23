@@ -171,6 +171,16 @@ class TestAdJudgeVerdicts:
         assert q["type"] == "noul"
         assert set(q["criteria"]) == {"true", "false"}
 
+    def test_criteria_anchors_commercial_not_promotion(self, monkeypatch):
+        """判据契约：锚定「商业广告/引流」，资源分享≠广告（防回归旧措辞误杀）。"""
+        fake = _patch_httpx(monkeypatch, _noul_resp(0.5))
+        asyncio.run(_judge().is_ad("测试消息"))
+        q = fake.calls[0]["json"]["questions"]["is_ad"]
+        assert "商业广告" in q["instructions"]
+        assert "资源" in q["instructions"]  # 旧措辞无此限定，会把资源分享判 0.96
+        assert "商业广告" in q["criteria"]["true"]
+        assert "资源分享" in q["criteria"]["false"]
+
 
 class TestAdJudgeConfigValidation:
     """Codex nit：模糊区 [fuzzy_low, threshold) 必须非空（否则语义反转无告警）。"""

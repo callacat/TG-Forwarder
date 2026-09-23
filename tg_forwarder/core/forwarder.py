@@ -516,7 +516,8 @@ class Forwarder:
                     ad_verdict = None
                 if ad_verdict is True:
                     logger.info(
-                        f"消息 {message.id} 被 AI 广告过滤（jev 判定 is_ad=true）。"
+                        f"消息 {numeric_chat_id}/{message.id} 被 AI 广告过滤"
+                        f"（jev 判定 is_ad=true），文本: {text[:80]!r}"
                     )
                     self._msg_stats["filtered"] += 1
                     return

@@ -6,6 +6,8 @@
 - questions.is_ad = {type: "noul", instructions, criteria: {true/false}}；
 - 响应 answers.is_ad = {type: "noul", noul: <0~1 广告概率>}。
 - 实测：硬广 0.98-0.99、正常内容 0.02-0.07、「附网盘链接」0.68（模糊区）。
+- 09-23 判据重标（见 _INSTRUCTIONS）：旧措辞把资源分享误杀（0.96），新措辞
+  实测：资源分享 0.23-0.38 放行、卖号硬广 0.98 拦、群推广 0.86 拦、闲聊 0.14 放行。
 
 fail-open 铁律：判定 None（模糊/失败/超时/异常）→ 调用方放行，
 绝不因 AI 不可用丢消息。与 F11 翻译/F12 语义去重同类：默认关不装配，开启后
@@ -25,6 +27,18 @@ DEFAULT_MODEL = "jev-1.13"
 # [FUZZY_LOW, AD_THRESHOLD) 为模糊区 → None（fail-open 放行）。
 AD_THRESHOLD = 0.85
 FUZZY_LOW = 0.60
+
+# 判据措辞（09-23 实测标定）：旧措辞「这条消息是广告/推广内容吗？」会把
+# 资源分享消息（软件/工具/App 推荐含下载链接）判成「推广」误杀（0.96）。
+# 新措辞锚定「商业广告/引流牟利」，资源分享 0.96→0.23，真广告 0.98/群推广 0.86 仍拦。
+_INSTRUCTIONS = (
+    "这条消息是否为与本频道内容无关的商业广告或引流推广"
+    "（如卖号/接单/招代理/群推广/付费服务推销）？"
+    "注意：频道内正常分享软件、工具、App、破解版资源（含下载链接）"
+    "属于内容本身，不算广告。"
+)
+_CRITERIA_TRUE = "是商业广告/引流推广"
+_CRITERIA_FALSE = "是正常内容分享（软件/工具/资源分享不算广告）"
 
 # state 前缀：把消息文本接在后面作为待判内容（与实测同构，保持标定一致）
 _STATE_PREFIX = "判断下面消息是否广告："
@@ -70,6 +84,8 @@ class AdJudge:
             return None
         if score is None:
             return None
+        # 分数落日志（观测核心）：过滤与否都留痕，误杀/漏杀排查有据可查
+        logger.info(f"AI 广告判别得分 {score:.2f}（阈值 {self.threshold}）。")
         if score >= self.threshold:
             return True
         if score < self.fuzzy_low:
@@ -87,8 +103,11 @@ class AdJudge:
             "questions": {
                 "is_ad": {
                     "type": "noul",
-                    "instructions": "这条消息是广告/推广内容吗？",
-                    "criteria": {"true": "是广告/推广", "false": "不是广告/推广"},
+                    "instructions": _INSTRUCTIONS,
+                    "criteria": {
+                        "true": _CRITERIA_TRUE,
+                        "false": _CRITERIA_FALSE,
+                    },
                 }
             },
         }
