@@ -169,6 +169,50 @@ def _reconcile_ai_features(forwarder, new_cfg) -> None:
         logger.info("F10 AI digest 已热重载关闭（管线摘除）")
 
 
+async def _resolve_targets_on_reload(forwarder, accounts, prev_snapshot=None) -> None:
+    """热重载后重解析目标 ID（rc.6 回归根治：面板保存不得把可用目标清空）。
+
+    背景（现网 2026-09-23 rc.6 事故）：update_snapshot 整体替换快照，
+    ``config.snapshot()`` 返回的新规则对象 ``resolved_target_id`` 默认为 None；
+    ``resolve_targets`` 原先只在 cmd_run 启动路径调用 → 面板保存/规则写操作
+    触发热重载后，find_target 命中规则返回 None → 「无有效目标」丢弃全部消息。
+
+    调用契约：必须在 ``update_snapshot(new_cfg)`` **之后**调用（resolve_targets
+    写入的是当前快照），``prev_snapshot`` 为替换前的旧快照（降级来源，需在
+    update_snapshot 前取好，否则拿到的就是新快照）。
+
+    降级（不吞错）：无健康账号则跳过重解析；重解析未给出结果的目标按
+    ``target_identifier`` 沿用上一份快照的解析值（警告留痕），不因一次
+    失败的重载清空可用目标；标识符变了的规则不沿用（避免张冠李戴）。
+    """
+    prev_default = getattr(prev_snapshot, "targets_resolved_default", None)
+    prev_rules = {
+        str(r.target_identifier): r.resolved_target_id
+        for r in (getattr(prev_snapshot, "distribution_rules", None) or [])
+        if r.resolved_target_id is not None
+    }
+
+    healthy = accounts.healthy_accounts()
+    if healthy:
+        await forwarder.resolve_targets(healthy[0])
+    else:
+        logger.warning("热重载时无健康账号，跳过目标重解析，沿用上次解析值。")
+
+    cur = forwarder.get_snapshot()
+    if cur is None:
+        return
+    if cur.targets_resolved_default is None and prev_default is not None:
+        cur.targets_resolved_default = prev_default
+        logger.warning(f"默认目标重解析无结果，沿用上次解析值 {prev_default}。")
+    for rule in cur.distribution_rules:
+        if rule.resolved_target_id is not None:
+            continue
+        last = prev_rules.get(str(rule.target_identifier))
+        if last is not None:
+            rule.resolved_target_id = last
+            logger.warning(f"规则 '{rule.name}' 目标重解析无结果，沿用上次解析值 {last}。")
+
+
 def _sync_web_rules_db(cfg) -> None:
     """把 RuntimeConfig 的 Web 可编辑段同步进 web 层内存 rules_db。"""
     from tg_forwarder.web import server as web_server
@@ -335,13 +379,17 @@ async def cmd_run(db: Database, yaml_path: str) -> None:
 
     # R8 热重载回调：Web 改配置落表成功后 → 重建配置 → 整体替换快照
     # → 重建 F10/F12 装配期一次性组件（Codex major：原只换快照，面板开关/阈值修改需重启才生效）
+    # → 重解析目标 ID（rc.6 回归根治：新规则对象 resolved_target_id 默认 None，
+    #   不重解析则 find_target 命中规则也返回 None → 「无有效目标」转发全停）
     async def update_settings_cb() -> None:
         try:
             new_cfg = await load_runtime_config(db, yaml_path)
+            prev_snap = forwarder.get_snapshot()  # 降级来源：必须在替换前取
             forwarder.update_snapshot(new_cfg)
             _sync_web_rules_db(new_cfg)
             _reconcile_ai_features(forwarder, new_cfg)
-            logger.info("♻️ Web 配置变更已热重载（快照 + 实验功能组件重建）。")
+            await _resolve_targets_on_reload(forwarder, accounts, prev_snap)
+            logger.info("♻️ Web 配置变更已热重载（快照 + 实验功能组件重建 + 目标重解析）。")
         except Exception as e:
             logger.error(f"热重载失败: {e}")
             raise
