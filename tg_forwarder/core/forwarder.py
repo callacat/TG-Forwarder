@@ -360,9 +360,10 @@ class Forwarder:
       progress 门控（min_id=last）为主、LRU + dedup hash 为兜底。
     """
 
-    _CATCHUP_LRU_SIZE = 200      # 近期已处理消息 chat/msg 记录上限
+    _CATCHUP_LRU_SIZE = 2000     # 近期已处理消息 chat/msg 记录上限（空洞对账窗口 15源×50 需全量覆盖，防互挤）
     _CATCHUP_INTERVAL_SECONDS = 300  # 兜底扫描周期（对齐 v2 IntervalTrigger 300s）
     _CATCHUP_LIMIT = 50          # 每源每轮上限（对齐 v2 50 条/次）
+    _CATCHUP_HOLE_WINDOW = 50    # 空洞对账窗口：progress 前 50 条（事件间隙漏收+被后续消息推过 progress 的漏网）
 
     def __init__(
         self,
@@ -1126,6 +1127,24 @@ class Forwarder:
                     f"（forward_new_only，不倒灌历史）"
                 )
             return 0
+
+        # C方案空洞对账：progress 前 _CATCHUP_HOLE_WINDOW 条窗口反扫，捞「事件间隙
+        # 漏收且被后续消息推过 progress」的永久空洞（实锤 QTFXS0/3119）。交
+        # process_message 后其内部 _seen_recently LRU 自动分辨：已处理→跳过，空洞→补处理；
+        # finally set_progress 受 db 单调保护，不回拉水位。age_cutoff 现网未启用，此段不走 F4。
+        hole_min = last - self._CATCHUP_HOLE_WINDOW
+        if hole_min > 0:
+            before = self._msg_stats["processed"]
+            async for m in client.iter_messages(
+                chat_id, min_id=hole_min, max_id=last,
+                limit=self._CATCHUP_HOLE_WINDOW, reverse=True,
+            ):
+                await self.process_message(m)
+            delta = self._msg_stats["processed"] - before
+            if delta:
+                logger.info(
+                    f"🧩 空洞对账：源 {chat_id} 窗口 [{hole_min},{last}] 进管线 {delta} 条（漏收补处理）"
+                )
 
         # 增量：reverse=True 升序（oldest-first），保证 progress 连续推进
         batch: List[Message] = []

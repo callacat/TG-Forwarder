@@ -765,8 +765,12 @@ class _CatchupClient:
     def is_connected(self):
         return True
 
-    def iter_messages(self, chat_id, min_id=0, limit=None, reverse=False):
-        msgs = [m for m in self._all if m.chat_id == chat_id and m.id > min_id]
+    def iter_messages(self, chat_id, min_id=0, limit=None, reverse=False, max_id=0):
+        msgs = [
+            m for m in self._all
+            if m.chat_id == chat_id and m.id > min_id
+            and (not max_id or m.id < max_id)  # 镜像 telethon max_id 开区间（空洞对账窗口右界）
+        ]
         # telethon 默认 newest-first；reverse=True → oldest-first
         msgs.sort(key=lambda m: m.id, reverse=not reverse)
         if limit is not None:
@@ -925,6 +929,59 @@ class TestCatchup:
         await fwd.process_message(m11)  # 首次
         await fwd.process_message(m11)  # 竞态重复 → LRU 跳过
         assert sent == ["hello11"]
+        await db.close()
+
+    async def test_hole_window_recovers_missed_message(self, tmp_path):
+        """C方案核心：事件间隙漏收且被推过 progress 的空洞，被空洞对账补收（实锤 QTFXS0/3119 场景）。"""
+        # 消息 60..101；事件路径只送达 61..100（60 在间隙里漏收），progress 被推到 100
+        client = _CatchupClient([_Msg(i, text=f"hello{i}") for i in range(60, 102)])
+        fwd, db = await _make_fwd(tmp_path, _catchup_snap(forward_new_only=False), client)
+        sent = []
+        async def stub_send(original, text, target_id, topic_id, snap):
+            sent.append(text)
+        fwd._send_message = stub_send
+        for i in range(61, 101):
+            await fwd.process_message(_Msg(i, text=f"hello{i}"))
+        assert await db.get_progress(_CHAT) == 100
+        assert 60 not in [int(t.split("hello")[1]) for t in sent]  # 60 确实漏了
+        # catchup：空洞段 (50,100) 捞 60（LRU 无 → 补），增量段补 101
+        await fwd.catchup_once(limit=50)
+        assert "hello60" in sent          # 空洞补收
+        assert "hello101" in sent         # 增量照常
+        assert sent.count("hello60") == 1
+        # 已处理的 61..99 不因空洞段重发
+        for i in range(61, 100):
+            assert sent.count(f"hello{i}") == 1, f"{i} 双发"
+        assert await db.get_progress(_CHAT) == 101  # 单调推进，不被空洞 60 回拉
+        await db.close()
+
+    async def test_set_progress_no_regression(self, tmp_path):
+        """set_progress 单调不倒退：空洞消息 finally 写入不得回拉水位。"""
+        import os
+        from tg_forwarder.storage.db import Database
+        db = Database(os.path.join(str(tmp_path), "mono.sqlite"))
+        await db.open()
+        await db.migrate()
+        await db.set_progress(7, 100)
+        await db.set_progress(7, 60)   # 空洞回写 → 应被忽略
+        assert await db.get_progress(7) == 100
+        await db.set_progress(7, 150)  # 正常前进 → 应生效
+        assert await db.get_progress(7) == 150
+        await db.set_progress(8, 5)    # 新 channel 正常写入
+        assert await db.get_progress(8) == 5
+        await db.close()
+
+    async def test_hole_skipped_when_progress_small(self, tmp_path):
+        """守卫：progress ≤ 窗口时跳过空洞段，历史不倒灌（min_id 不为负）。"""
+        client = _CatchupClient([_Msg(i, text=f"m{i}") for i in range(1, 41)])
+        fwd, db = await _make_fwd(tmp_path, _catchup_snap(forward_new_only=False), client)
+        await db.set_progress(_CHAT, 30)  # 30 - 50 < 0 → 空洞段跳过
+        calls = []
+        async def spy(m, all_messages_in_group=None):
+            calls.append(m.id)
+        fwd.process_message = spy
+        await fwd.catchup_once(limit=50)
+        assert calls == list(range(31, 41))  # 只补增量；1..29 历史未被空洞段倒灌
         await db.close()
 
 

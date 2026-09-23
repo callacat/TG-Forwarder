@@ -406,6 +406,14 @@ class Database:
 
     async def set_progress(self, channel_id: int, message_id: int) -> None:
         try:
+            # 单调不倒退：空洞对账消息 id < progress，finally 无条件写入不得回拉水位
+            cur = await self._require_conn().execute(
+                "SELECT message_id FROM forward_progress WHERE channel_id = ?",
+                (channel_id,),
+            )
+            row = await cur.fetchone()
+            if row is not None and int(row[0]) >= message_id:
+                return
             await self._require_conn().execute(
                 "INSERT OR REPLACE INTO forward_progress (channel_id, message_id) "
                 "VALUES (?, ?)",
