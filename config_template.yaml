@@ -95,15 +95,19 @@ link_checker:
 # F11 AI 翻译（默认关=现网行为零变化；经 yaml bootstrap 配置）
 # 字段说明：sources=要翻译的监控源 resolved_id 列表（留空=不翻译任何源）；
 # endpoint/model=OpenAI 兼容端点（默认 axonhub glm-5.3-flash，免费）；
-# api_key_env=从环境变量读取 API key（未配置时翻译静默跳过、原文放行）。
+# api_key=**直填 Bearer 密钥（首选）**，写在本文件——它被 .gitignore 忽略：
+#   不进 git 仓库、不进面板 sqlite、不会出现在 /api/settings 响应里。
+#   留空/不写(None)才回退读 api_key_env 环境变量；显式填 "" = 明确禁用鉴权。
+# api_key_env=api_key 为空时要读的环境变量名（备选通道；容器重建需重新 -e 注入）。
 # 翻译失败/端点不可用一律原文放行，绝不丢消息；结果有缓存避免重复计费。
 # 也可在 Web 面板「实验功能」里开关翻译并维护源列表（settings.translate_sources
-# 落表后覆盖本段 sources；未存过则回落 yaml 实际值）。
+# 落表后覆盖本段 sources；未存过则回落 yaml 实际值）。**面板不提供 key 输入**。
 # translate:
 #   enabled: false
 #   sources: []                    # 例: [-1001234567890, "https://t.me/xxx"]
 #   endpoint: "http://100.64.0.2:8091/v1"
-#   api_key_env: "AXONHUB_API_KEY"
+#   api_key: ""                    # 首选：直填 key（照抄留 "" = 不带鉴权，下面的 api_key_env 会被忽略！）
+#   api_key_env: "AXONHUB_API_KEY" # 备选：api_key 留空时读这个环境变量
 #   model: "glm-5.3-flash"
 
 # AI 广告判别器（jev-1.13 System One 决策模型；默认关=现网行为零变化）。
@@ -134,7 +138,9 @@ link_checker:
 # ai_content:
 #   enabled: false
 #   base_url: "http://100.64.0.2:8091/v1" # OpenAI 兼容基址，程序自动拼 /chat/completions
-#   api_key_env: "AXONHUB_API_KEY"         # 从 OS 环境变量读；为空则本功能静默降级
+#   api_key: ""                          # 首选：直填 Bearer 密钥（不进仓库/不进面板/不被 GET 回读）
+#                                        #   照抄留 "" = 不带鉴权，下面的 api_key_env 会被忽略！
+#   api_key_env: "AXONHUB_API_KEY"       # 备选：api_key 留空时读这个环境变量；再空则静默降级
 #   model: "glm-5.3-flash"
 #   threshold: 0.85                        # confidence >= 此值才拦截，低于即放行
 #   clean_enabled: true                    # 是否采用模型返回的清洗正文

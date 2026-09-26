@@ -326,6 +326,8 @@ def build_ai_content(ai_cfg: Any) -> Optional[AiContentProcessor]:
         return AiContentProcessor(
             base_url=getattr(ai_cfg, "base_url", DEFAULT_BASE_URL),
             model=getattr(ai_cfg, "model", DEFAULT_MODEL),
+            # 优先 config.yaml 直填的 api_key；为 None 时才回退读 api_key_env 环境变量
+            api_key=getattr(ai_cfg, "api_key", None),
             api_key_env=getattr(ai_cfg, "api_key_env", DEFAULT_API_KEY_ENV),
             threshold=float(getattr(ai_cfg, "threshold", AD_THRESHOLD) or AD_THRESHOLD),
             clean_enabled=bool(getattr(ai_cfg, "clean_enabled", True)),

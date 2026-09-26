@@ -448,6 +448,61 @@ class TestBuild:
         assert p.applies_to(-1001) is True
 
 
+class TestApiKeyChannel:
+    """取 key 通道：config.yaml 直填 `api_key` 优先，`api_key_env` 环境变量是备选。
+
+    背景：F14 此前只有 env 一条通道，而现网容器没有 `AXONHUB_API_KEY`
+    （实测 axonhub `/v1/models` 不带 key 返回 401）→ 功能开了也静默失败。
+    """
+
+    def test_config_accepts_api_key(self):
+        assert AiContentConfig(enabled=True, api_key="sk-live-x").api_key == "sk-live-x"
+        assert AiContentConfig().api_key is None
+
+    def test_api_key_never_enters_panel_mirror(self):
+        """安全约束：api_key 不得进 SystemSettings —— 否则会落面板 sqlite 并被 GET 回读。"""
+        from tg_forwarder.config import _AI_CONTENT_MIRROR_KEYS, SystemSettings
+
+        assert not any(k.endswith("api_key") for k in _AI_CONTENT_MIRROR_KEYS)
+        assert not hasattr(SystemSettings(), "ai_content_api_key")
+
+    @pytest.mark.parametrize(
+        "yaml_key,expect",
+        [
+            ("from-yaml", "from-yaml"),  # yaml 直填优先于环境变量
+            (None, "from-env"),  # 不填 → 回退环境变量
+            ("", ""),  # 显式空串 = 明确禁用鉴权，不回填 env
+        ],
+    )
+    def test_key_precedence(self, monkeypatch, yaml_key, expect):
+        monkeypatch.setenv("AXONHUB_API_KEY", "from-env")
+        cfg = RuntimeConfig()
+        cfg.ai_content = AiContentConfig(enabled=True, api_key=yaml_key)
+        p = _build_ai_content(cfg)
+        assert p is not None
+        assert p._api_key == expect
+
+    def test_builder_uses_yaml_key_without_env(self, monkeypatch):
+        """没有环境变量、只有 yaml key 时也能用——这是 config.yaml 通道的核心价值。"""
+        monkeypatch.delenv("AXONHUB_API_KEY", raising=False)
+        cfg = RuntimeConfig()
+        cfg.ai_content = AiContentConfig(enabled=True, api_key="sk-only-yaml")
+        assert _build_ai_content(cfg)._api_key == "sk-only-yaml"
+
+    def test_yaml_parse_preserves_api_key(self, tmp_path):
+        """yaml 读写链路不丢 key：load_runtime_config → build 全程可见。"""
+        from tg_forwarder.config import bootstrap_from_yaml
+
+        yp = os.path.join(str(tmp_path), "c.yaml")
+        with open(yp, "w", encoding="utf-8") as fh:
+            fh.write('web_ui:\n  password: "sha256$ab"\nlogging_level:\n'
+                     '  app: "INFO"\naccounts: []\n'
+                     'ai_content:\n  enabled: true\n  api_key: "sk-yaml-roundtrip"\n')
+        cfg = bootstrap_from_yaml(yp)
+        assert cfg.ai_content.api_key == "sk-yaml-roundtrip"
+        assert _build_ai_content(cfg)._api_key == "sk-yaml-roundtrip"
+
+
 def _fwd():
     return SimpleNamespace(ad_judge=None, ai_content=None)
 

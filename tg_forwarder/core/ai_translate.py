@@ -162,6 +162,8 @@ def build_translator(translate_cfg: Any) -> Optional[AiTranslator]:
     try:
         return AiTranslator(
             endpoint=getattr(translate_cfg, "endpoint", DEFAULT_ENDPOINT),
+            # 优先 config.yaml 直填的 api_key；为 None 时才回退读 api_key_env 环境变量
+            api_key=getattr(translate_cfg, "api_key", None),
             api_key_env=getattr(translate_cfg, "api_key_env", DEFAULT_API_KEY_ENV),
             model=getattr(translate_cfg, "model", DEFAULT_MODEL),
             timeout_seconds=getattr(translate_cfg, "timeout_seconds", 8.0),

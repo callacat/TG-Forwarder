@@ -153,7 +153,11 @@ class TranslateConfig(BaseModel):
     - enabled：全局开关，默认关；
     - sources：仅对列表内的源生效（按 resolved_id 匹配）；
     - endpoint/api_key_env/model：OpenAI 兼容端点（默认 axonhub glm-5.3-flash）；
-    - api_key_env：从 OS 环境变量读取 API key（为空则翻译静默降级，不阻塞）；
+    - api_key：**直填的 Bearer 密钥，首选**（同 F10 digest 的直填写法，但比 F10 多一条
+      env 备选通道）；写在 config.yaml
+      （被 .gitignore 忽略，不进仓库、不进面板 sqlite、不出现在 /api/settings）。
+      None=不填→回退读 api_key_env 环境变量；显式填空串=明确禁用鉴权；
+    - api_key_env：从 OS 环境变量读取 API key（仅 api_key 为空时生效）；
     - timeout_seconds：单次请求超时（默认 8s）；
     - cache_max_entries/cache_ttl_seconds：结果缓存，避免重复计费。
     """
@@ -161,6 +165,7 @@ class TranslateConfig(BaseModel):
     enabled: bool = False
     sources: List[Union[int, str]] = Field(default_factory=list)
     endpoint: str = "http://100.64.0.2:8091/v1"
+    api_key: Optional[str] = None
     api_key_env: str = "AXONHUB_API_KEY"
     model: str = "glm-5.3-flash"
     timeout_seconds: float = 8.0
@@ -236,6 +241,11 @@ class AiContentConfig(BaseModel):
     - enabled：全局开关，默认关（不构造任何组件、零请求零日志）；
     - base_url/api_key_env/model：OpenAI 兼容端点（默认 axonhub glm-5.3-flash，
       与 F10/F11 同源）；api_key 为空则本功能静默降级不阻塞转发；
+    - api_key：**直填的 Bearer 密钥，首选**（同 F10 digest 的直填写法，但比 F10 多一条
+      env 备选通道）；写在 config.yaml
+      （被 .gitignore 忽略，不进仓库、不进面板 sqlite、不出现在 /api/settings）。
+      None=不填→回退读 api_key_env 环境变量；显式填空串=明确禁用鉴权。
+      **刻意不进 SystemSettings 镜像**：密钥不能落面板、不能被 GET 回读。
     - threshold：confidence >= threshold 才拦截（低于即放行，兼作模糊区）；
     - clean_enabled：是否采用模型返回的清洗正文。关掉即退化为「只判广告不改文」，
       是改正文前建议先小流量试的闸门；
@@ -247,6 +257,7 @@ class AiContentConfig(BaseModel):
 
     enabled: bool = False
     base_url: str = "http://100.64.0.2:8091/v1"
+    api_key: Optional[str] = None
     api_key_env: str = "AXONHUB_API_KEY"
     model: str = "glm-5.3-flash"
     threshold: float = 0.85
