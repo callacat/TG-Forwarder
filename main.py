@@ -530,6 +530,7 @@ async def cmd_run(db: Database, yaml_path: str) -> None:
         account_manager=accounts,
         forwarder=forwarder,
         bot_notifier=bot_notify,
+        config_path=yaml_path,
     )
     # 5. Web 层 rules_db 初始装载：必须紧随 create_app（彼时 app_state["rules_db"]
     #    才被创建）。放在 create_app 之前会被 _sync_web_rules_db 的

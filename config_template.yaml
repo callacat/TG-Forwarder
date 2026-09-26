@@ -101,7 +101,8 @@ link_checker:
 # api_key_env=api_key 为空时要读的环境变量名（备选通道；容器重建需重新 -e 注入）。
 # 翻译失败/端点不可用一律原文放行，绝不丢消息；结果有缓存避免重复计费。
 # 也可在 Web 面板「实验功能」里开关翻译并维护源列表（settings.translate_sources
-# 落表后覆盖本段 sources；未存过则回落 yaml 实际值）。**面板不提供 key 输入**。
+# 落表后覆盖本段 sources；未存过则回落 yaml 实际值）。**密钥也可在面板填写**
+# （实验功能 tab / AI 处理 tab 的「API 密钥」框，写回本文件，不进面板库）。
 # translate:
 #   enabled: false
 #   sources: []                    # 例: [-1001234567890, "https://t.me/xxx"]
@@ -140,6 +141,7 @@ link_checker:
 #   base_url: "http://100.64.0.2:8091/v1" # OpenAI 兼容基址，程序自动拼 /chat/completions
 #   api_key: ""                          # 首选：直填 Bearer 密钥（不进仓库/不进面板/不被 GET 回读）
 #                                        #   照抄留 "" = 不带鉴权，下面的 api_key_env 会被忽略！
+#                                        #   也可在「AI 处理」tab 的密钥框填（写回本文件同一位置）
 #   api_key_env: "AXONHUB_API_KEY"       # 备选：api_key 留空时读这个环境变量；再空则静默降级
 #   model: "glm-5.3-flash"
 #   threshold: 0.85                        # confidence >= 此值才拦截，低于即放行

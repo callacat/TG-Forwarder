@@ -34,6 +34,7 @@ from loguru import logger
 # v3 单一配置源模型（config.py 已就绪；原 _local_models fallback 双份模型
 # 系并行交付期临时产物，已删，消除 import 顺序依赖与漂移）
 from tg_forwarder.config import (
+    AI_SECRET_SECTIONS,
     AdFilterConfig,
     ContentFilterConfig,
     RulesDatabase,
@@ -41,6 +42,8 @@ from tg_forwarder.config import (
     SystemSettings,
     TargetDistributionRule,
     WhitelistConfig,
+    set_yaml_secret,
+    yaml_secret_set,
 )
 from tg_forwarder.version import resolve_version
 
@@ -78,6 +81,14 @@ class ReorderRequest(BaseModel):
     """v2 兼容：/api/rules/reorder 请求体。"""
 
     names: List[str]
+
+
+class AiSecretUpdate(BaseModel):
+    """写 AI 密钥的请求体。section 白名单在 config.AI_SECRET_SECTIONS 单一维护。"""
+
+    section: str
+    # 允许空串：语义是「明确不带鉴权」，且此时会盖掉 api_key_env 备选通道
+    api_key: str
 
 
 # ---------------------------------------------------------------------------
@@ -180,6 +191,7 @@ def create_app(
     forwarder: Any = None,
     static_index_path: Optional[str] = None,
     bot_notifier: Optional[Callable[[str], Awaitable[None]]] = None,
+    config_path: Optional[str] = None,
 ) -> FastAPI:
     """构建 FastAPI 应用。
 
@@ -191,6 +203,7 @@ def create_app(
         account_manager/forwarder: 可选，用于 /health 与 /api/status（R1/R9）
         static_index_path: index.html 绝对路径（默认取包内 static/index.html）
         bot_notifier: Bot 通知回调（T1：Web 写配置成功后推送 admin；缺省 None 不推送）
+        config_path: config.yaml 绝对路径，仅供 /api/ai-secret 写密钥用；缺省则该端点 503
     """
     # 内存规则库快照：初始为空对象，真实数据由 main 启动时经仓储加载
     rules_db = RulesDatabase()
@@ -367,6 +380,35 @@ def create_app(
         await _reload_runtime()
         await notify_bot("✅ **系统设置已更新**\n已热重载生效。")
         return {"status": "success"}
+
+    # ------------------------------------------------------------------
+    # AI 密钥：只写、不回读（与 /api/settings 的持久化通道完全分开）
+    # ------------------------------------------------------------------
+    # 为什么不走 SystemSettings：/api/settings 原样返回它、/api/settings/update 会
+    # 把它 model_dump 落进面板 sqlite —— 密钥进去即等于明文入库且登录者可 GET。
+    # 这里改为直接写 config.yaml（已被 .gitignore 忽略），读取侧只回布尔位。
+
+    @app.get("/api/ai-secret")
+    async def get_ai_secret(username: str = Depends(require_auth)):
+        if not config_path:
+            raise HTTPException(503, "未配置 config.yaml 路径，密钥端点不可用")
+        return {s: yaml_secret_set(config_path, s) for s in AI_SECRET_SECTIONS}
+
+    @app.post("/api/ai-secret")
+    async def set_ai_secret(
+        payload: AiSecretUpdate, username: str = Depends(require_auth)
+    ):
+        if not config_path:
+            raise HTTPException(503, "未配置 config.yaml 路径，密钥端点不可用")
+        try:
+            set_yaml_secret(config_path, payload.section, payload.api_key)
+        except (OSError, ValueError) as e:
+            # 不回显 value：异常信息里可能带文件内容片段
+            raise HTTPException(400, f"写入失败：{type(e).__name__}")
+        await _reload_runtime()
+        await notify_bot("✅ **AI 密钥已更新**\n已热重载生效。")
+        # 响应只带布尔位，永不回传明文
+        return {"status": "success", "section": payload.section, "api_key_set": True}
 
     @app.get("/api/rules")
     async def get_all_rules(username: str = Depends(require_auth)):

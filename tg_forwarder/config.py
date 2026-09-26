@@ -8,7 +8,10 @@
 - 账号/代理/Web 密码等基础设施配置仍以 yaml 为源（无人值守场景的凭据入口）。
 - RuntimeConfig 整体替换即热重载（R8）：处理消息持有旧引用，无半新半旧窗口。
 """
+import json
 import os
+import re
+import shutil
 from typing import Any, Dict, List, Optional, Union
 
 import yaml
@@ -245,7 +248,8 @@ class AiContentConfig(BaseModel):
       env 备选通道）；写在 config.yaml
       （被 .gitignore 忽略，不进仓库、不进面板 sqlite、不出现在 /api/settings）。
       None=不填→回退读 api_key_env 环境变量；显式填空串=明确禁用鉴权。
-      **刻意不进 SystemSettings 镜像**：密钥不能落面板、不能被 GET 回读。
+      **刻意不进 SystemSettings 镜像**：密钥不能落面板 sqlite、不能被 GET 回读。
+      面板若要填，走 /api/ai-secret 只写接口写回本文件（见 set_yaml_secret）。
     - threshold：confidence >= threshold 才拦截（低于即放行，兼作模糊区）；
     - clean_enabled：是否采用模型返回的清洗正文。关掉即退化为「只判广告不改文」，
       是改正文前建议先小流量试的闸门；
@@ -742,8 +746,7 @@ def bootstrap_from_yaml(path: str) -> RuntimeConfig:
         )
         if t.get("distribution_rules"):
             cfg.distribution_rules = [
-                TargetDistributionRule(**r) for r in t["distribution_rules"]
-            ]
+                TargetDistributionRule(**r) for r in t["distribution_rules"]            ]
     if data.get("ad_filter"):
         cfg.ad_filter = AdFilterConfig(**data["ad_filter"])
     if data.get("whitelist"):
@@ -943,3 +946,92 @@ async def load_runtime_config(db: Database, yaml_path: str) -> RuntimeConfig:
         f"Rules: {len(cfg.distribution_rules)}, Accounts: {len(cfg.accounts)})"
     )
     return cfg
+
+
+# ---------------------------------------------------------------------------
+# 面板密钥写入（只写、不回读）
+# ---------------------------------------------------------------------------
+
+# 允许面板写密钥的段白名单：写操作只能落在这几段，防越权写任意顶层键。
+AI_SECRET_SECTIONS = ("ai_content", "translate")
+
+
+def yaml_secret_set(path: str, section: str, key: str = "api_key") -> bool:
+    """config.yaml 指定段指定键是否已配置——只回布尔，绝不外泄明文。"""
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            data = yaml.safe_load(f) or {}
+    except (OSError, yaml.YAMLError):
+        return False
+    section_data = data.get(section)
+    return bool(isinstance(section_data, dict) and section_data.get(key))
+
+
+def _yaml_section_span(lines: List[str], section: str) -> tuple:
+    """定位顶层 ``section:`` 段，返回 (段头下标, 段体结束下标)；找不到返回 (-1, -1)。
+
+    段体结束 = 下一个「顶格且非注释」的行。顶格注释行（如模板里大段 ``#   xxx``
+    说明）不算新段，否则会把相邻段一起吞进改写范围。
+    """
+    header = re.compile(r"^%s\s*:" % re.escape(section))
+    for i, line in enumerate(lines):
+        if header.match(line):
+            j = i + 1
+            while j < len(lines):
+                stripped = lines[j].strip()
+                if stripped and not stripped.startswith("#") and not lines[j][0].isspace():
+                    break
+                j += 1
+            return i, j
+    return -1, -1
+
+
+def set_yaml_secret(path: str, section: str, value: str, key: str = "api_key") -> None:
+    """把密钥写进 config.yaml 指定段，**保留全部注释**。
+
+    不能用 yaml.safe_dump 回写整个文件——config.yaml 是带注释的手工维护文件，
+    往返一次注释全没、字段顺序也被重排。这里只做行级定点改写：段内命中已有键
+    则替换该行，否则在段头后插一行；整段不存在则追加到文件尾。
+
+    走「备份 → 副本 → 校验 → 原子替换」：先在内存里改并确认能解析且值对得上，
+    再落 .bak 备份与同目录临时文件，最后 os.replace 原子换入（同文件系统原子）。
+    """
+    if section not in AI_SECRET_SECTIONS:
+        raise ValueError(f"section 不在白名单内: {section}")
+    # 换行会破坏行级改写（且密钥本不该含换行）——在写入边界挡掉
+    if "\n" in value or "\r" in value:
+        raise ValueError("密钥不得含换行")
+
+    with open(path, "r", encoding="utf-8") as f:
+        text = f.read()
+    lines = text.splitlines(keepends=True)
+
+    # JSON 字符串是 YAML 双引号标量的子集，天然处理引号/冒号/# 等特殊字符
+    quoted = json.dumps(value, ensure_ascii=False)
+    key_re = re.compile(r"^(\s*)%s\s*:" % re.escape(key))
+
+    head, end = _yaml_section_span(lines, section)
+    if head < 0:
+        new_text = text.rstrip("\n") + f"\n\n{section}:\n  {key}: {quoted}\n"
+    else:
+        replaced = False
+        for idx in range(head + 1, end):
+            m = key_re.match(lines[idx])
+            if m:
+                lines[idx] = f"{m.group(1)}{key}: {quoted}\n"
+                replaced = True
+                break
+        if not replaced:
+            lines.insert(head + 1, f"  {key}: {quoted}\n")
+        new_text = "".join(lines)
+
+    parsed = yaml.safe_load(new_text) or {}
+    got = (parsed.get(section) or {}).get(key) if isinstance(parsed.get(section), dict) else None
+    if got != value:
+        raise ValueError("写入后校验失败：解析结果与期望值不一致")
+
+    shutil.copy2(path, path + ".bak")
+    tmp = path + ".tmp"
+    with open(tmp, "w", encoding="utf-8") as f:
+        f.write(new_text)
+    os.replace(tmp, path)

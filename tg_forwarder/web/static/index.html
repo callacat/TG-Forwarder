@@ -694,6 +694,16 @@
                                 <label for="translateSources" class="text-xs font-bold text-surface-500">翻译源 ID（每行一个数字频道 ID）</label>
                                 <textarea id="translateSources" rows="3" :value="arrayToText(settings.translate_sources)" @input="settings.translate_sources = textToArray($event.target.value)" class="form-textarea font-mono" placeholder="-1001234567890&#10;-1009876543210"></textarea>
                                 <p class="text-xs text-surface-500">仅对列表内源生效，留空则不翻译；也可在 config.yaml 的 translate.sources 配置（落表覆盖）。</p>
+                                <label for="trApiKey" class="block text-xs font-bold text-surface-500 mt-3">API 密钥 (api_key)</label>
+                                <div class="flex gap-2">
+                                    <input id="trApiKey" type="password" x-model="aiSecretInput.translate" class="app-input font-mono text-sm flex-1" placeholder="粘贴 Bearer 密钥" autocomplete="off">
+                                    <button @click="saveAiSecret('translate')" :disabled="busy" class="btn-base bg-apple-blue text-white px-4">保存密钥</button>
+                                </div>
+                                <p class="text-xs text-surface-500 mt-1">
+                                    写入 <code>config.yaml</code> 的 <code>translate.api_key</code>，<b>永不回显</b>。
+                                    <span x-show="aiSecretSet.translate" class="text-green-600 font-medium">✓ 已配置</span>
+                                    <span x-show="!aiSecretSet.translate">未配置：无密钥时翻译静默跳过、原文放行。</span>
+                                </p>
                             </div>
                         </div>
                         <div class="p-4 rounded-xl bg-surface-100 dark:bg-surface-800">
@@ -777,6 +787,18 @@
                         <label class="block text-xs font-bold text-surface-500 uppercase mb-1" for="acModel">模型名 (model)</label>
                         <input id="acModel" type="text" x-model="settings.ai_content_model" class="app-input font-mono text-sm" placeholder="glm-5.3-flash">
                     </div>
+                    <div>
+                        <label class="block text-xs font-bold text-surface-500 uppercase mb-1" for="acApiKey">API 密钥 (api_key)</label>
+                        <div class="flex gap-2">
+                            <input id="acApiKey" type="password" x-model="aiSecretInput.ai_content" class="app-input font-mono text-sm flex-1" placeholder="粘贴 Bearer 密钥" autocomplete="off">
+                            <button @click="saveAiSecret('ai_content')" :disabled="busy" class="btn-base bg-apple-blue text-white px-4">保存密钥</button>
+                        </div>
+                        <p class="text-xs text-surface-500 mt-1">
+                            写入 <code>config.yaml</code> 的 <code>ai_content.api_key</code>——不进 git 仓库、不进面板 sqlite、<b>永不回显</b>。
+                            <span x-show="aiSecretSet.ai_content" class="text-green-600 font-medium">✓ 已配置</span>
+                            <span x-show="!aiSecretSet.ai_content">未配置：无密钥时本功能静默降级为原文放行。</span>
+                        </p>
+                    </div>
                     <div class="grid grid-cols-1 sm:grid-cols-2 gap-4">
                         <div>
                             <label class="block text-xs font-bold text-surface-500 uppercase mb-1" for="acThreshold">广告判定阈值</label>
@@ -844,6 +866,9 @@
                 rules: { sources: [], distribution_rules: [] },
                 settings: { dedup_retention_days: 30, forwarding_mode: 'copy', forward_new_only: true, mark_as_read: false, mark_target_as_read: false, default_target: '', default_topic_id: null, digest_enabled: false, digest_interval_seconds: 1800, translate_enabled: false, translate_sources: [], semantic_dedup_enabled: false, semantic_dedup_threshold: 0.85, ad_judge_enabled: false, ad_judge_base_url: 'http://100.64.0.2:28880', ad_judge_model: 'jev-1.13', ad_judge_threshold: 0.85, ad_judge_fuzzy_low: 0.6, ad_judge_timeout: 20, ai_content_enabled: false, ai_content_base_url: 'http://100.64.0.2:8091/v1', ai_content_model: 'glm-5.3-flash', ai_content_threshold: 0.85, ai_content_clean_enabled: true, ai_content_timeout: 8 },
                 appVersion: '',
+                // AI 密钥只写：set 是后端回的布尔位（明文永不回传），input 是本次待提交的明文
+                aiSecretSet: { ai_content: false, translate: false },
+                aiSecretInput: { ai_content: '', translate: '' },
                 blacklist: { substring: '', word: '', file: '', regex: '' }, whitelist: { keywords: '' },
                 content_filter: { enable: true, meaningless_words: [], min_meaningful_length: 5 },
                 replacements: {}, replacements_list: [],
@@ -1047,6 +1072,7 @@
                         this.content_filter = cf; this.content_filter.meaningless_text = this.arrayToText(cf.meaningless_words);
                         this.replacements = rep; this.replacements_list = Object.entries(rep).map(([k,v]) => ({key:k, val:v}));
                         this.status = status || { accounts: [], message_stats: {} };
+                        this.loadAiSecret();
                         this.loadedOnce = true;
                         this.error = null;
                     } catch (e) {
@@ -1076,6 +1102,22 @@
                     this.showToast(msg, '已保存并热重载生效', 'success');
                     await this.refreshRules();
                     this.fetchLive();
+                },
+
+                // 密钥状态只取布尔位（端点不回传明文），失败静默：端点不可用不该打断面板
+                async loadAiSecret() {
+                    try { this.aiSecretSet = await this.api('/api/ai-secret'); } catch (e) { /* 忽略 */ }
+                },
+
+                async saveAiSecret(section) {
+                    return this._guard(async () => {
+                        try {
+                            await this.api('/api/ai-secret', 'POST', { section: section, api_key: this.aiSecretInput[section] });
+                            this.aiSecretInput[section] = '';  // 明文不留在页面状态里
+                            await this.loadAiSecret();
+                            this.showToast('密钥已保存', '已写入 config.yaml 并热重载生效', 'success');
+                        } catch (e) { this.showToast('保存失败', e.message, 'error'); }
+                    });
                 },
 
                 // 写操作统一防重入（双击/连点不重复提交，按钮同时进入 disabled 态）
