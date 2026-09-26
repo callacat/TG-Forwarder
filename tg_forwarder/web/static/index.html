@@ -171,6 +171,15 @@
         .no-scrollbar { -ms-overflow-style: none; scrollbar-width: none; }
         .no-scrollbar::-webkit-scrollbar { display: none; }
 
+        /* 顶部导航：不隐藏滚动条——tab 多时最后一项会被裁，必须留可见滚动提示
+           （rc.11 实测 9 个 tab 在 952px 视口下 nav 仅得 421px、内容需 710px，
+            旧版 no-scrollbar + body overflow-x-hidden 导致溢出既看不到也滚不到）。 */
+        .nav-scroll { scrollbar-width: thin; scrollbar-color: rgba(148,163,184,.55) transparent; }
+        .nav-scroll::-webkit-scrollbar { height: 5px; }
+        .nav-scroll::-webkit-scrollbar-track { background: transparent; }
+        .nav-scroll::-webkit-scrollbar-thumb { background: rgba(148,163,184,.55); border-radius: 9999px; }
+        .nav-scroll::-webkit-scrollbar-thumb:hover { background: rgba(100,116,139,.8); }
+
         /* 按钮 disabled 态（写操作防重入/连点） */
         .btn-base:disabled, .btn-sm:disabled { opacity: 0.55; cursor: not-allowed; transform: none !important; box-shadow: none !important; }
     </style>
@@ -206,7 +215,7 @@
     <div id="main" x-show="authenticated" x-cloak class="relative z-10 max-w-7xl mx-auto p-6 md:p-10 min-h-screen flex flex-col">
 
         <!-- 顶部导航 -->
-        <header class="flex flex-col md:flex-row justify-between items-start md:items-center mb-10 gap-4 animate-scale-in">
+        <header class="flex flex-col md:flex-row flex-wrap justify-between items-start md:items-center mb-10 gap-4 animate-scale-in">
             <div class="flex items-center gap-3">
                 <div class="w-8 h-8 bg-apple-blue rounded-lg shadow-lg flex items-center justify-center text-white font-black text-xs tracking-tight select-none" aria-hidden="true">TG</div>
                 <h1 class="text-2xl md:text-3xl font-bold tracking-tight">
@@ -218,12 +227,12 @@
                 </span>
             </div>
 
-            <nav class="glass-panel p-1.5 rounded-full flex gap-1 overflow-x-auto max-w-full self-start md:self-auto no-scrollbar shadow-lg" aria-label="主导航">
+            <nav class="glass-panel p-1.5 rounded-full flex gap-1 overflow-x-auto max-w-full min-w-0 self-start md:self-auto nav-scroll shadow-lg" aria-label="主导航">
                 <template x-for="tab in tabs" :key="tab.id">
                     <button @click="switchTab(tab.id)"
                             :aria-current="currentTab === tab.id ? 'page' : null"
                             :class="currentTab === tab.id ? 'bg-white dark:bg-surface-700 text-surface-900 dark:text-white shadow-md' : 'text-surface-500 hover:text-surface-900 dark:hover:text-surface-200'"
-                            class="px-4 py-1.5 rounded-full text-xs font-bold transition-all whitespace-nowrap"
+                            class="px-3 py-1.5 rounded-full text-xs font-bold transition-all whitespace-nowrap"
                             x-text="tab.name">
                     </button>
                 </template>

@@ -497,6 +497,20 @@ class TestPanelHtml:
             assert "ai_content_threshold" in html
             assert "ai_content_clean_enabled" in html
             assert "ai_content_timeout" in html
+            # 顶部导航不裁最后一项：nav 必须可横向滚动且滚动条可见。
+            # 回归（rc.11 实测）：9 个 tab 在 952px 视口下 nav 仅得 421px、
+            # 内容需 710px，而 no-scrollbar + body overflow-x-hidden 会让溢出
+            # 既看不到也滚不到 → 「系统设置」被裁到只剩「系统设」。
+            nav_start = html.index("<nav")
+            nav_tag = html[nav_start : html.index(">", nav_start)]
+            assert "overflow-x-auto" in nav_tag, "nav 必须可横向滚动"
+            assert "nav-scroll" in nav_tag, "nav 溢出时必须有可见滚动条提示"
+            assert "no-scrollbar" not in nav_tag, "隐藏滚动条会复现「最后一项被裁」"
+            # header 允许折行，nav 装不下时独占一行而不是被压扁
+            header_start = html.index("<header")
+            header_tag = html[header_start : html.index(">", header_start)]
+            assert "flex-wrap" in header_tag
+
             # 版本号展示位：读 /api/version，不硬编码
             assert 'x-text="appVersion' in html
             assert "this.api('/api/version')" in html
