@@ -747,6 +747,51 @@
             </div>
         </div>
 
+        <!-- ============ Tab: AI 处理（F14 · 结构化判定+清洗，默认关） ============ -->
+        <div x-show="currentTab === 'ai_content'" x-cloak class="glass-card p-8 max-w-2xl mx-auto">
+            <h3 class="text-xl font-bold mb-2 text-surface-900 dark:text-white">AI 结构化内容处理（F14）</h3>
+            <p class="text-xs text-surface-500 mb-8">一次模型调用同时产出<b>广告判定</b>与<b>清洗后正文</b>，输出为结构化 JSON。是否丢弃由服务端按阈值决定，不采信模型自行拍板。<b>默认关</b>；请求失败/超时/解析失败一律原文放行（fail-open，绝不因 AI 不可用丢消息）。保存后自动热重载生效，无需重启容器。</p>
+            <div class="space-y-8">
+                <div class="p-4 rounded-xl bg-surface-100 dark:bg-surface-800">
+                    <label class="flex items-center justify-between cursor-pointer">
+                        <span class="font-medium text-sm">启用 AI 内容处理 <span class="text-surface-400 text-xs">(ai_content)</span></span>
+                        <input type="checkbox" x-model="settings.ai_content_enabled" class="w-5 h-5 accent-apple-blue rounded" aria-label="AI 内容处理开关">
+                    </label>
+                </div>
+                <div x-show="settings.ai_content_enabled" class="space-y-6">
+                    <div>
+                        <label class="block text-xs font-bold text-surface-500 uppercase mb-1" for="acBaseUrl">模型端点 (base_url)</label>
+                        <input id="acBaseUrl" type="text" x-model="settings.ai_content_base_url" class="app-input font-mono text-sm" placeholder="http://100.64.0.2:8091/v1">
+                        <p class="text-xs text-surface-500 mt-1">OpenAI 兼容基址，程序自动拼 <code>/chat/completions</code>。默认 axonhub 中转。</p>
+                    </div>
+                    <div>
+                        <label class="block text-xs font-bold text-surface-500 uppercase mb-1" for="acModel">模型名 (model)</label>
+                        <input id="acModel" type="text" x-model="settings.ai_content_model" class="app-input font-mono text-sm" placeholder="glm-5.3-flash">
+                    </div>
+                    <div class="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                        <div>
+                            <label class="block text-xs font-bold text-surface-500 uppercase mb-1" for="acThreshold">广告判定阈值</label>
+                            <input id="acThreshold" type="number" min="0.01" max="1" step="0.01" x-model.number="settings.ai_content_threshold" class="app-input w-full">
+                        </div>
+                        <div>
+                            <label class="block text-xs font-bold text-surface-500 uppercase mb-1" for="acTimeout">超时（秒）</label>
+                            <input id="acTimeout" type="number" min="1" step="1" x-model.number="settings.ai_content_timeout" class="app-input w-full">
+                        </div>
+                    </div>
+                    <div class="p-4 rounded-xl bg-surface-100 dark:bg-surface-800">
+                        <label class="flex items-center justify-between cursor-pointer">
+                            <span class="font-medium text-sm">采用模型返回的清洗正文 <span class="text-surface-400 text-xs">(clean_enabled)</span></span>
+                            <input type="checkbox" x-model="settings.ai_content_clean_enabled" class="w-5 h-5 accent-apple-blue rounded" aria-label="清洗正文开关">
+                        </label>
+                        <p class="text-xs text-surface-500 mt-2">清洗只删频道尾巴/引流行/重复行，正文逐字保留。关掉即退化为「只判广告不改文」——<b>建议先关着观察若干天，确认判定稳定后再开</b>。清洗结果过短（内容被截失）或异常冗长（模型跑偏）会自动弃用并用原文。</p>
+                    </div>
+                    <p class="text-xs text-surface-500">广告判定：模型给 <code>is_ad</code> 且 <code>confidence ≥ 阈值</code> 才拦截，低于阈值一律放行（兼作模糊区）。进阶项（源白名单 <code>sources</code>、<code>json_mode</code>、清洗护栏 <code>min_ratio</code>/<code>max_ratio</code>）请在 yaml 的 <code>ai_content:</code> 段配置。</p>
+                    <p class="text-xs text-surface-500">与「AI 判别」(F13) 同开会对每条消息发两次判定请求，建议只开其一。</p>
+                </div>
+                <button @click="saveSettings" :disabled="busy" class="btn-base bg-apple-blue text-white hover:bg-blue-600 w-full py-3 text-lg shadow-lg">保存设置</button>
+            </div>
+        </div>
+
     </div>
 
     <!-- Toast -->
@@ -788,7 +833,7 @@
                 currentTab: 'status',
                 stats: {}, status: { accounts: [], message_stats: {} },
                 rules: { sources: [], distribution_rules: [] },
-                settings: { dedup_retention_days: 30, forwarding_mode: 'copy', forward_new_only: true, mark_as_read: false, mark_target_as_read: false, default_target: '', default_topic_id: null, digest_enabled: false, digest_interval_seconds: 1800, translate_enabled: false, translate_sources: [], semantic_dedup_enabled: false, semantic_dedup_threshold: 0.85, ad_judge_enabled: false, ad_judge_base_url: 'http://100.64.0.2:28880', ad_judge_model: 'jev-1.13', ad_judge_threshold: 0.85, ad_judge_fuzzy_low: 0.6, ad_judge_timeout: 20 },
+                settings: { dedup_retention_days: 30, forwarding_mode: 'copy', forward_new_only: true, mark_as_read: false, mark_target_as_read: false, default_target: '', default_topic_id: null, digest_enabled: false, digest_interval_seconds: 1800, translate_enabled: false, translate_sources: [], semantic_dedup_enabled: false, semantic_dedup_threshold: 0.85, ad_judge_enabled: false, ad_judge_base_url: 'http://100.64.0.2:28880', ad_judge_model: 'jev-1.13', ad_judge_threshold: 0.85, ad_judge_fuzzy_low: 0.6, ad_judge_timeout: 20, ai_content_enabled: false, ai_content_base_url: 'http://100.64.0.2:8091/v1', ai_content_model: 'glm-5.3-flash', ai_content_threshold: 0.85, ai_content_clean_enabled: true, ai_content_timeout: 8 },
                 appVersion: '',
                 blacklist: { substring: '', word: '', file: '', regex: '' }, whitelist: { keywords: '' },
                 content_filter: { enable: true, meaningless_words: [], min_meaningful_length: 5 },
@@ -803,6 +848,7 @@
                     { id: 'rules', name: '转发规则' }, { id: 'filter_replace', name: '过滤与替换' },
                     { id: 'blacklist', name: '黑名单' }, { id: 'whitelist', name: '白名单' },
                     { id: 'ai', name: 'AI 判别' },
+                    { id: 'ai_content', name: 'AI 处理' },
                     { id: 'settings', name: '系统设置' }
                 ],
 

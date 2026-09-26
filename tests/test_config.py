@@ -345,3 +345,74 @@ class TestM4ExperimentalMerging:
         assert cfg2.ad_judge.base_url == "http://yaml-host:28880"
         assert cfg2.ad_judge.model == "yaml-model"
         await db.close()
+
+    async def test_ai_content_panel_values_override_yaml(self, tmp_path):
+        """F14：面板落表 ai_content_* 覆盖 yaml ai_content 段；未存过则回落 yaml 并如实展示。
+
+        进阶项（sources/json_mode/护栏）刻意不进面板镜像：面板保存不得冲掉它们。
+        """
+        yaml_cfg = FULL_YAML + (
+            '\nai_content:\n  enabled: true\n  base_url: "http://yaml-host:8091/v1"\n'
+            '  model: "yaml-model"\n  threshold: 0.7\n  sources: [-100777]\n'
+            "  json_mode: false\n  min_ratio: 0.4\n"
+        )
+        yp = _write_yaml(tmp_path, yaml_cfg)
+        db = await _fresh_db(tmp_path)
+
+        # 未存过镜像键：runtime 取 yaml，展示值同步（面板如实显示当前状态）
+        cfg1 = await load_runtime_config(db, yp)
+        assert cfg1.ai_content.enabled is True
+        assert cfg1.ai_content.base_url == "http://yaml-host:8091/v1"
+        assert cfg1.ai_content.threshold == 0.7
+        assert cfg1.settings.ai_content_enabled is True
+        assert cfg1.settings.ai_content_model == "yaml-model"
+        assert cfg1.settings.ai_content_threshold == 0.7
+
+        from tg_forwarder.storage.repositories import ConfigRepository
+
+        repo = ConfigRepository(db)
+        s = cfg1.settings.model_dump()
+        s.update(
+            ai_content_enabled=True,
+            ai_content_base_url="http://panel-host:8091/v1",
+            ai_content_model="panel-model",
+            ai_content_threshold=0.95,
+            ai_content_clean_enabled=False,
+            ai_content_timeout=12,
+        )
+        await repo.save("system_settings", s)
+        cfg2 = await load_runtime_config(db, yp)
+        assert cfg2.ai_content.base_url == "http://panel-host:8091/v1"
+        assert cfg2.ai_content.model == "panel-model"
+        assert cfg2.ai_content.threshold == 0.95
+        assert cfg2.ai_content.clean_enabled is False
+        assert cfg2.ai_content.timeout == 12
+        assert cfg2.settings.ai_content_enabled is True
+        # 面板没管的进阶项 → 保持 yaml
+        assert cfg2.ai_content.sources == [-100777]
+        assert cfg2.ai_content.json_mode is False
+        assert cfg2.ai_content.min_ratio == 0.4
+        await db.close()
+
+    async def test_ai_content_untouched_by_ad_judge_panel_save(self, tmp_path):
+        """F13/F14 镜像键互不干扰：只存 ad_judge_* 不得把 ai_content 拽回默认值。"""
+        yaml_cfg = FULL_YAML + (
+            '\nai_content:\n  enabled: true\n  base_url: "http://yaml-host:8091/v1"\n'
+            '  model: "yaml-model"\n  threshold: 0.7\n'
+        )
+        yp = _write_yaml(tmp_path, yaml_cfg)
+        db = await _fresh_db(tmp_path)
+        cfg1 = await load_runtime_config(db, yp)
+
+        from tg_forwarder.storage.repositories import ConfigRepository
+
+        repo = ConfigRepository(db)
+        s = cfg1.settings.model_dump()
+        s["ad_judge_enabled"] = True
+        await repo.save("system_settings", s)
+        cfg2 = await load_runtime_config(db, yp)
+        assert cfg2.ad_judge.enabled is True
+        assert cfg2.ai_content.enabled is True
+        assert cfg2.ai_content.base_url == "http://yaml-host:8091/v1"
+        assert cfg2.ai_content.threshold == 0.7
+        await db.close()

@@ -120,3 +120,30 @@ link_checker:
 #   threshold: 0.85
 #   fuzzy_low: 0.60                      # 必须 <= threshold（否则模糊区反转，配置校验直接拒绝）
 #   timeout: 20
+
+# F14 AI 结构化内容处理（OpenAI 兼容端点；默认关=现网行为零变化）。
+# 一次模型调用同时产出「广告判定 + 清洗正文」，输出为结构化 JSON：
+#   {"is_ad":bool,"ad_type":str,"confidence":0~1,"cleaned_text":str,"reason":str}
+# 与 F13 的关键差异：丢弃与否由本地按 confidence >= threshold 决定，不采信模型自行
+# 拍板或返回哨兵串（模型误吐哨兵串会静默丢消息，撞本项目 fail-open 铁律）。
+# 判据措辞沿用 F13 于 2026-09-23 实测标定的版本（锚定「商业广告/引流牟利」，
+# 资源分享 0.23-0.38 放行、卖号硬广 0.98 拦、群推广 0.86 拦）。
+# clean_enabled=false 即退化为「只判广告不改文」，改正文前建议先小流量试。
+# json_mode 下发 response_format=json_object；端点不支持会 4xx，此时关掉本项
+# 退回纯提示词模式（模型仍输出 JSON，解析层容错代码围栏与前后解说）。
+# ai_content:
+#   enabled: false
+#   base_url: "http://100.64.0.2:8091/v1" # OpenAI 兼容基址，程序自动拼 /chat/completions
+#   api_key_env: "AXONHUB_API_KEY"         # 从 OS 环境变量读；为空则本功能静默降级
+#   model: "glm-5.3-flash"
+#   threshold: 0.85                        # confidence >= 此值才拦截，低于即放行
+#   clean_enabled: true                    # 是否采用模型返回的清洗正文
+#   timeout: 8
+#   json_mode: true
+#   min_ratio: 0.3                         # 清洗后长度占比下界，过短=内容截失→弃用
+#   max_ratio: 2.0                         # 上界，过长=模型跑偏→弃用（必须 > min_ratio）
+#   max_text_chars: 4096                   # 送模型的最大长度；**超过此值的正文只判广告不改文**
+#                                          #   —— 模型只看得到前缀，让它改写会抹掉没看见的尾巴
+#   sources: []                            # 空=全部源；非空仅对列表内源生效
+#   cache_max_entries: 256
+#   cache_ttl_seconds: 3600

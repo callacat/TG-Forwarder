@@ -63,6 +63,20 @@ def _build_ad_judge(config):
     )
 
 
+def _build_ai_content(config):
+    """F14 AI 结构化内容处理装配：仅 ai_content.enabled 时构造，否则 None。
+
+    与 _build_ad_judge 同范式：main.py 唯一生产装配点；构造只持配置不发请求
+    （请求在首次 process() 时发生），默认关=现网零变化。
+    """
+    ai_cfg = getattr(config, "ai_content", None)
+    if ai_cfg is None or not getattr(ai_cfg, "enabled", False):
+        return None
+    from tg_forwarder.core.ai_content import build_ai_content
+
+    return build_ai_content(ai_cfg)
+
+
 def _build_digest_pipeline(config, forwarder=None):
     """F10：按给定配置构建 AI digest 管线（默认关=不装配）。
 
@@ -154,6 +168,68 @@ def _reconcile_ai_features(forwarder, new_cfg) -> None:
     elif cur_aj is not None:
         forwarder.ad_judge = None
         logger.info("AI 广告判别器已热重载关闭（摘除）")
+
+    # --- F14 AI 结构化内容处理 ---
+    ai_cfg = getattr(new_cfg, "ai_content", None)
+    want_ai = bool(ai_cfg and getattr(ai_cfg, "enabled", False))
+    cur_ai = getattr(forwarder, "ai_content", None)
+    if want_ai:
+        # 重建条件 = 全配置元组变化（与 F13 同款：只比部分字段会让改端点/模型/
+        # 超时后 /reload 静默沿用旧配置）。base_url 归一化与 AiContentProcessor
+        # 构造时的 rstrip("/") 对齐，避免尾斜杠造成无谓重建。缓存两项也入键：
+        # 否则 yaml 改 cache_ttl 后 reload 沿用旧缓存（与「全字段」注释对不上）。
+        new_key = (
+            str(getattr(ai_cfg, "base_url", "") or "").rstrip("/"),
+            str(getattr(ai_cfg, "model", "") or ""),
+            str(getattr(ai_cfg, "api_key_env", "") or ""),
+            float(getattr(ai_cfg, "threshold", 0.85) or 0.85),
+            bool(getattr(ai_cfg, "clean_enabled", True)),
+            bool(getattr(ai_cfg, "json_mode", True)),
+            float(getattr(ai_cfg, "min_ratio", 0.3) or 0.3),
+            float(getattr(ai_cfg, "max_ratio", 2.0) or 2.0),
+            int(getattr(ai_cfg, "max_text_chars", 4096) or 4096),
+            float(getattr(ai_cfg, "timeout", 8.0) or 8.0),
+            int(getattr(ai_cfg, "cache_max_entries", 256) or 256),
+            int(getattr(ai_cfg, "cache_ttl_seconds", 3600)),
+            tuple(str(s) for s in (getattr(ai_cfg, "sources", None) or [])),
+        )
+        cur_key = None
+        if cur_ai is not None:
+            try:
+                cur_key = (
+                    str(getattr(cur_ai, "base_url", "") or "").rstrip("/"),
+                    str(getattr(cur_ai, "model", "") or ""),
+                    str(getattr(cur_ai, "api_key_env", "") or ""),
+                    float(getattr(cur_ai, "threshold", 0.85)),
+                    bool(getattr(cur_ai, "clean_enabled", True)),
+                    bool(getattr(cur_ai, "json_mode", True)),
+                    float(getattr(cur_ai, "min_ratio", 0.3)),
+                    float(getattr(cur_ai, "max_ratio", 2.0)),
+                    int(getattr(cur_ai, "max_text_chars", 4096)),
+                    float(getattr(cur_ai, "timeout", 8.0)),
+                    int(getattr(cur_ai, "cache_max_entries", 256)),
+                    int(getattr(cur_ai, "cache_ttl_seconds", 3600)),
+                    tuple(str(s) for s in (getattr(cur_ai, "sources", None) or [])),
+                )
+            except Exception:  # noqa: BLE001 —— 兼容假实例/测试替身
+                cur_key = None
+        if cur_ai is None or cur_key != new_key:
+            forwarder.ai_content = _build_ai_content(new_cfg)
+            logger.info(
+                f"F14 AI 内容处理已热重载重建"
+                f"（threshold={new_key[3]}, clean={new_key[4]}）"
+            )
+    elif cur_ai is not None:
+        forwarder.ai_content = None
+        logger.info("F14 AI 内容处理已热重载关闭（摘除）")
+
+    # F13 与 F14 都能判广告：同开会对每条消息发两次模型请求，且两套判据可能打架。
+    # 不自动关掉任一方（可能是有意为之），只把代价说清楚。
+    if want_aj and want_ai:
+        logger.warning(
+            "F13 (ad_judge) 与 F14 (ai_content) 同时启用：每条消息会发两次广告"
+            "判定请求，且两套判据可能给出不一致结论。建议只开其一。"
+        )
 
     # --- F10 digest 管线 ---
     new_pipe = _build_digest_pipeline(new_cfg, forwarder)
@@ -372,6 +448,21 @@ async def cmd_run(db: Database, yaml_path: str) -> None:
         logger.info(
             f"AI 广告判别器已接线: {config.ad_judge.base_url} / "
             f"{config.ad_judge.model}, threshold={config.ad_judge.threshold}"
+        )
+    # F14 AI 结构化内容处理（默认关=不装配；构造不发请求）
+    forwarder.ai_content = _build_ai_content(config)
+    if forwarder.ai_content is not None:
+        logger.info(
+            f"F14 AI 内容处理已接线: {config.ai_content.base_url} / "
+            f"{config.ai_content.model}, threshold={config.ai_content.threshold}, "
+            f"clean={config.ai_content.clean_enabled}"
+        )
+    # F13 与 F14 都能判广告：同开会对每条消息发两次模型请求，且两套判据可能打架。
+    # 启动路径必须与热重载路径（_reconcile_ai_features）同样告警——容器重启是常态。
+    if forwarder.ad_judge is not None and forwarder.ai_content is not None:
+        logger.warning(
+            "F13 (ad_judge) 与 F14 (ai_content) 同时启用：每条消息会发两次广告"
+            "判定请求，且两套判据可能给出不一致结论。建议只开其一。"
         )
 
     # F10：AI digest 滚动窗口聚合（默认关=不装配，零影响现网）

@@ -1810,6 +1810,45 @@ class TestCrossSourceDedup:
         assert len(seen) == 1
         await db.close()
 
+    async def test_concurrent_same_photo_forwards_once(self, tmp_path):
+        """并发去重：同一张图被两条不同消息 id 携带并发进来，只该发一次。
+
+        现网缺陷复现（2026-09-26 报：同图转发两次到不同话题 18082/18085）。
+        Telethon 每个事件 handler 是独立 task；process_message 的
+        ``check_hash → send → add_hash`` 非原子，首条在 send 里 await 时，
+        第二条的 check_hash 还查不到记录 → 两条都放行 → 同图发两次。
+        """
+        client = _CatchupClient([])
+        fwd, db = await _make_fwd(tmp_path, _cross_snap(), client)
+        seen = []
+
+        async def stub_send(original, text, target_id, topic_id, snap):
+            # 放大并发窗口（现网这里是真实网络 RTT，几十到几百 ms）
+            await asyncio.sleep(0.05)
+            seen.append(text)
+
+        fwd._send_message = stub_send
+        media = _Media(photo_id=4242)
+        # try/finally 关库：aiosqlite 连接线程非 daemon，断言失败漏关会让
+        # pytest 挂死而非 fail（本仓库已实测踩过）
+        try:
+            await asyncio.gather(
+                fwd.process_message(
+                    _Msg(18082, chat_id=_CHAT, text="图 A", media=media)
+                ),
+                fwd.process_message(
+                    _Msg(18085, chat_id=_CHAT, text="图 B", media=media)
+                ),
+            )
+            assert len(seen) == 1, f"同图并发去重失效，发了 {len(seen)} 次"
+            # 首条发完后 hash 落库，后续消息都能命中
+            await fwd.process_message(
+                _Msg(18090, chat_id=_CHAT, text="图 C", media=_Media(photo_id=4242))
+            )
+            assert len(seen) == 1
+        finally:
+            await db.close()
+
 
 # ---------------------------------------------------------------------------
 # F2：编辑/删除实时同步（映射登记 + 事件级联；per 源开关默认为关）

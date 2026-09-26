@@ -226,6 +226,79 @@ class AdJudgeConfig(BaseModel):
         return self
 
 
+class AiContentConfig(BaseModel):
+    """F14 AI 结构化内容处理（OpenAI 兼容端点；默认关=现网行为零变化）。
+
+    一次调用同时出「广告判定 + 清洗正文」，输出为结构化 JSON（见
+    core.ai_content）。与 F13 的关键差异：**丢弃与否由本地按 threshold 决定**，
+    不采信模型自行拍板/返回哨兵串。
+
+    - enabled：全局开关，默认关（不构造任何组件、零请求零日志）；
+    - base_url/api_key_env/model：OpenAI 兼容端点（默认 axonhub glm-5.3-flash，
+      与 F10/F11 同源）；api_key 为空则本功能静默降级不阻塞转发；
+    - threshold：confidence >= threshold 才拦截（低于即放行，兼作模糊区）；
+    - clean_enabled：是否采用模型返回的清洗正文。关掉即退化为「只判广告不改文」，
+      是改正文前建议先小流量试的闸门；
+    - json_mode：是否下发 response_format=json_object。端点不支持会 4xx，
+      届时关掉本项退回纯提示词模式（模型仍会输出 JSON，解析层容错）；
+    - min_ratio/max_ratio：清洗结果采纳护栏（过短=内容截失、过长=模型跑偏则弃用）；
+    - sources：空=全部源生效；非空则仅对列表内源生效（按 resolved_id 匹配）。
+    """
+
+    enabled: bool = False
+    base_url: str = "http://100.64.0.2:8091/v1"
+    api_key_env: str = "AXONHUB_API_KEY"
+    model: str = "glm-5.3-flash"
+    threshold: float = 0.85
+    clean_enabled: bool = True
+    timeout: float = 8.0
+    json_mode: bool = True
+    min_ratio: float = 0.3
+    max_ratio: float = 2.0
+    max_text_chars: int = 4096
+    sources: List[Union[int, str]] = Field(default_factory=list)
+    cache_max_entries: int = 256
+    cache_ttl_seconds: int = 3600
+
+    @field_validator("threshold")
+    @classmethod
+    def check_ai_threshold(cls, v):
+        if v is not None and not (0 < v <= 1):
+            raise ValueError("threshold 必须在 0~1 之间")
+        return v
+
+    @field_validator("timeout", "max_text_chars", "cache_max_entries")
+    @classmethod
+    def check_ai_positive(cls, v):
+        if v is not None and v <= 0:
+            raise ValueError("timeout/max_text_chars/cache_max_entries 必须为正数")
+        return v
+
+    @field_validator("min_ratio")
+    @classmethod
+    def check_ai_min_ratio(cls, v):
+        if v is not None and not (0 < v <= 1):
+            raise ValueError("min_ratio 必须在 0~1 之间（清洗后长度占比下界）")
+        return v
+
+    @field_validator("max_ratio")
+    @classmethod
+    def check_ai_max_ratio(cls, v):
+        if v is not None and v <= 0:
+            raise ValueError("max_ratio 必须为正数（清洗后长度占比上界）")
+        return v
+
+    @model_validator(mode="after")
+    def check_ai_ratio_range(self):
+        """护栏上下界交叉即语义反转（清洗结果永远被弃用），入口直接拒。"""
+        if self.min_ratio >= self.max_ratio:
+            raise ValueError(
+                f"min_ratio({self.min_ratio}) 必须小于 max_ratio({self.max_ratio})"
+                "——否则清洗结果永远过不了护栏，功能静默失效"
+            )
+        return self
+
+
 class DeduplicationConfig(BaseModel):
     """跨源内容级去重（F1，默认全关=现网行为零变化）。
 
@@ -299,6 +372,16 @@ class SystemSettings(BaseModel):
     ad_judge_threshold: float = 0.85
     ad_judge_fuzzy_low: float = 0.60
     ad_judge_timeout: float = 20.0
+    # F14 AI 结构化内容处理面板镜像：字段名 = "ai_content_" + AiContentConfig 字段名，
+    # 与 F10-F13 同机制。默认值逐项对齐 AiContentConfig，保证「面板从未管过」时
+    # 现网行为零变化。只镜像面板要暴露的 6 个键；sources/json_mode/护栏等进阶项
+    # 留 yaml——未落表就不覆盖，面板保存也不会把它们冲掉。
+    ai_content_enabled: bool = False
+    ai_content_base_url: str = "http://100.64.0.2:8091/v1"
+    ai_content_model: str = "glm-5.3-flash"
+    ai_content_threshold: float = 0.85
+    ai_content_clean_enabled: bool = True
+    ai_content_timeout: float = 8.0
 
     @field_validator("forwarding_mode")
     @classmethod
@@ -326,6 +409,20 @@ class SystemSettings(BaseModel):
     def check_ad_judge_timeout(cls, v):
         if v is not None and v <= 0:
             raise ValueError("ad_judge_timeout 必须为正数")
+        return v
+
+    @field_validator("ai_content_threshold")
+    @classmethod
+    def check_ai_content_threshold(cls, v):
+        if v is not None and not (0 < v <= 1):
+            raise ValueError("ai_content_threshold 必须在 0~1 之间")
+        return v
+
+    @field_validator("ai_content_timeout")
+    @classmethod
+    def check_ai_content_timeout(cls, v):
+        if v is not None and v <= 0:
+            raise ValueError("ai_content_timeout 必须为正数")
         return v
 
     @model_validator(mode="after")
@@ -555,6 +652,8 @@ class RuntimeConfig(BaseModel):
     translate: TranslateConfig = Field(default_factory=TranslateConfig)
     # AI 广告判别器（jev-1.13，默认关=现网行为零变化；仅 yaml 配置，不经 Web 面板）
     ad_judge: AdJudgeConfig = Field(default_factory=AdJudgeConfig)
+    # F14 AI 结构化内容处理（OpenAI 兼容，默认关=现网行为零变化）
+    ai_content: AiContentConfig = Field(default_factory=AiContentConfig)
 
     # Web 可编辑（app_config 表权威）
     sources: List[SourceConfig] = Field(default_factory=list)
@@ -614,6 +713,8 @@ def bootstrap_from_yaml(path: str) -> RuntimeConfig:
         cfg.translate = TranslateConfig(**data["translate"])
     if data.get("ad_judge"):
         cfg.ad_judge = AdJudgeConfig(**data["ad_judge"])
+    if data.get("ai_content"):
+        cfg.ai_content = AiContentConfig(**data["ai_content"])
 
     # 规则段（仅 bootstrap 时有意义；表已有数据时不会覆盖，见 load_runtime_config）
     if data.get("sources"):
@@ -655,6 +756,16 @@ _AD_JUDGE_MIRROR_KEYS = (
     "ad_judge_timeout",
 )
 
+# F14 AI 内容处理面板镜像键：同一命名约定 = "ai_content_" + AiContentConfig 字段名
+_AI_CONTENT_MIRROR_KEYS = (
+    "ai_content_enabled",
+    "ai_content_base_url",
+    "ai_content_model",
+    "ai_content_threshold",
+    "ai_content_clean_enabled",
+    "ai_content_timeout",
+)
+
 # 实验功能键（Web 面板 SystemSettings 镜像 → 覆盖摘要段；M4 起，F13 沿用同机制）。
 # 常量集中定义，bootstrap 剥离与 load_runtime_config 覆盖共用，避免两处漂移。
 _M4_EXPERIMENTAL_KEYS = (
@@ -664,7 +775,7 @@ _M4_EXPERIMENTAL_KEYS = (
     "translate_sources",
     "semantic_dedup_enabled",
     "semantic_dedup_threshold",
-) + _AD_JUDGE_MIRROR_KEYS
+) + _AD_JUDGE_MIRROR_KEYS + _AI_CONTENT_MIRROR_KEYS
 
 
 def _has_real_rules(cfg: RuntimeConfig) -> bool:
@@ -739,6 +850,7 @@ async def load_runtime_config(db: Database, yaml_path: str) -> RuntimeConfig:
         digest=yaml_cfg.digest if yaml_cfg else DigestConfig(),
         translate=yaml_cfg.translate if yaml_cfg else TranslateConfig(),
         ad_judge=yaml_cfg.ad_judge if yaml_cfg else AdJudgeConfig(),
+        ai_content=yaml_cfg.ai_content if yaml_cfg else AiContentConfig(),
     )
 
     settings_json = await config_repo.get("system_settings")
@@ -772,6 +884,15 @@ async def load_runtime_config(db: Database, yaml_path: str) -> RuntimeConfig:
             if _k in settings_json:
                 setattr(cfg.ad_judge, _k[len("ad_judge_"):], getattr(_settings, _k))
 
+    # F14 AI 内容处理：同「存在性逐键覆盖」机制（切片前缀 = 字段名）。
+    # 面板只镜像 6 个键，sources/json_mode/护栏等进阶项不落表 → 保持 yaml 值。
+    if settings_json and any(k in settings_json for k in _AI_CONTENT_MIRROR_KEYS):
+        for _k in _AI_CONTENT_MIRROR_KEYS:
+            if _k in settings_json:
+                setattr(
+                    cfg.ai_content, _k[len("ai_content_"):], getattr(_settings, _k)
+                )
+
     # 展示值 = runtime 实际生效值（Web 未管过时同步 yaml 状态，避免面板显示与生效值脱节）
     _settings.digest_enabled = cfg.digest.enabled
     _settings.digest_interval_seconds = cfg.digest.interval_seconds
@@ -781,6 +902,8 @@ async def load_runtime_config(db: Database, yaml_path: str) -> RuntimeConfig:
     _settings.semantic_dedup_threshold = cfg.deduplication.semantic_dedup_threshold
     for _k in _AD_JUDGE_MIRROR_KEYS:
         setattr(_settings, _k, getattr(cfg.ad_judge, _k[len("ad_judge_"):]))
+    for _k in _AI_CONTENT_MIRROR_KEYS:
+        setattr(_settings, _k, getattr(cfg.ai_content, _k[len("ai_content_"):]))
 
     ad_json = await config_repo.get("ad_filter")
     if ad_json:

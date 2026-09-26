@@ -373,6 +373,7 @@ class Forwarder:
         account_manager: Any,
         semantic_engine: Any = None,
         ad_judge: Any = None,
+        ai_content: Any = None,
     ) -> None:
         self.db = db
         self._am = account_manager
@@ -381,6 +382,10 @@ class Forwarder:
         self._rr_index = 0
         self._processed_lru: "OrderedDict[str, None]" = OrderedDict()
         self._prune_task: Optional[asyncio.Task] = None
+        # 并发去重认领位：本轮 process_message 已通过 check_hash、但尚未落库的
+        # 指纹。挡住同进程并发的重复消息（check_hash→send→add_hash 非原子）。
+        # 协程只在 await 点切换，所以「查 + 占位」之间没有 await 即原子。
+        self._inflight_hashes: set = set()
         # F12 语义去重引擎（默认 None=不启用；main.py 装配时注入外观类
         # SemanticDedup，内部含 SemanticDedupEngine——勿注入裸 Engine，其
         # check_duplicate 签名为 (text, marker)，与下方三参调用不匹配）
@@ -388,6 +393,9 @@ class Forwarder:
         # AI 广告判别器（jev；默认 None=不启用；main.py 装配时注入 AdJudge，
         # 构造不发请求。None=绝对零路径，现网默认配置下无任何相关日志/请求）
         self.ad_judge = ad_judge
+        # F14 AI 结构化内容处理（默认 None=不启用；main.py 装配时注入
+        # AiContentProcessor，构造不发请求。None=绝对零路径）
+        self.ai_content = ai_content
         # F10：AI digest 滚动窗口聚合（默认 None=不启用；main.py 装配时注入）
         self.digest_pipeline: Optional[Any] = None
         # M3 仪表盘数据源：进程启动时刻 + 消息处理统计（内存计数）
@@ -495,6 +503,10 @@ class Forwarder:
         # 是否已进入发送路径：发送成功后（含 _send_message 内部失败计数）的
         # post-send 异常不得再计 failed，防止同一条消息 forwarded/failed 双计
         send_attempted = False
+        # 并发去重认领位（见去重分支）：check_hash 与 add_hash 之间隔着一次网络
+        # send，同进程并发消息在首条落库前都查不到记录 → 会都放行。本轮已认领
+        # 的指纹先占位，退出时无条件释放（只有真正发出的那条才会另存进库里）。
+        claimed: List[str] = []
 
         try:
             # 过滤
@@ -525,24 +537,60 @@ class Forwarder:
                     self._msg_stats["filtered"] += 1
                     return
 
-            # 去重
+            # F14 AI 结构化内容处理（默认关=不装配，绝对零路径）。
+            # 位置：F13 之后、去重之前——广告拦截必须早于去重登记，否则被拦消息
+            # 不会进 dedup，重复转发时反而漏拦。一次调用同时出广告判定与清洗
+            # 正文：此处只消费 drop 判定，清洗结果留到 apply_replacements 前使用。
+            # process() 内部全 fail-open 且永不抛；此处仍兜一层，纯防契约漂移。
+            cleaned_text = None
+            if self.ai_content is not None and self.ai_content.applies_to(
+                numeric_chat_id
+            ):
+                try:
+                    verdict = await self.ai_content.process(text)
+                except Exception as e:
+                    logger.warning(f"F14 AI 内容处理失败（fail-open 放行）: {e}")
+                    verdict = None
+                if verdict is not None and verdict.drop:
+                    logger.info(
+                        f"消息 {numeric_chat_id}/{message.id} 被 F14 AI 广告过滤"
+                        f"（is_ad=true conf={verdict.confidence:.2f} "
+                        f"type={verdict.ad_type}），文本: {text[:80]!r}"
+                    )
+                    self._msg_stats["filtered"] += 1
+                    return
+                if verdict is not None:
+                    cleaned_text = verdict.cleaned_text
+
+            # 去重。先占位再放行：`_inflight_hashes` 挡住同进程并发的另一条同图
+            # 消息（现网同图转发两次到不同话题的根因），db 挡住跨进程/历史重复。
+            # 注意顺序：必须**先 await 查库、再同步做 in 判断、再同步占位**——
+            # 三者之间不能有 await，否则并发的两条都会在对方占位前通过检查。
             if snapshot.deduplication.enable:
                 h = message_hash(text, media, message.id)
-                if h and await self.db.check_hash(h):
-                    logger.info(f"消息 {message.id} 重复。")
-                    self._msg_stats["duplicates"] += 1
-                    return
+                if h:
+                    already = await self.db.check_hash(h)
+                    if already or h in self._inflight_hashes:
+                        # 带指纹上日志：并发命中（in-位）与历史命中（库里）能一眼分辨
+                        logger.info(f"消息 {message.id} 重复（{h}）。")
+                        self._msg_stats["duplicates"] += 1
+                        return
+                    claimed.append(h)
+                    self._inflight_hashes.add(h)
 
-            # F1 跨源内容级去重（默认关；任一指纹已见即跨源丢弃）
+            # F1 跨源内容级去重（默认关；任一指纹已见即跨源丢弃）——同样先占位，
+            # 否则两条同链接/同文件消息并发时会双双通过 check_hash。
             if snapshot.deduplication.cross_source_enable:
-                fps = content_fingerprints(text, media)
-                for fp in fps:
-                    if await self.db.check_hash(fp):
+                for fp in content_fingerprints(text, media):
+                    already = await self.db.check_hash(fp)
+                    if already or fp in self._inflight_hashes:
                         logger.info(
                             f"消息 {message.id} 跨源重复（{fp.split(':', 1)[0]} 指纹已见）。"
                         )
                         self._msg_stats["duplicates"] += 1
                         return
+                    claimed.append(fp)
+                    self._inflight_hashes.add(fp)
 
             # F12 语义去重（默认关；模型缺失/加载失败自动降级为不启用）。
             # 仅当开关开启且引擎可用才做 embedding 比对；任何失败都放行不阻塞。
@@ -576,8 +624,11 @@ class Forwarder:
                 self._msg_stats["failed"] += 1
                 return
 
-            # 替换
-            new_text = apply_replacements(text, snapshot)
+            # 替换（AI 清洗文本作基底：模型已剥掉尾巴，正则替换再叠加其上；
+            # 无清洗结果时就是原文，行为与升级前一致）
+            new_text = apply_replacements(
+                cleaned_text if cleaned_text else text, snapshot
+            )
 
             # F11 AI 翻译（默认关；仅对 translate.sources 内源生效；
             # 失败/无 key/端点异常 → 原文放行，绝不丢消息）
@@ -653,6 +704,11 @@ class Forwarder:
             if not send_attempted:
                 self._msg_stats["failed"] += 1
         finally:
+            # 释放并发去重认领位（同步操作，不 await）：
+            # - 已成功发出的指纹此时已由 add_hash 落库，释放后 db 检查接管；
+            # - 未发出的（失败/被拦/被过滤）释放后不占库，catchup 仍可重试。
+            for _fp in claimed:
+                self._inflight_hashes.discard(_fp)
             # 断点续传（v2 对齐）；进度写入失败不阻塞后续消息也不影响计数
             try:
                 await self.db.set_progress(numeric_chat_id, message.id)
