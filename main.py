@@ -423,6 +423,11 @@ async def cmd_run(db: Database, yaml_path: str) -> None:
 
     config = await load_runtime_config(db, yaml_path)
 
+    # 消费 yaml logging_level（v3 此前无人消费 → loguru 默认 DEBUG 全刷，
+    # 空洞对账逐条「近期已处理」DEBUG 日刷 1300+ 条，东哥实锤 09-28）
+    _lvl = getattr(getattr(config, "logging_level", None), "app", None) or "INFO"
+    logger.configure(handlers=[{"sink": sys.stdout, "level": _lvl}])
+
     # 仓储（Web 写操作的落表通道）
     config_repo = ConfigRepository(db)
     source_repo = SourceRepository(db)
