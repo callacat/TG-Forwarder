@@ -974,6 +974,10 @@ async def load_runtime_config(db: Database, yaml_path: str) -> RuntimeConfig:
 # digest（F10）与 ai_content（F14）都往各自段的 api_key 写；translate（F11）同。
 AI_SECRET_SECTIONS = ("ai_content", "translate", "digest")
 
+# 注释态段体行：``#   key: value``（# 后至少两个空格 = 取消注释后仍缩进，即段内键）。
+# 顶格散文注释（``# 说明文字``）只有一个空格，不匹配——靠它把相邻注释块与段体分开。
+_COMMENTED_INDENTED_LINE = re.compile(r"^#\s{2,}\S")
+
 
 def yaml_secret_set(path: str, section: str, key: str = "api_key") -> bool:
     """config.yaml 指定段指定键是否已配置——只回布尔，绝不外泄明文。"""
@@ -1005,12 +1009,33 @@ def _yaml_section_span(lines: List[str], section: str) -> tuple:
     return -1, -1
 
 
+def _uncomment_section_header(lines: List[str], section: str) -> int:
+    """把注释态的 ``# <section>:`` 段头就地取消注释，返回段头下标；找不到返回 -1。
+
+    config_template.yaml 里 digest/ai_content/translate 三段出厂即整段注释。此时按
+    「段不存在」分支在文件尾追加同名顶层键，日后用户手工取消注释就得到重复键——
+    ``yaml.safe_load`` 只认最后一个，用户自己配的 enabled/model 被静默丢弃。故先把
+    段头就地取消注释，让密钥落在用户看得见的那个段里。
+
+    **只脱段头一层，段体保持注释态**：那些键值是用户的意图（有人注释掉整段正是为了
+    停用该功能），替他取消注释等于替他改配置。日后手工取消段体注释即并入本段，不会
+    产生第二个顶层键——重复键的根因就此断掉。
+    """
+    header = re.compile(r"^#\s*%s\s*:" % re.escape(section))
+    for i, line in enumerate(lines):
+        if header.match(line):
+            lines[i] = header.sub(f"{section}:", line, count=1)
+            return i
+    return -1
+
+
 def set_yaml_secret(path: str, section: str, value: str, key: str = "api_key") -> None:
     """把密钥写进 config.yaml 指定段，**保留全部注释**。
 
     不能用 yaml.safe_dump 回写整个文件——config.yaml 是带注释的手工维护文件，
     往返一次注释全没、字段顺序也被重排。这里只做行级定点改写：段内命中已有键
-    则替换该行，否则在段头后插一行；整段不存在则追加到文件尾。
+    则替换该行，否则在段头后插一行；整段不存在则先取消同名注释段的段头（模板出厂态），
+    仍不存在才追加到文件尾。
 
     走「备份 → 副本 → 校验 → 原子替换」：先在内存里改并确认能解析且值对得上，
     再落 .bak 备份与同目录临时文件，最后 os.replace 原子换入（同文件系统原子）。
@@ -1030,6 +1055,15 @@ def set_yaml_secret(path: str, section: str, value: str, key: str = "api_key") -
     key_re = re.compile(r"^(\s*)%s\s*:" % re.escape(key))
 
     head, end = _yaml_section_span(lines, section)
+    if head < 0:
+        head = _uncomment_section_header(lines, section)
+        if head >= 0:
+            # 段体仍是注释态：查已有键的范围只认「注释掉的缩进配置行」。不能用
+            # _yaml_section_span 的端点判据——模板里 digest 之后全是注释块（translate /
+            # ad_judge / ai_content），它会一路扫到文件尾，把相邻段一起吞进改写范围。
+            end = head + 1
+            while end < len(lines) and _COMMENTED_INDENTED_LINE.match(lines[end]):
+                end += 1
     if head < 0:
         new_text = text.rstrip("\n") + f"\n\n{section}:\n  {key}: {quoted}\n"
     else:

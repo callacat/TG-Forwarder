@@ -236,7 +236,8 @@ def _reconcile_ai_features(forwarder, new_cfg) -> None:
     # 或 base_url 后原先只判「管线为 None」，非空管线会一直沿用启动时的 LLMClient，
     # 改配置不重建 = 面板声称已热重载而实际仍打旧模型。
     # **间隔不进键**：窗口到期判据由快照驱动（DigestPipeline._window_for 读
-    # snapshot.digest.interval_seconds），改间隔本就即时生效，且此时重建会丢
+    # snapshot.digest.interval_seconds），改间隔后新开的窗口即用新间隔、已开窗口跑完
+    # 才生效（RollingWindow.interval 构造时冻结）；且此时重建会丢
     # 已缓冲的滚动窗口消息——普通设置保存不该丢摘要进度。
     new_pipe = _build_digest_pipeline(new_cfg, forwarder)
     cur_pipe = getattr(forwarder, "digest_pipeline", None)

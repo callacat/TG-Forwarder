@@ -9,6 +9,7 @@
 - **写操作有闸**：段名白名单、值不许含换行、鉴权必过。
 """
 import os
+import re
 import sys
 import tempfile
 
@@ -49,6 +50,38 @@ ai_content:
 translate:
   enabled: true
   api_key_env: "AXONHUB_API_KEY"
+logging_level:
+  app: "INFO"
+"""
+
+# 出厂模板形态：digest/translate/ad_judge/ai_content 四段**整段注释**，且 digest 之后
+# 全是注释块（相邻段同为注释态）——正是重复顶层键 bug 的现场。
+COMMENTED_TEMPLATE_YAML = """web_ui:
+  password: "sha256$x"
+
+# F10 AI digest（默认关）
+# digest:
+#   enabled: false
+#   interval_seconds: 1800          # 滚动窗口间隔（秒）
+#   model: "deepseek-v4-flash"      # 免费模型
+#   # api_key: ""                   # 端点需鉴权时填写（可选）
+
+# F11 AI 翻译（默认关）
+# 字段说明：sources=要翻译的监控源
+# translate:
+#   enabled: false
+#   api_key_env: "AXONHUB_API_KEY"
+
+# AI 广告判别器
+# ad_judge:
+#   enabled: false
+#   threshold: 0.85
+
+# F14 AI 结构化内容处理
+# ai_content:
+#   enabled: false
+#   model: "glm-5.3-flash"
+
 logging_level:
   app: "INFO"
 """
@@ -186,6 +219,78 @@ class TestSetYamlSecret:
         with pytest.raises(ValueError):
             set_yaml_secret(p, "nope", "x")
         assert open(p, encoding="utf-8").read() == original
+
+    def test_commented_section_no_duplicate_top_level_key(self):
+        """对抗 minor：模板出厂态（整段注释）不得追加出第二个同名顶层键。
+
+        原实现只认「顶格非注释」的段头，注释态段一律判为不存在 → 在文件尾追加
+        第二个 `digest:`。当下 yaml 碰巧还能解析（后一个覆盖前一个），但日后用户
+        手工取消注释即重复键，`yaml.safe_load` 只认最后一个，用户自己配的
+        enabled/model 被静默丢弃。
+
+        判据不能只数「顶格 digest: 行数」——追加出来的那一个同样只有一行。真正的
+        分界是**位置**：就地取消注释时 `digest:` 留在模板原处（末段 logging_level
+        之前），追加实现则落在文件尾。
+        """
+        p = _write_yaml(COMMENTED_TEMPLATE_YAML)
+        set_yaml_secret(p, "digest", "sk-x")
+
+        text = open(p, encoding="utf-8").read()
+        assert [l for l in text.splitlines() if l.startswith("digest:")] == ["digest:"]
+        assert yaml.safe_load(text)["digest"]["api_key"] == "sk-x"
+        # 就地改写，不是文件尾追加
+        lines = text.splitlines()
+        assert lines.index("digest:") < lines.index('logging_level:')
+
+    def test_commented_section_user_edits_survive(self):
+        """验收：用户日后取消段体注释并配了自己的 enabled/model，不得被面板密钥挤掉。"""
+        p = _write_yaml(COMMENTED_TEMPLATE_YAML)
+        set_yaml_secret(p, "digest", "sk-x")
+
+        # 模拟用户手工取消 digest 段体注释（到空行为止），并填自己的值
+        lines = open(p, encoding="utf-8").read().splitlines(keepends=True)
+        out, in_digest = [], False
+        for line in lines:
+            if line.startswith("digest:"):
+                in_digest = True
+                out.append(line)
+                continue
+            if in_digest:
+                if not line.strip():          # 空行 = 注释块结束
+                    in_digest = False
+                elif re.match(r"^#\s{2,}\S", line):
+                    line = re.sub(r"^#\s?", "", line, count=1)
+                    line = line.replace("enabled: false", "enabled: true")
+                    line = line.replace('"deepseek-v4-flash"', '"user-picked-model"')
+            out.append(line)
+        text = "".join(out)
+
+        assert [l for l in text.splitlines() if l.startswith("digest:")] == ["digest:"]
+        section = yaml.safe_load(text)["digest"]
+        assert section["api_key"] == "sk-x"        # 面板写的密钥还在
+        assert section["enabled"] is True          # 用户改的开关没被洗掉
+        assert section["model"] == "user-picked-model"
+
+    def test_commented_section_neighbours_stay_commented(self):
+        """模板里 digest 之后全是注释块——不得把它们吞进改写范围或连带取消注释。"""
+        p = _write_yaml(COMMENTED_TEMPLATE_YAML)
+        set_yaml_secret(p, "digest", "sk-x")
+
+        text = open(p, encoding="utf-8").read()
+        for neighbour in ("# translate:", "# ad_judge:", "# ai_content:"):
+            assert neighbour in text, f"{neighbour} 被误改写"
+        assert "AXONHUB_API_KEY" in text           # 相邻段内容原样
+        data = yaml.safe_load(text)
+        assert "translate" not in data and "ai_content" not in data
+
+    def test_commented_section_idempotent(self):
+        p = _write_yaml(COMMENTED_TEMPLATE_YAML)
+        set_yaml_secret(p, "digest", "sk-1")
+        set_yaml_secret(p, "digest", "sk-2")
+        text = open(p, encoding="utf-8").read()
+        assert [l for l in text.splitlines() if l.startswith("digest:")] == ["digest:"]
+        assert text.count("api_key: \"sk-") == 1
+        assert yaml.safe_load(text)["digest"]["api_key"] == "sk-2"
 
 
 # ---------------------------------------------------------------------------

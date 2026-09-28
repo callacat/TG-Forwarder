@@ -445,22 +445,32 @@ def create_app(
         add 端点对已存在源直接 400，per 源开关（digest_enabled 等）此前只能手改
         sqlite。本端点与 /api/rules/update_single 同款：内存替换 → upsert 落表 →
         热重载，快照不刷新不得声称已生效。
+
+        **merge 语义**：只覆盖请求体里显式出现的字段（pydantic `model_fields_set`），
+        未传字段沿用库里原值。整条替换会让部分体请求（如只翻 digest_enabled）把
+        sync_edits / age_cutoff_hours / header_template / replies_limit 等无关 per 源
+        配置静默洗成默认值还返 200——真数据丢失。identifier 是匹配键而非待改字段，
+        显式排除，避免请求体用字符串 id 时把库里的 int id 改写掉。
         """
         target = str(source.identifier)
+        merged = None
         async with db_lock:
-            found = False
             for index, s in enumerate(rules_db.sources):
                 if str(s.identifier) == target:
-                    rules_db.sources[index] = source
-                    found = True
+                    merged = s.model_copy(
+                        update=source.model_dump(
+                            exclude_unset=True, exclude={"identifier"}
+                        )
+                    )
+                    rules_db.sources[index] = merged
                     break
-            if not found:
+            if merged is None:
                 raise HTTPException(status_code=404, detail="源不存在")
-            await source_repo.save(source.model_dump())
+            await source_repo.save(merged.model_dump())
             await _reload_runtime()  # M3 同款：per 源开关改完立即生效
         await notify_bot(
-            f"✏️ **更新监控源**: `{source.identifier}`"
-            f"（AI 摘要{'开' if source.digest_enabled else '关'}，已热重载生效）"
+            f"✏️ **更新监控源**: `{merged.identifier}`"
+            f"（AI 摘要{'开' if merged.digest_enabled else '关'}，已热重载生效）"
         )
         return {"status": "success"}
 

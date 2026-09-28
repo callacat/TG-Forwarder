@@ -645,6 +645,95 @@ class TestSources:
             )
         assert res.status_code == 401
 
+    def test_update_partial_body_keeps_unset_fields(self):
+        """对抗 major：只翻 digest_enabled 不得把无关 per 源配置洗成默认值。
+
+        原实现是整条替换——pydantic 对未传字段填默认值后 model_dump 落库，且返回 200，
+        属静默数据丢失。任何只带部分字段的调用方（脚本/curl/未来面板改动）都会中招。
+        """
+        client, ctx = make_client()
+        with client:
+            client.post(
+                "/api/sources/add",
+                json={
+                    "identifier": -100777,
+                    "sync_edits": True,
+                    "sync_deletes": True,
+                    "age_cutoff_hours": 72,
+                    "header_template": "H {title}",
+                    "replies_limit": 42,
+                },
+                headers=basic_auth(),
+            )
+            res = client.post(
+                "/api/sources/update",
+                json={"identifier": -100777, "digest_enabled": True},
+                headers=basic_auth(),
+            )
+            assert res.status_code == 200
+
+            rows = asyncio.run(ctx["source_repo"].get_all())
+            assert rows[0]["digest_enabled"] in (1, True)
+            # 5 个未传字段必须原值保留——这 5 条任一为默认值即回归
+            assert rows[0]["sync_edits"] in (1, True)
+            assert rows[0]["sync_deletes"] in (1, True)
+            assert rows[0]["age_cutoff_hours"] == 72
+            assert rows[0]["header_template"] == "H {title}"
+            assert rows[0]["replies_limit"] == 42
+
+            # 内存快照同样不得被洗（面板 GET /api/rules 读的是它）
+            rules = client.get("/api/rules", headers=basic_auth()).json()
+            assert rules["sources"][0]["header_template"] == "H {title}"
+            assert rules["sources"][0]["replies_limit"] == 42
+
+    def test_update_full_body_still_overwrites(self):
+        """merge 不能退化成「只增不改」：显式传的全字段仍以请求体为准。"""
+        client, ctx = make_client()
+        with client:
+            client.post(
+                "/api/sources/add",
+                json={"identifier": -100777, "age_cutoff_hours": 72, "replies_limit": 42},
+                headers=basic_auth(),
+            )
+            client.post(
+                "/api/sources/update",
+                json={
+                    "identifier": -100777,
+                    "age_cutoff_hours": 24,
+                    "replies_limit": 5,
+                    "header_template": None,
+                    "digest_enabled": True,
+                },
+                headers=basic_auth(),
+            )
+            rows = asyncio.run(ctx["source_repo"].get_all())
+            assert rows[0]["age_cutoff_hours"] == 24
+            assert rows[0]["replies_limit"] == 5
+            assert rows[0]["header_template"] is None
+            assert rows[0]["digest_enabled"] in (1, True)
+
+    def test_update_does_not_rewrite_identifier_type(self):
+        """identifier 是匹配键而非待改字段：请求体传字符串 id 不得改写内存里的 int id。
+
+        落库那一侧与本改动无关——仓储本来就 str(identifier) 存文本列，两种实现一致。
+        可观测的差异在内存快照：面板 GET /api/rules 读的是它。
+        """
+        client, ctx = make_client()
+        with client:
+            client.post("/api/sources/add", json={"identifier": -100999}, headers=basic_auth())
+            client.post(
+                "/api/sources/update",
+                json={"identifier": "-100999", "digest_enabled": True},
+                headers=basic_auth(),
+            )
+            rules = client.get("/api/rules", headers=basic_auth()).json()
+            assert len(rules["sources"]) == 1
+            assert rules["sources"][0]["identifier"] == -100999
+            assert rules["sources"][0]["digest_enabled"] is True
+            # 键没被改写成字符串，remove 仍能按原 id 命中（不产生第二条记录）
+            client.post("/api/sources/remove", json={"identifier": -100999}, headers=basic_auth())
+            assert asyncio.run(ctx["source_repo"].get_all()) == []
+
 
 # ---------------------------------------------------------------------------
 # rules 全量操作
