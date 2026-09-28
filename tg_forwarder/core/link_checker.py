@@ -67,8 +67,13 @@ class LinkChecker:
             return
 
         if not self.target_channel_id:
+            ident = self.target_channel_identifier
+            if isinstance(ident, str) and ident.lstrip("-").isdigit():
+                # 纯数字 str 必须转 int：telethon get_entity(str) 会当 username 解析必败
+                # （主流程走 int+session 缓存所以能发），实锤每日 03:00 ERROR、检测器一直空转
+                ident = int(ident)
             try:
-                entity = await self.client.get_entity(self.target_channel_identifier)
+                entity = await self.client.get_entity(ident)
                 self.target_channel_id = entity.id
             except Exception as e:
                 logger.error(

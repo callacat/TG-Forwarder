@@ -78,6 +78,24 @@ class TestExtractLinks:
         assert links == ["https://pan.baidu.com/s/1"]
 
 
+class TestTargetResolve:
+    async def test_numeric_string_target_passed_as_int(self, tmp_path):
+        """rc.11 修复：default_target 纯数字 str 必须转 int 再 get_entity——
+        str 形态被 telethon 当 username 解析必败（现网每日 03:00 ERROR、检测器空转实锤）。"""
+        class _Rec(_DeadClient):
+            def __init__(self):
+                super().__init__({})
+                self.got = None
+            async def get_entity(self, identifier):
+                self.got = identifier
+                return SimpleNamespace(id=-100999)
+        client = _Rec()
+        db, checker = await _make_checker(tmp_path, client, "edit")
+        await checker.run()
+        assert isinstance(client.got, int), f"get_entity 应收到 int，实得 {type(client.got)}"
+        await db.close()
+
+
 class TestCheckLinkValidity:
     async def test_request_error_treated_as_valid(self, tmp_path, monkeypatch):
         """检测请求失败一律视为有效（防误判，F3）。"""
