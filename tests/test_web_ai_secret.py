@@ -222,7 +222,8 @@ class TestAiSecretEndpoint:
         r = client.get("/api/ai-secret", headers=basic_auth())
         assert r.status_code == 200
         body = r.json()
-        assert body == {"ai_content": True, "translate": False}
+        # F10 digest 已并入只写通道（样本 yaml 无 digest 段 → 布尔 False）
+        assert body == {"ai_content": True, "translate": False, "digest": False}
         assert "old-key" not in r.text  # 明文绝不外泄
 
     def test_post_writes_and_never_echoes(self):
@@ -323,12 +324,44 @@ class TestEndToEnd:
 
     def test_whitelist_matches_sections_with_key_field(self):
         """白名单里的段必须真的有 api_key 字段，否则面板能写但代码不认。"""
-        from tg_forwarder.config import AiContentConfig, TranslateConfig
+        from tg_forwarder.config import AiContentConfig, DigestConfig, TranslateConfig
 
         for s in AI_SECRET_SECTIONS:
-            assert s == "ai_content" or s == "translate"
+            assert s in ("ai_content", "translate", "digest")
         assert "api_key" in AiContentConfig.model_fields
         assert "api_key" in TranslateConfig.model_fields
+        assert "api_key" in DigestConfig.model_fields
+
+    def test_digest_key_written_and_reaches_pipeline(self):
+        """F10 端到端：面板填 key → config.yaml digest.api_key 落盘 → 摘要管线带 Bearer。
+
+        改前 F10 没接本通道，8091 端点校验 401、key 不填功能必挂。
+        """
+        p = _write_yaml()
+        client, calls = make_client(p)
+        r = client.post(
+            "/api/ai-secret",
+            json={"section": "digest", "api_key": "sk-digest-e2e"},
+            headers=basic_auth(),
+        )
+        assert r.status_code == 200
+        assert r.json() == {"status": "success", "section": "digest", "api_key_set": True}
+        assert "sk-digest-e2e" not in r.text  # 明文不回显
+        # 读侧只回布尔，且写完为真
+        assert client.get("/api/ai-secret", headers=basic_auth()).json()["digest"] is True
+        # 密钥落在 yaml 的 digest 段，注释不丢
+        assert yaml.safe_load(open(p, encoding="utf-8"))["digest"]["api_key"] == "sk-digest-e2e"
+        assert "AI 段说明" in open(p, encoding="utf-8").read()
+        assert calls["update_settings"] == 1
+
+        cfg = bootstrap_from_yaml(p)
+        assert cfg.digest.api_key == "sk-digest-e2e"
+
+        from main import _build_digest_pipeline
+
+        cfg.digest.enabled = True
+        pipe = _build_digest_pipeline(cfg)
+        assert pipe is not None and pipe.llm.api_key == "sk-digest-e2e"
 
     @pytest.mark.asyncio
     async def test_key_change_picked_up_by_reload(self, tmp_path):
@@ -375,15 +408,21 @@ class TestPanelUi:
         html = self._html()
         assert 'id="acApiKey" type="password"' in html
         assert 'id="trApiKey" type="password"' in html
+        assert 'id="dgApiKey" type="password"' in html
         assert "saveAiSecret('ai_content')" in html
         assert "saveAiSecret('translate')" in html
+        assert "saveAiSecret('digest')" in html
         assert "/api/ai-secret" in html
 
     def test_key_never_bound_into_settings(self):
         """回归核心：settings 会被 POST 到 /api/settings/update 并落 sqlite——
         密钥一旦绑进去就等于明文入库且可 GET 回读。"""
         html = self._html()
-        for binding in ("settings.ai_content_api_key", "settings.translate_api_key"):
+        for binding in (
+            "settings.ai_content_api_key",
+            "settings.translate_api_key",
+            "settings.digest_api_key",
+        ):
             assert binding not in html, f"密钥不得绑进 settings（{binding}）"
         # settings 字面量里不能出现裸 api_key 字段
         start = html.index("settings: {")
@@ -395,4 +434,5 @@ class TestPanelUi:
         html = self._html()
         assert "aiSecretSet.ai_content" in html
         assert "aiSecretSet.translate" in html
+        assert "aiSecretSet.digest" in html
         assert "aiSecretSet.ai_content = " not in html  # 赋值只来自 /api/ai-secret 返回

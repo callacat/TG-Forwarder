@@ -488,6 +488,9 @@
                             <div class="font-bold text-sm truncate text-surface-900 dark:text-white" x-text="getAvatar(s).displayName"></div>
                             <div class="text-xs font-mono text-surface-500 truncate mt-0.5" x-text="'ID: ' + (s.resolved_id || 'Pending...')"></div>
                         </div>
+                        <button @click="toggleSourceDigest(s)" class="p-2 transition-colors" :class="s.digest_enabled ? 'text-green-600' : 'text-surface-400 hover:text-apple-blue'" :aria-pressed="!!s.digest_enabled" :aria-label="'切换源 ' + getAvatar(s).displayName + ' 的 AI 摘要'" :title="s.digest_enabled ? 'AI 摘要：已开启（点击关闭）' : 'AI 摘要：已关闭（点击开启，需先在系统设置开启 F10）'">
+                            <svg class="w-4 h-4" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M9.813 15.904 9 18.75l-.813-2.846a4.5 4.5 0 00-3.09-3.09L2.25 12l2.846-.813a4.5 4.5 0 003.09-3.09L9 5.25l.813 2.846a4.5 4.5 0 003.09 3.09L15.75 12l-2.846.813a4.5 4.5 0 00-3.09 3.09z"/></svg>
+                        </button>
                         <button @click="removeSource(s.identifier)" class="text-surface-400 hover:text-apple-red p-2 transition-colors" title="删除源" aria-label="删除源">
                             <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16"></path></svg>
                         </button>
@@ -677,12 +680,35 @@
                                 <span class="font-medium text-sm">F10 · AI 聚合摘要 <span class="text-surface-400 text-xs">(Digest)</span></span>
                                 <input type="checkbox" x-model="settings.digest_enabled" class="w-5 h-5 accent-apple-blue rounded" aria-label="F10 AI 聚合摘要开关">
                             </label>
-                            <div x-show="settings.digest_enabled" class="mt-3 flex flex-wrap items-center gap-3">
-                                <label for="digestInterval" class="text-xs font-bold text-surface-500">聚合间隔（秒）</label>
-                                <div class="flex items-center gap-3">
-                                    <input id="digestInterval" type="number" min="60" step="30" x-model.number="settings.digest_interval_seconds" class="app-input w-32">
-                                    <span class="text-xs text-surface-400" x-text="'≈ ' + Math.max(1, Math.round((settings.digest_interval_seconds || 0) / 60)) + ' 分钟'"></span>
+                            <div x-show="settings.digest_enabled" class="mt-3 space-y-3">
+                                <div class="flex flex-wrap items-center gap-3">
+                                    <label for="digestInterval" class="text-xs font-bold text-surface-500">聚合间隔（秒）</label>
+                                    <div class="flex items-center gap-3">
+                                        <input id="digestInterval" type="number" min="60" step="30" x-model.number="settings.digest_interval_seconds" class="app-input w-32">
+                                        <span class="text-xs text-surface-400" x-text="'≈ ' + Math.max(1, Math.round((settings.digest_interval_seconds || 0) / 60)) + ' 分钟'"></span>
+                                    </div>
                                 </div>
+                                <div>
+                                    <label for="dgBaseUrl" class="block text-xs font-bold text-surface-500">API 端点 (base_url)</label>
+                                    <input id="dgBaseUrl" type="text" x-model="settings.digest_base_url" class="app-input font-mono text-sm" placeholder="http://100.64.0.2:8091/v1">
+                                </div>
+                                <div>
+                                    <label for="dgModel" class="block text-xs font-bold text-surface-500">模型 (model)</label>
+                                    <input id="dgModel" type="text" x-model="settings.digest_model" class="app-input font-mono text-sm" placeholder="glm-5.3-flash">
+                                </div>
+                                <div>
+                                    <label for="dgApiKey" class="block text-xs font-bold text-surface-500">API 密钥 (api_key)</label>
+                                    <div class="flex gap-2">
+                                        <input id="dgApiKey" type="password" x-model="aiSecretInput.digest" class="app-input font-mono text-sm flex-1" placeholder="粘贴 Bearer 密钥" autocomplete="off">
+                                        <button @click="saveAiSecret('digest')" :disabled="busy" class="btn-base bg-apple-blue text-white px-4">保存密钥</button>
+                                    </div>
+                                    <p class="text-xs text-surface-500 mt-1">
+                                        写入 <code>config.yaml</code> 的 <code>digest.api_key</code>，<b>永不回显</b>。
+                                        <span x-show="aiSecretSet.digest" class="text-green-600 font-medium">✓ 已配置</span>
+                                        <span x-show="!aiSecretSet.digest">未配置：端点需鉴权时摘要请求会被拒。</span>
+                                    </p>
+                                </div>
+                                <p class="text-xs text-surface-500">端点/模型/密钥改完保存即热重载重建摘要管线，无需重启容器；每个源是否参与摘要在「监控源」页逐源开关（需本功能全局开启）。</p>
                             </div>
                         </div>
                         <div class="p-4 rounded-xl bg-surface-100 dark:bg-surface-800">
@@ -864,11 +890,11 @@
                 currentTab: 'status',
                 stats: {}, status: { accounts: [], message_stats: {} },
                 rules: { sources: [], distribution_rules: [] },
-                settings: { dedup_retention_days: 30, forwarding_mode: 'copy', forward_new_only: true, mark_as_read: false, mark_target_as_read: false, default_target: '', default_topic_id: null, digest_enabled: false, digest_interval_seconds: 1800, translate_enabled: false, translate_sources: [], semantic_dedup_enabled: false, semantic_dedup_threshold: 0.85, ad_judge_enabled: false, ad_judge_base_url: 'http://100.64.0.2:28880', ad_judge_model: 'jev-1.13', ad_judge_threshold: 0.85, ad_judge_fuzzy_low: 0.6, ad_judge_timeout: 20, ai_content_enabled: false, ai_content_base_url: 'http://100.64.0.2:8091/v1', ai_content_model: 'glm-5.3-flash', ai_content_threshold: 0.85, ai_content_clean_enabled: true, ai_content_timeout: 8 },
+                settings: { dedup_retention_days: 30, forwarding_mode: 'copy', forward_new_only: true, mark_as_read: false, mark_target_as_read: false, default_target: '', default_topic_id: null, digest_enabled: false, digest_interval_seconds: 1800, digest_base_url: 'http://100.64.0.2:8091/v1', digest_model: 'glm-5.3-flash', translate_enabled: false, translate_sources: [], semantic_dedup_enabled: false, semantic_dedup_threshold: 0.85, ad_judge_enabled: false, ad_judge_base_url: 'http://100.64.0.2:28880', ad_judge_model: 'jev-1.13', ad_judge_threshold: 0.85, ad_judge_fuzzy_low: 0.6, ad_judge_timeout: 20, ai_content_enabled: false, ai_content_base_url: 'http://100.64.0.2:8091/v1', ai_content_model: 'glm-5.3-flash', ai_content_threshold: 0.85, ai_content_clean_enabled: true, ai_content_timeout: 8 },
                 appVersion: '',
                 // AI 密钥只写：set 是后端回的布尔位（明文永不回传），input 是本次待提交的明文
-                aiSecretSet: { ai_content: false, translate: false },
-                aiSecretInput: { ai_content: '', translate: '' },
+                aiSecretSet: { ai_content: false, translate: false, digest: false },
+                aiSecretInput: { ai_content: '', translate: '', digest: '' },
                 blacklist: { substring: '', word: '', file: '', regex: '' }, whitelist: { keywords: '' },
                 content_filter: { enable: true, meaningless_words: [], min_meaningful_length: 5 },
                 replacements: {}, replacements_list: [],
@@ -1132,6 +1158,8 @@
                 async saveDefaultTarget() { return this._guard(async () => { try { await this.api('/api/settings/update', 'POST', this.settings); await this.afterWrite('默认目标已更新'); } catch(e) { this.showToast('保存失败', e.message, 'error'); } }); },
                 async addSource() { try { await this.api('/api/sources/add', 'POST', { identifier: this.newSource }); this.newSource = ''; await this.afterWrite('监控源已添加'); } catch(e) { this.showToast('添加失败', e.message, 'error'); } },
                 async removeSource(id) { if (!confirm('确认删除?')) return; try { await this.api('/api/sources/remove', 'POST', { identifier: id }); await this.afterWrite('监控源已删除'); } catch(e) { this.showToast('删除失败', e.message, 'error'); } },
+                // per 源 AI 摘要开关：整条源对象回传（SourceConfig 全字段），只翻 digest_enabled
+                async toggleSourceDigest(s) { return this._guard(async () => { const next = !s.digest_enabled; try { await this.api('/api/sources/update', 'POST', { ...s, digest_enabled: next }); await this.afterWrite(next ? '该源 AI 摘要已开启' : '该源 AI 摘要已关闭'); } catch(e) { this.showToast('更新失败', e.message, 'error'); } }); },
                 async addRule() { const payload = this.buildRulePayload(this.newRule); try { await this.api('/api/rules/add', 'POST', payload); this.newRule = {name:'', target:'', topic:'', all_kw:'', any_kw:'', files:''}; await this.afterWrite('规则已添加'); } catch(e) { this.showToast('添加失败', e.message, 'error'); } },
                 async saveEditedRule() { const payload = this.buildRulePayload(this.editRuleData); try { const url = `/api/rules/update_single?name_to_replace=${encodeURIComponent(this.editRuleData.original_name)}`; await this.api(url, 'POST', payload); this.showEditModal = false; await this.afterWrite('规则已更新'); } catch(e) { this.showToast('更新失败', e.message, 'error'); } },
                 buildRulePayload(data) { return { name: data.name, target_identifier: data.target, topic_id: data.topic ? parseInt(data.topic) : null, all_keywords: this.textToArray(data.all_kw), any_keywords: this.textToArray(data.any_kw), file_name_patterns: this.textToArray(data.files) }; },

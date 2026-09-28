@@ -87,7 +87,9 @@ class DigestConfig(BaseModel):
     - enabled: 是否启用 AI 摘要聚合（全局开关；源的 digest_enabled 为 per 源开关，AND）；
     - interval_seconds: 滚动窗口间隔（默认 1800s=30min）；
     - base_url / model: OpenAI 兼容端点（axonhub 默认，免费 glm-5.3-flash）；
-    - api_key: 可选 Bearer 密钥（端点无需鉴权时留空）。
+    - api_key: 可选 Bearer 密钥（端点无需鉴权时留空）。**刻意不进 SystemSettings
+      镜像**：密钥不落面板 sqlite、不可被 GET /api/settings 回读；面板填密钥走
+      /api/ai-secret 只写接口写回本文件（见 set_yaml_secret，与 F14 同纪律）。
 
     命名说明（Codex 验收对照）：功能契约里 digest_enabled/digest_interval 对应
     本结构的 enabled / interval_seconds；per 源开关字段名即验收名 digest_enabled。
@@ -372,6 +374,11 @@ class SystemSettings(BaseModel):
     # 并回填展示（保证 UI 如实显示当前状态，详见 load_runtime_config）。
     digest_enabled: bool = False
     digest_interval_seconds: int = 1800
+    # F10 AI digest 端点/模型面板镜像（对齐 F13/F14 的 "<段>_" + 字段名约定）。
+    # **digest_api_key 刻意不进 SystemSettings**：密钥不能落面板 sqlite、不能被
+    # GET /api/settings 回读，面板填密钥走 /api/ai-secret 只写通道写 config.yaml。
+    digest_base_url: str = "http://100.64.0.2:8091/v1"
+    digest_model: str = "glm-5.3-flash"
     translate_enabled: bool = False
     # F11 翻译源列表（Web 面板可编辑镜像，映射 translate.sources 按 resolved_id 匹配；
     # 未配置=不翻译任何源，与 yaml 留空语义一致）
@@ -759,6 +766,15 @@ def bootstrap_from_yaml(path: str) -> RuntimeConfig:
     return cfg
 
 
+# F10 AI digest 面板镜像键：同一命名约定 = "digest_" + DigestConfig 字段名。
+# 刻意不含 api_key（密钥不进面板 sqlite，见 SystemSettings 注释）。
+_DIGEST_MIRROR_KEYS = (
+    "digest_enabled",
+    "digest_interval_seconds",
+    "digest_base_url",
+    "digest_model",
+)
+
 # F13 AI 广告判别面板镜像键：命名约定 = "ad_judge_" + AdJudgeConfig 字段名，
 # load_runtime_config 的覆盖/回填循环靠该前缀切片直接 setattr（见 _ad_judge_* 两处）。
 _AD_JUDGE_MIRROR_KEYS = (
@@ -783,13 +799,11 @@ _AI_CONTENT_MIRROR_KEYS = (
 # 实验功能键（Web 面板 SystemSettings 镜像 → 覆盖摘要段；M4 起，F13 沿用同机制）。
 # 常量集中定义，bootstrap 剥离与 load_runtime_config 覆盖共用，避免两处漂移。
 _M4_EXPERIMENTAL_KEYS = (
-    "digest_enabled",
-    "digest_interval_seconds",
     "translate_enabled",
     "translate_sources",
     "semantic_dedup_enabled",
     "semantic_dedup_threshold",
-) + _AD_JUDGE_MIRROR_KEYS + _AI_CONTENT_MIRROR_KEYS
+) + _DIGEST_MIRROR_KEYS + _AD_JUDGE_MIRROR_KEYS + _AI_CONTENT_MIRROR_KEYS
 
 
 def _has_real_rules(cfg: RuntimeConfig) -> bool:
@@ -877,9 +891,6 @@ async def load_runtime_config(db: Database, yaml_path: str) -> RuntimeConfig:
     # 未存过（旧库/未点过保存）则不覆盖，settings 展示值回落 runtime（yaml）实际状态。
     _settings = cfg.settings
     if settings_json and any(k in settings_json for k in _M4_EXPERIMENTAL_KEYS):
-        if "digest_enabled" in settings_json or "digest_interval_seconds" in settings_json:
-            cfg.digest.enabled = _settings.digest_enabled
-            cfg.digest.interval_seconds = _settings.digest_interval_seconds
         if "translate_enabled" in settings_json:
             cfg.translate.enabled = _settings.translate_enabled
         if "translate_sources" in settings_json:
@@ -890,6 +901,13 @@ async def load_runtime_config(db: Database, yaml_path: str) -> RuntimeConfig:
         ):
             cfg.deduplication.semantic_dedup_enabled = _settings.semantic_dedup_enabled
             cfg.deduplication.semantic_dedup_threshold = _settings.semantic_dedup_threshold
+
+    # F10 AI digest：同「存在性逐键覆盖」机制（切片前缀 = 字段名）。面板管过的键
+    # 以落表为准，没管过的（端点/模型/间隔）保持 yaml 值——面板首次保存也不会冲掉。
+    if settings_json and any(k in settings_json for k in _DIGEST_MIRROR_KEYS):
+        for _k in _DIGEST_MIRROR_KEYS:
+            if _k in settings_json:
+                setattr(cfg.digest, _k[len("digest_"):], getattr(_settings, _k))
 
     # F13 AI 广告判别：同「存在性逐键覆盖」机制（字段名去 "ad_judge_" 前缀 = AdJudgeConfig
     # 字段名，故直接切片 setattr）。未被面板管过的键保持 yaml 值，面板保存过才以落表为准。
@@ -908,12 +926,12 @@ async def load_runtime_config(db: Database, yaml_path: str) -> RuntimeConfig:
                 )
 
     # 展示值 = runtime 实际生效值（Web 未管过时同步 yaml 状态，避免面板显示与生效值脱节）
-    _settings.digest_enabled = cfg.digest.enabled
-    _settings.digest_interval_seconds = cfg.digest.interval_seconds
     _settings.translate_enabled = cfg.translate.enabled
     _settings.translate_sources = list(cfg.translate.sources)
     _settings.semantic_dedup_enabled = cfg.deduplication.semantic_dedup_enabled
     _settings.semantic_dedup_threshold = cfg.deduplication.semantic_dedup_threshold
+    for _k in _DIGEST_MIRROR_KEYS:
+        setattr(_settings, _k, getattr(cfg.digest, _k[len("digest_"):]))
     for _k in _AD_JUDGE_MIRROR_KEYS:
         setattr(_settings, _k, getattr(cfg.ad_judge, _k[len("ad_judge_"):]))
     for _k in _AI_CONTENT_MIRROR_KEYS:
@@ -953,7 +971,8 @@ async def load_runtime_config(db: Database, yaml_path: str) -> RuntimeConfig:
 # ---------------------------------------------------------------------------
 
 # 允许面板写密钥的段白名单：写操作只能落在这几段，防越权写任意顶层键。
-AI_SECRET_SECTIONS = ("ai_content", "translate")
+# digest（F10）与 ai_content（F14）都往各自段的 api_key 写；translate（F11）同。
+AI_SECRET_SECTIONS = ("ai_content", "translate", "digest")
 
 
 def yaml_secret_set(path: str, section: str, key: str = "api_key") -> bool:

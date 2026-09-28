@@ -436,6 +436,34 @@ def create_app(
         await notify_bot(f"➖ **移除监控源**: `{identifier}`（已热重载生效）")
         return {"status": "success"}
 
+    @app.post("/api/sources/update")
+    async def update_source(
+        source: SourceConfig, username: str = Depends(require_auth)
+    ):
+        """更新已存在的源（按 identifier 匹配）。
+
+        add 端点对已存在源直接 400，per 源开关（digest_enabled 等）此前只能手改
+        sqlite。本端点与 /api/rules/update_single 同款：内存替换 → upsert 落表 →
+        热重载，快照不刷新不得声称已生效。
+        """
+        target = str(source.identifier)
+        async with db_lock:
+            found = False
+            for index, s in enumerate(rules_db.sources):
+                if str(s.identifier) == target:
+                    rules_db.sources[index] = source
+                    found = True
+                    break
+            if not found:
+                raise HTTPException(status_code=404, detail="源不存在")
+            await source_repo.save(source.model_dump())
+            await _reload_runtime()  # M3 同款：per 源开关改完立即生效
+        await notify_bot(
+            f"✏️ **更新监控源**: `{source.identifier}`"
+            f"（AI 摘要{'开' if source.digest_enabled else '关'}，已热重载生效）"
+        )
+        return {"status": "success"}
+
     @app.post("/api/rules/add")
     async def add_rule(rule: TargetDistributionRule, username: str = Depends(require_auth)):
         await rule_repo.save(rule.model_dump())

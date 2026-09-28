@@ -112,8 +112,8 @@ def _reconcile_ai_features(forwarder, new_cfg) -> None:
 
     设计：
     - F12 引擎仅在 dedup 开关或阈值变化时重建——无变化保留，不丢已加载模型与内存窗口；
-    - F10 管线仅在「关闭→开启」时新建、关闭时摘除——已启用未变化时保留原管线
-      与滚动窗口缓冲（普通设置保存不丢摘要进度；间隔改动由快照驱动，新窗口即用新间隔）。
+    - F10 管线仅在「关闭→开启」或「端点/模型/密钥变化」时新建、关闭时摘除——配置
+      未变的普通设置保存保留原管线与滚动窗口缓冲（间隔改动由快照驱动，新窗口即用新间隔）。
     """
     # --- F12 语义引擎 ---
     dedup = getattr(new_cfg, "deduplication", None)
@@ -232,15 +232,39 @@ def _reconcile_ai_features(forwarder, new_cfg) -> None:
         )
 
     # --- F10 digest 管线 ---
+    # 重建条件 = 端点/模型/密钥变化（F13/F14 同款全字段比对）：面板改 digest.model
+    # 或 base_url 后原先只判「管线为 None」，非空管线会一直沿用启动时的 LLMClient，
+    # 改配置不重建 = 面板声称已热重载而实际仍打旧模型。
+    # **间隔不进键**：窗口到期判据由快照驱动（DigestPipeline._window_for 读
+    # snapshot.digest.interval_seconds），改间隔本就即时生效，且此时重建会丢
+    # 已缓冲的滚动窗口消息——普通设置保存不该丢摘要进度。
     new_pipe = _build_digest_pipeline(new_cfg, forwarder)
+    cur_pipe = getattr(forwarder, "digest_pipeline", None)
     if new_pipe is not None:
-        if getattr(forwarder, "digest_pipeline", None) is None:
+        new_key = (
+            str(getattr(new_cfg.digest, "base_url", "") or "").rstrip("/"),
+            str(getattr(new_cfg.digest, "model", "") or ""),
+            getattr(new_cfg.digest, "api_key", None),
+        )
+        cur_key = None
+        if cur_pipe is not None:
+            try:
+                cur_llm = cur_pipe.llm
+                cur_key = (
+                    str(getattr(cur_llm, "base_url", "") or "").rstrip("/"),
+                    str(getattr(cur_llm, "model", "") or ""),
+                    getattr(cur_llm, "api_key", None),
+                )
+            except Exception:  # noqa: BLE001 —— 兼容假管线/测试替身
+                cur_key = None
+        if cur_pipe is None or cur_key != new_key:
             forwarder.digest_pipeline = new_pipe
             logger.info(
-                f"F10 AI digest 已热重载启用: {new_cfg.digest.base_url} / "
-                f"{new_cfg.digest.model}, 间隔 {new_cfg.digest.interval_seconds}s"
+                f"F10 AI digest 已启用: 端点 {new_key[0]}, 模型 {new_key[1]}, "
+                f"间隔 {getattr(new_cfg.digest, 'interval_seconds', 1800)}s"
+                f"（热重载装配）"
             )
-    elif getattr(forwarder, "digest_pipeline", None) is not None:
+    elif cur_pipe is not None:
         forwarder.digest_pipeline = None
         logger.info("F10 AI digest 已热重载关闭（管线摘除）")
 

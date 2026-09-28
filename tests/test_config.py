@@ -278,6 +278,98 @@ class TestM4ExperimentalMerging:
         assert cfg2.deduplication.semantic_dedup_enabled is False
         await db.close()
 
+    async def test_digest_panel_values_override_yaml(self, tmp_path):
+        """F10：面板落表 digest_base_url/digest_model 覆盖 yaml digest 段（热重载生效路径）。
+
+        改前 F10 端点/模型只能手改 config.yaml——面板无入口，改完也不热重载。
+        """
+        yaml_cfg = FULL_YAML + (
+            '\ndigest:\n  enabled: true\n  interval_seconds: 900\n'
+            '  base_url: "http://yaml-host:8091/v1"\n  model: "yaml-model"\n'
+        )
+        yp = _write_yaml(tmp_path, yaml_cfg)
+        db = await _fresh_db(tmp_path)
+
+        # 未存过镜像键：runtime 取 yaml，展示值同步（面板如实显示当前状态）
+        cfg1 = await load_runtime_config(db, yp)
+        assert cfg1.digest.base_url == "http://yaml-host:8091/v1"
+        assert cfg1.digest.model == "yaml-model"
+        assert cfg1.settings.digest_base_url == "http://yaml-host:8091/v1"
+        assert cfg1.settings.digest_model == "yaml-model"
+
+        from tg_forwarder.storage.repositories import ConfigRepository
+
+        repo = ConfigRepository(db)
+        s = cfg1.settings.model_dump()
+        s.update(
+            digest_base_url="http://panel-host:8091/v1",
+            digest_model="deepseek-v4-flash-vision-exp",
+        )
+        await repo.save("system_settings", s)
+        cfg2 = await load_runtime_config(db, yp)
+        assert cfg2.digest.base_url == "http://panel-host:8091/v1"
+        assert cfg2.digest.model == "deepseek-v4-flash-vision-exp"
+        assert cfg2.settings.digest_base_url == "http://panel-host:8091/v1"
+        assert cfg2.settings.digest_model == "deepseek-v4-flash-vision-exp"
+        await db.close()
+
+    async def test_digest_partial_keys_do_not_wipe_yaml(self, tmp_path):
+        """旧库只存过 digest_enabled/interval 时，端点/模型键不得回退默认值清掉 yaml。"""
+        yaml_cfg = FULL_YAML + (
+            '\ndigest:\n  enabled: true\n  interval_seconds: 900\n'
+            '  base_url: "http://yaml-host:8091/v1"\n  model: "yaml-model"\n'
+        )
+        yp = _write_yaml(tmp_path, yaml_cfg)
+        db = await _fresh_db(tmp_path)
+        await load_runtime_config(db, yp)
+
+        from tg_forwarder.storage.repositories import ConfigRepository
+
+        repo = ConfigRepository(db)
+        await repo.save(
+            "system_settings",
+            {"digest_enabled": True, "default_target": "0"},
+        )
+        cfg2 = await load_runtime_config(db, yp)
+        assert cfg2.digest.enabled is True
+        assert cfg2.digest.base_url == "http://yaml-host:8091/v1"
+        assert cfg2.digest.model == "yaml-model"
+        await db.close()
+
+    async def test_source_digest_enabled_roundtrip(self, tmp_path):
+        """per 源摘要开关端到端：真实仓储落库 → load_runtime_config 回读进快照。
+
+        验收「源编辑改 digest_enabled → sqlite 回读 + 热重载后 snapshot 生效」：
+        面板 /api/sources/update → source_repo.save → 快照 sources[].digest_enabled。
+        """
+        yp = _write_yaml(tmp_path, FULL_YAML)
+        db = await _fresh_db(tmp_path)
+        try:
+            from tg_forwarder.storage.repositories import SourceRepository
+
+            repo = SourceRepository(db)
+            await repo.save(
+                {"identifier": "-1001234", "resolved_id": -1001234, "digest_enabled": True}
+            )
+            cfg = await load_runtime_config(db, yp)
+            src = [s for s in cfg.sources if str(s.identifier) == "-1001234"][0]
+            assert src.digest_enabled is True
+            # 未开的源仍是默认关
+            await repo.save({"identifier": "-1005678", "digest_enabled": False})
+            cfg = await load_runtime_config(db, yp)
+            src2 = [s for s in cfg.sources if str(s.identifier) == "-1005678"][0]
+            assert src2.digest_enabled is False
+        finally:
+            await db.close()
+
+    def test_digest_api_key_not_in_system_settings(self):
+        """密钥纪律：api_key 刻意不进 SystemSettings——落表即明文入库且可被 GET 回读。"""
+        from tg_forwarder.config import SystemSettings
+
+        assert "digest_api_key" not in SystemSettings.model_fields
+        dumped = SystemSettings(digest_enabled=True).model_dump()
+        assert not any("api_key" in k for k in dumped)
+
     async def test_ad_judge_panel_values_override_yaml(self, tmp_path):
         """F13：面板落表 ad_judge_* 覆盖 yaml ad_judge 段；未存过则回落 yaml 并如实展示。"""
         yaml_cfg = FULL_YAML + (

@@ -80,7 +80,12 @@ class MiniDatabase:
               replies_limit INTEGER DEFAULT 5,
               forward_new_only BOOLEAN,
               resolved_id INTEGER,
-              cached_title TEXT
+              cached_title TEXT,
+              sync_edits BOOLEAN DEFAULT 0,
+              sync_deletes BOOLEAN DEFAULT 0,
+              age_cutoff_hours REAL,
+              header_template TEXT,
+              digest_enabled INTEGER DEFAULT 0
             )
         """)
         c.execute("""
@@ -186,11 +191,15 @@ class MiniSourceRepository:
         conn = await self.db._ensure()
 
         def _s():
+            # 列集与真实 SourceRepository 一致（含 per 源列 F2/F4/F6/F10）——
+            # 少写一列等于替生产的落库行为打了假绿灯。
             conn.execute(
                 """
                 INSERT OR REPLACE INTO sources
-                (identifier, check_replies, replies_limit, forward_new_only, resolved_id, cached_title)
-                VALUES (?, ?, ?, ?, ?, ?)
+                (identifier, check_replies, replies_limit, forward_new_only,
+                 resolved_id, cached_title, sync_edits, sync_deletes,
+                 age_cutoff_hours, header_template, digest_enabled)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     str(data.get("identifier")),
@@ -199,6 +208,11 @@ class MiniSourceRepository:
                     data.get("forward_new_only"),
                     data.get("resolved_id"),
                     data.get("cached_title"),
+                    data.get("sync_edits", False),
+                    data.get("sync_deletes", False),
+                    data.get("age_cutoff_hours"),
+                    data.get("header_template"),
+                    data.get("digest_enabled", False),
                 ),
             )
             conn.commit()

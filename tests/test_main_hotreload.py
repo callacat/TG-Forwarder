@@ -4,7 +4,8 @@
 一、实验功能对齐（Codex major：F10/F12 装配期一次性组件重建）——
 覆盖 `_reconcile_ai_features`：
 - F12 语义引擎：开启注入 / 关闭摘除 / 阈值变化重建 / 无变化保留（不丢已加载模型/窗口）；
-- F10 digest 管线：开启装配 / 关闭摘除 / 无变化保留（不丢滚动窗口缓冲）；
+- F10 digest 管线：开启装配 / 关闭摘除 / 无变化保留（不丢滚动窗口缓冲）/
+  端点·模型·密钥变化重建（面板改配置即生效，不重启容器）/ 间隔变化不重建（快照驱动）；
 - 两者默认关闭时保持不装配（现网行为零变化）。
 
 二、目标重解析（rc.6 回归根治）——覆盖 `_apply_hot_reload` 与 `_resolve_targets_on_reload`：
@@ -107,6 +108,65 @@ class TestReconcileDigest:
         _reconcile_ai_features(f, c)
         assert f.digest_pipeline is old
 
+    def test_model_change_rebuilds_pipeline(self):
+        """面板改 digest.model → 重建管线并用新模型（改配置不重建=打旧模型）。"""
+        f = _fwd()
+        c = _with_digest(True)
+        c.digest.model = "deepseek-v4-flash"
+        _reconcile_ai_features(f, c)
+        old = f.digest_pipeline
+        assert old.llm.model == "deepseek-v4-flash"
+
+        c2 = _with_digest(True)
+        c2.digest.model = "qwen3.8-flash"
+        _reconcile_ai_features(f, c2)
+        assert f.digest_pipeline is not old
+        assert f.digest_pipeline.llm.model == "qwen3.8-flash"
+        assert f.digest_pipeline._fwd is f  # 重建后 flush 集成仍在
+
+    def test_base_url_change_rebuilds_pipeline(self):
+        """改 base_url（含尾斜杠归一化）→ 重建；仅尾斜杠差异不重建。"""
+        f = _fwd()
+        c = _with_digest(True)
+        c.digest.base_url = "http://100.64.0.2:8091/v1"
+        _reconcile_ai_features(f, c)
+        old = f.digest_pipeline
+
+        same = _with_digest(True)
+        same.digest.base_url = "http://100.64.0.2:8091/v1/"  # 归一化后等价
+        _reconcile_ai_features(f, same)
+        assert f.digest_pipeline is old
+
+        moved = _with_digest(True)
+        moved.digest.base_url = "http://100.64.0.2:9999/v1"
+        _reconcile_ai_features(f, moved)
+        assert f.digest_pipeline is not old
+        assert f.digest_pipeline.llm.base_url == "http://100.64.0.2:9999/v1"
+
+    def test_api_key_change_rebuilds_pipeline(self):
+        """面板 /api/ai-secret 写完 key 热重载 → 管线带新 Bearer 重建（否则仍 401）。"""
+        f = _fwd()
+        c = _with_digest(True)
+        c.digest.api_key = None
+        _reconcile_ai_features(f, c)
+        old = f.digest_pipeline
+        assert old.llm.api_key is None
+
+        keyed = _with_digest(True)
+        keyed.digest.api_key = "sk-digest-67chars"
+        _reconcile_ai_features(f, keyed)
+        assert f.digest_pipeline is not old
+        assert f.digest_pipeline.llm.api_key == "sk-digest-67chars"
+
+    def test_interval_change_keeps_pipeline_identity(self):
+        """间隔由快照驱动（新窗口即用新间隔），改间隔不重建——否则丢已缓冲消息。"""
+        f = _fwd()
+        c = _with_digest(True, 1800)
+        _reconcile_ai_features(f, c)
+        old = f.digest_pipeline
+        _reconcile_ai_features(f, _with_digest(True, 300))
+        assert f.digest_pipeline is old
+
 
 class TestReconcileCombined:
     def test_both_features_reconcile(self):
@@ -126,6 +186,52 @@ class TestReconcileCombined:
         _reconcile_ai_features(f, RuntimeConfig())
         assert f.semantic_engine is None
         assert f.digest_pipeline is None
+
+
+class TestF10PanelWiring:
+    """★接线回归：面板改 digest.model 必须真走到「摘要管线重建」，不停在配置层。
+
+    逐段单测全绿也可能整体没接线（rc.6 事故同款：辅助函数对、回调没调）。
+    本用例打真实链路：system_settings 落表 → load_runtime_config 覆盖 →
+    _apply_hot_reload → _reconcile_ai_features → 管线换模型，全程不重启进程。
+    """
+
+    async def test_panel_model_change_rebuilds_pipeline_end_to_end(self, tmp_path):
+        from tg_forwarder.config import load_runtime_config
+        from tg_forwarder.storage.db import Database
+        from tg_forwarder.storage.repositories import ConfigRepository
+
+        yp = str(tmp_path / "config.yaml")
+        with open(yp, "w", encoding="utf-8") as f:
+            f.write(
+                'web_ui:\n  password: "sha256$ab"\nlogging_level:\n  app: "INFO"\n'
+                "accounts: []\n"
+                'digest:\n  enabled: true\n  base_url: "http://yaml-host:8091/v1"\n'
+                '  model: "yaml-model"\n'
+            )
+
+        db = Database(str(tmp_path / "t.sqlite"))
+        await db.open()
+        await db.migrate()
+        try:
+            fwd = Forwarder(db, _AMStub([]))
+
+            # 启动态：yaml 值生效
+            cfg = await load_runtime_config(db, yp)
+            await _apply_hot_reload(fwd, _AMStub([]), cfg)
+            assert fwd.digest_pipeline.llm.model == "yaml-model"
+
+            # 面板保存（POST /api/settings/update 的落表动作）
+            repo = ConfigRepository(db)
+            s = cfg.settings.model_dump()
+            s.update(digest_model="deepseek-v4-flash-vision-exp")
+            await repo.save("system_settings", s)
+
+            cfg2 = await load_runtime_config(db, yp)
+            await _apply_hot_reload(fwd, _AMStub([]), cfg2)
+            assert fwd.digest_pipeline.llm.model == "deepseek-v4-flash-vision-exp"
+        finally:
+            await db.close()
 
 
 # ---------------------------------------------------------------------------

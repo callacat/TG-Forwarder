@@ -578,6 +578,73 @@ class TestSources:
             rules = client.get("/api/rules", headers=basic_auth()).json()
             assert rules["sources"] == []
 
+    def test_update_toggles_digest_enabled_and_persists(self):
+        """F10 per 源开关：面板改 digest_enabled → 落表回读 + 内存快照同步。"""
+        client, ctx = make_client()
+        with client:
+            client.post("/api/sources/add", json={"identifier": -100999}, headers=basic_auth())
+            res = client.post(
+                "/api/sources/update",
+                json={"identifier": -100999, "digest_enabled": True},
+                headers=basic_auth(),
+            )
+            assert res.status_code == 200
+
+            rules = client.get("/api/rules", headers=basic_auth()).json()
+            assert rules["sources"][0]["digest_enabled"] is True
+            rows = asyncio.run(ctx["source_repo"].get_all())
+            assert rows[0]["digest_enabled"] in (1, True)
+
+            # 再关回去，确认不是单向置位
+            client.post(
+                "/api/sources/update",
+                json={"identifier": -100999, "digest_enabled": False},
+                headers=basic_auth(),
+            )
+            rows = asyncio.run(ctx["source_repo"].get_all())
+            assert not rows[0]["digest_enabled"]
+
+    def test_update_preserves_other_source_fields(self):
+        """改 per 源开关不得把源的其它字段洗成默认值（回传整条 SourceConfig）。"""
+        client, ctx = make_client()
+        with client:
+            client.post(
+                "/api/sources/add",
+                json={"identifier": -100999, "sync_edits": True, "age_cutoff_hours": 48},
+                headers=basic_auth(),
+            )
+            client.post(
+                "/api/sources/update",
+                json={
+                    "identifier": -100999,
+                    "sync_edits": True,
+                    "age_cutoff_hours": 48,
+                    "digest_enabled": True,
+                },
+                headers=basic_auth(),
+            )
+            rows = asyncio.run(ctx["source_repo"].get_all())
+            assert rows[0]["age_cutoff_hours"] == 48
+            assert rows[0]["sync_edits"] in (1, True)
+
+    def test_update_unknown_source_404(self):
+        client, ctx = make_client()
+        with client:
+            res = client.post(
+                "/api/sources/update",
+                json={"identifier": -100123, "digest_enabled": True},
+                headers=basic_auth(),
+            )
+        assert res.status_code == 404
+
+    def test_update_requires_auth(self):
+        client, ctx = make_client()
+        with client:
+            res = client.post(
+                "/api/sources/update", json={"identifier": -100999}
+            )
+        assert res.status_code == 401
+
 
 # ---------------------------------------------------------------------------
 # rules 全量操作
@@ -1061,6 +1128,18 @@ class TestWriteAutoReload:
             client.post("/api/sources/add", json={"identifier": -100999}, headers=basic_auth())
             assert ctx["calls"]["update_settings"] == 1
             client.post("/api/sources/remove", json={"identifier": -100999}, headers=basic_auth())
+            assert ctx["calls"]["update_settings"] == 2
+
+    def test_source_update_triggers_reload(self):
+        """per 源开关改完同样热重载——快照不刷新则摘要开关不生效。"""
+        client, ctx = make_client()
+        with client:
+            client.post("/api/sources/add", json={"identifier": -100999}, headers=basic_auth())
+            client.post(
+                "/api/sources/update",
+                json={"identifier": -100999, "digest_enabled": True},
+                headers=basic_auth(),
+            )
             assert ctx["calls"]["update_settings"] == 2
 
     def test_rule_full_lifecycle_triggers_reload(self):
