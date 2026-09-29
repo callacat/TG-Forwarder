@@ -1,9 +1,11 @@
 # Changelog
 
 本项目遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/) 与[语义化版本](https://semver.org/lang/zh-CN/)（SemVer）。
-
 ## [Unreleased]
 
+## [v3.0.0-rc.13] - 2026-09-29
+
+> 本节为 rc.9 归位之后的累积变更：含 rc.10/rc.11/rc.12 期间已部署但当时漏归位的条目（rc.12 发版未做 CHANGELOG 归位），随 rc.13 一并归位。
 ### Added
 
 - **F10 AI 摘要补齐面板配置入口（对齐 F14 模式）**：F10 此前只有「开关 + 间隔」两个字段，模型/端点/密钥只能手改 `config.yaml`，且改完不重启容器不生效、per 源开关只能 `sqlite UPDATE`——现四项缺口一次补齐。①`SystemSettings` 新增 `digest_base_url` / `digest_model` 镜像键（`"digest_"` + `DigestConfig` 字段名约定，与 F13/F14 同机制：落表值按存在性逐键覆盖 yaml `digest` 段，面板没管过的键保持 yaml 值），面板「系统设置 → 实验功能（M4 · AI）」出现端点/模型输入框。`digest_api_key` **刻意不进 `SystemSettings`**——密钥进去即明文落 sqlite 且可被 `GET /api/settings` 回读，与 F14 同纪律。②`AI_SECRET_SECTIONS` 并入 `digest` 段，F10 密钥走既有 `/api/ai-secret` 只写通道落 `config.yaml` 的 `digest.api_key`（行级定点改写、保留注释、`.bak` + 临时文件 `os.replace` 原子换入），读侧只回布尔；此前 F10 未接该通道，axonhub 8091 端点校验 401 时 key 无处可填。③F10 摘要管线改为按 `(base_url, model, api_key)` 全字段变化热重载重建（原先只判「管线为 None」，非空管线会一直沿用启动时的 `LLMClient`，改配置等于没改）；**间隔刻意不入重建键**——窗口到期判据本就由快照驱动（`DigestPipeline._window_for` 读 `snapshot.digest.interval_seconds`），改间隔后新开的窗口即用新间隔、已开窗口跑完才生效（`RollingWindow.interval` 构造时冻结），而此时重建会丢已缓冲的滚动窗口消息。④新增 `POST /api/sources/update`（按 `identifier` 匹配，`source_repo.save` 走 upsert）打通 per 源 `digest_enabled` 面板入口，「监控源」页每个源卡片加摘要开关，写后照 add 端点惯例热重载（落表却没刷新快照不得声称已生效）。默认关=现网行为零变化。**顺带修正一处升级语义**：旧实现里 `digest.enabled`/`interval_seconds` 是「任一键落表则两键一起以落表为准」，与本段注释声明的「存在性逐键覆盖」自相矛盾——只存过 `digest_enabled` 的早期库会把 yaml 里的间隔冲成默认值 1800；现统一为逐键覆盖，与 F13/F14 一致，yaml 值不再被面板未管过的键清掉。
@@ -22,7 +24,6 @@
 - **面板填密钥会写出重复顶层键，静默丢弃用户已配的 `enabled`/`model`**：`config_template.yaml` 里 `digest:`/`ai_content:`/`translate:` 三段**出厂即整段注释**。原 `set_yaml_secret` 只按「顶格非注释」的段头定位段，注释态的段一律判定为不存在 → 在文件尾追加**第二个**同名顶层 `digest:`。当下 yaml 仍能解析（后一个覆盖前一个，行为碰巧正确），但日后用户手工取消注释即得到重复键，`yaml.safe_load` 只认最后一个，用户自己配的 `enabled`/`model` 被静默丢弃。现改为：整段不存在时先就地取消同名注释段的**段头**再定点写入，段体保持注释态（那些键值是用户意图，替他取消注释等于替他改配置）。日后手工取消段体注释即并入本段，不会产生第二个顶层键——重复键的根因断掉。相邻注释块（模板里 `digest:` 之后全是注释态的 `translate`/`ad_judge`/`ai_content`）不被吞进改写范围。
 - **空洞对账历史倒灌（rc.9 事故止血，rc.10）**：rc.9 的 catchup 空洞段按「progress 前 50 条 id」开窗，对低频源 50 条 = 数月跨度，叠加 LRU 重启清零 + dedup hash TTL 已清 → 三层防线同时失效，现网 2026-09-23 23:33-23:37 向目标群重发 254 条历史（东哥实锤）。修复：空洞段加 `_CATCHUP_HOLE_MAX_AGE=6h` 年龄闸——事件间隙漏收是分钟级，超 6h 一律不补。rc.10 上线首轮 catchup 验证：「命中分发规则」=0、重复拦 40，零倒灌（对照 rc.9 同期命中 185）。
 - **同一张图并发去重失效，转发两次到不同话题（现网 2026-09-26 报，`.../27/18082` 与 `.../1/18085` 同图）**：`process_message` 的去重是 `check_hash → send → add_hash` 三段，中间隔着一次网络发送；Telethon 每个事件 handler 是独立 task 并发跑，首条尚未 `add_hash` 时第二条必然查不到 → 两条都放行。`_seen_recently` LRU 按 `chat_id/message_id` 键，两个不同消息 id 不命中，挡不住。修复：新增 `_inflight_hashes` 占位集，通过检查后立即占位、`finally` 无条件释放，只有真正发出的那条才落库（单源指纹与 F1 跨源指纹均占位）；发送失败/catchup 重试语义不变。**实现要点**：判重必须「先 `await check_hash` → 再同步 `in` 判断 → 再同步占位」，三者之间不能有 await——写成 `h in inflight or await check_hash(h)` 会让 `in` 在 await 前求值，两个 task 同时看到未占位照样双双放行。回归用例 `test_concurrent_same_photo_forwards_once`，未修复版与「短路顺序写错」版均必红。
-
 ## [v3.0.0-rc.9] - 2026-09-23
 
 ### Added
