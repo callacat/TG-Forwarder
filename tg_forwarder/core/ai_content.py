@@ -43,6 +43,7 @@ AD_THRESHOLD = 0.85
 
 # 清洗结果采纳护栏（防丢数据，不可省）：
 #   - 清洗后为空 → 拒（模型可能把整条消息清掉）
+#   - 丢了原文任一 URL → 拒（模型把「点击下载」整行当引流尾巴删掉过）
 #   - 长度不足原文 min_ratio 倍 → 拒（内容被截没了）
 #   - 长度超原文 2 倍 → 拒（模型跑偏输出长文，会把垃圾推进转发频道）
 MIN_KEEP_RATIO = 0.3
@@ -54,12 +55,21 @@ MAX_TEXT_CHARS = 4096
 # 模型偶尔用 ```json 围栏或前后带解说，解析前先剥围栏再兜底截花括号
 _FENCE_RE = re.compile(r"^```(?:json)?\s*|\s*```$", re.IGNORECASE)
 
+# URL 提取（守恒比对用）。不复用 link_checker.URL_PATTERN——那条 `https://?[^\s]+`
+# 会把链接后面的装饰 emoji 一并吞掉（`...80808)⬅️⬅️`），原文与清洗结果两边必然
+# 不等，正常清洗会被误判成丢链接。这里截到右括号/方括号，空格为止。
+_URL_RE = re.compile(r"https?://[^\s)\]<>\"]+")
+
 _SYSTEM_PROMPT = (
     "你是 Telegram 频道消息的内容审核与清洗助手。只输出一个 JSON 对象，不要任何解释文字。\n\n"
     "【广告判定】判断消息是否为「与本频道内容无关的商业广告或引流推广」"
     "（如卖号/接单/招代理/群推广/付费服务推销）。"
     "注意：频道内正常分享软件、工具、App、破解版资源（含下载链接）属于内容本身，不算广告。\n\n"
     "【正文清洗】在保留原意与全部有效信息的前提下：\n"
+    "- 下载/资源链接必须逐字保留：「点击下载」「下载地址」「网盘链接」等字样，"
+    "以及正文里的任何 http(s) URL，都属于内容本身，一个都不能删\n"
+    "- 「引流尾巴」只指与本内容无关的推广（关注公众号、进群、加微），"
+    "不含下载链接；是否与内容相关拿不准时一律保留\n"
     "- 删除频道尾巴/引流尾巴（如「点击查看完整版」「关注公众号」「更多资源」"
     "「无关注价值的自推链接行」等与内容无关的行）\n"
     "- 删除纯广告行、重复行、无意义装饰符号，合并多余空行\n"
@@ -111,6 +121,10 @@ def _clamp01(value: Any) -> float:
         return min(1.0, max(0.0, float(value)))
     except (TypeError, ValueError):
         return 0.0
+
+
+def _urls(text: str) -> set:
+    return set(_URL_RE.findall(text or ""))
 
 
 class AiContentProcessor:
@@ -253,6 +267,17 @@ class AiContentProcessor:
             return None
         cleaned = candidate.strip()
         if not cleaned or cleaned == original:
+            return None
+        # URL 守恒：清洗只许删噪音，不许把链接连行删掉。提示词已硬性要求保留下载
+        # 链接，但那是概率保证——现网实锤过模型判定段放行、清洗段仍把
+        # 「➡️➡️➡️ [『点击下载』](url)⬅️⬅️」整行当引流尾巴删掉（09-29）。此处是
+        # 确定保证：丢了原文任一 URL 就整条弃用回原文，宁可少清洗也不静默丢链接。
+        lost = _urls(original) - _urls(cleaned)
+        if lost:
+            logger.warning(
+                f"F14 清洗结果丢失原文中的 {len(lost)} 个 URL（示例 {sorted(lost)[0][:80]}），"
+                "判定为链接被误删，弃用。"
+            )
             return None
         ratio = len(cleaned) / max(1, len(original))
         if ratio < self.min_ratio:

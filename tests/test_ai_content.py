@@ -5,7 +5,7 @@
 - 判定映射：is_ad 且 confidence >= threshold 才 drop；低于阈值一律放行；
 - **丢弃不由模型拍板**（防同类项目哨兵串方案的核心回归点）：模型即便返回
   意料之外的动作字段，也绝不会绕过本地阈值；
-- 清洗护栏：空/过短（内容截失）/过长（模型跑偏）一律弃用回原文；
+- 清洗护栏：空/过短（内容截失）/过长（模型跑偏）/丢失原文任一 URL 一律弃用回原文；
 - 解析容错：```json 围栏、前后夹带解说、纯垃圾；
 - fail-open：网络异常/非 2xx/不可解析/字段缺失/无 key → 原文放行且不 drop；
 - 缓存命中不重复发请求；超长文本截断；空文本不调 API；
@@ -199,6 +199,41 @@ class TestCleanGuards:
         v = asyncio.run(_proc().process(original))
         assert v.cleaned_text == "今日更新：某软件 v2.1 破解版"
 
+    def test_url_loss_rejected(self, monkeypatch):
+        """清洗把「点击下载」整行删掉 → 弃用回原文（09-29 现网故障，URL 守恒护栏）。
+
+        长度刻意留在 min_ratio 之上（0.46），确保触发的是 URL 护栏而非既有的
+        长度护栏——否则这条用例在没修 bug 时也会「通过」，等于没测。
+        """
+        original = (
+            "正文第一行说明该软件的更新内容与适用平台\n"
+            "第二行补充更多细节描述文字\n"
+            "第三行继续补充说明文字内容\n"
+            "➡️➡️➡️ [**『点击下载』**](https://t.me/ZYShares/80808)⬅️⬅️⬅️⬅️"
+        )
+        _patch_httpx(monkeypatch, _chat_resp(
+            '{"is_ad":false,"confidence":0.02,"changed":true,"cleaned_text":"'
+            '正文第一行说明该软件的更新内容与适用平台\\n'
+            '第二行补充更多细节描述文字\\n'
+            '第三行继续补充说明文字内容"}'
+        ))
+        assert asyncio.run(_proc().process(original)).cleaned_text is None
+
+    def test_url_kept_clean_applied(self, monkeypatch):
+        """URL 一个没丢、只删了装饰符号 → 正常采纳 cleaned（护栏不误伤）。"""
+        original = (
+            "正文第一行说明该软件的更新内容与适用平台\n"
+            "➡️➡️➡️ [**『点击下载』**](https://t.me/ZYShares/80808)⬅️⬅️⬅️⬅️"
+        )
+        _patch_httpx(monkeypatch, _chat_resp(
+            '{"is_ad":false,"confidence":0.02,"changed":true,"cleaned_text":"'
+            '正文第一行说明该软件的更新内容与适用平台\\n'
+            '[**『点击下载』**](https://t.me/ZYShares/80808)"}'
+        ))
+        v = asyncio.run(_proc().process(original))
+        assert v.cleaned_text is not None
+        assert "https://t.me/ZYShares/80808" in v.cleaned_text
+
     def test_too_short_rejected(self, monkeypatch):
         """清洗结果只剩 10% → 判定内容截失，弃用回原文（绝不静默丢内容）。"""
         original = "今日更新：某软件 v2.1 破解版，附网盘链接，自取"
@@ -359,6 +394,21 @@ class TestRequestShape:
         assert "商业广告" in sys_prompt
         assert "不算广告" in sys_prompt  # 旧措辞无此限定，会把资源分享误杀
         assert "cleaned_text" in sys_prompt  # 清洗契约进提示词
+
+    def test_prompt_requires_download_links_kept(self, monkeypatch):
+        """清洗段必须复述判定段的链接豁免。
+
+        09-29 事故：判定段说「含下载链接属于内容本身」放行，清洗段删除清单却
+        没一条要求保留链接，模型把下载链接整行当「引流尾巴」删了。两段规则必须
+        自洽，且豁免措辞要压过删除清单——关键词锁定，防后人误删。
+        """
+        fake = _patch_httpx(monkeypatch, _chat_resp("{}"))
+        asyncio.run(_proc().process("x"))
+        sys_prompt = fake.calls[0]["json"]["messages"][0]["content"]
+        assert "必须逐字保留" in sys_prompt
+        assert "http(s) URL" in sys_prompt
+        assert "属于内容本身" in sys_prompt
+        assert "不含下载链接" in sys_prompt  # 收紧「引流尾巴」的定义
 
     def test_long_text_truncated(self, monkeypatch):
         fake = _patch_httpx(monkeypatch, _chat_resp("{}"))
