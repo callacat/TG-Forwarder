@@ -159,9 +159,10 @@ def _urls(text: str) -> set:
 
 def _url_hint(url: str) -> str:
     """日志脱敏：只留 host + 路径掩码。丢失的链接可能是私有邀请链接
-    （`https://t.me/+xxxx`），完整片段打进 WARNING 会被 `docker logs` 读走。"""
+    （`https://t.me/+xxxx`），完整片段打进 WARNING 会被 `docker logs` 读走。
+    userinfo（`https://user:token@host/x`）先剥掉——那截同样是凭据，不是 host。"""
     rest = re.sub(r"^(?:https?://|www\.)", "", url or "", flags=re.IGNORECASE)
-    host = re.split(r"[/?#]", rest, maxsplit=1)[0]
+    host = re.split(r"[/?#]", rest.rsplit("@", 1)[-1], maxsplit=1)[0]
     return f"{host}/***" if len(host) < len(rest) else host
 
 

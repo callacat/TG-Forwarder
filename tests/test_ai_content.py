@@ -34,6 +34,7 @@ from tg_forwarder.core.ai_content import (  # noqa: E402
     AiContentProcessor,
     Verdict,
     _extract_json,
+    _url_hint,
     _urls,
     build_ai_content,
 )
@@ -222,6 +223,14 @@ class TestUrlExtraction:
             t = time.perf_counter()
             assert _urls(blob) == set()
             assert time.perf_counter() - t < 0.5, f"退化成平方级：{len(blob)} 字符"
+
+    def test_url_hint_never_leaks_path_or_credentials(self):
+        """日志里的 URL 提示只该有 host：路径、私有邀请码、userinfo 全是凭据。"""
+        assert _url_hint("https://t.me/+SecretAbc123") == "t.me/***"
+        assert _url_hint("t.me/+abc") == "t.me/***"
+        assert _url_hint("https://a.com") == "a.com"
+        # userinfo 是凭据不是 host，按 `host` 取就得剥掉
+        assert _url_hint("https://user:s3cr3t@a.com/x") == "a.com/***"
 
 
 class TestCleanGuards:
