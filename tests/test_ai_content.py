@@ -5,7 +5,8 @@
 - 判定映射：is_ad 且 confidence >= threshold 才 drop；低于阈值一律放行；
 - **丢弃不由模型拍板**（防同类项目哨兵串方案的核心回归点）：模型即便返回
   意料之外的动作字段，也绝不会绕过本地阈值；
-- 清洗护栏：空/过短（内容截失）/过长（模型跑偏）/丢失原文任一 URL 一律弃用回原文；
+- 清洗护栏：空/过短（内容截失）/过长（模型跑偏）/丢失原文任一 URL（含裸链
+  `t.me/xxx`、尾随标点归一后）一律弃用回原文；丢链 WARNING 只打 host 不落完整链接；
 - 解析容错：```json 围栏、前后夹带解说、纯垃圾；
 - fail-open：网络异常/非 2xx/不可解析/字段缺失/无 key → 原文放行且不 drop；
 - 缓存命中不重复发请求；超长文本截断；空文本不调 API；
@@ -33,6 +34,7 @@ from tg_forwarder.core.ai_content import (  # noqa: E402
     AiContentProcessor,
     Verdict,
     _extract_json,
+    _urls,
     build_ai_content,
 )
 
@@ -187,6 +189,30 @@ class TestVerdictMapping:
         assert v.confidence == 0.0 and v.drop is False
 
 
+class TestUrlExtraction:
+    """`_urls` 的窄匹配契约。该认的（带 scheme / 裸链）要认全，不该认的
+    （版本号、IP、文件名、恰好等于 TLD 的英文词）一个都不许多认——多认会把
+    正常清洗误判成丢链，F14 清洗就此静默失效。"""
+
+    def test_bare_and_scheme(self):
+        assert _urls("见 https://a.com/x 与 t.me/zy/1 和 www.b.cn/q") == {
+            "https://a.com/x", "t.me/zy/1", "www.b.cn/q",
+        }
+
+    def test_lookalikes_not_urls(self):
+        assert _urls("v2.1 2024.09 内网192.168.1.1/24 setup.exe report.pdf") == set()
+
+    def test_tld_words_not_urls(self):
+        # TLD 名单漏了外层括号就会退化成顶层 `|me`/`|sh` 分支，这几个英文词
+        # 会被整段当成链接——本条就是那个 bug 的回归钉子。
+        assert _urls("come to my sh tv gg top, and cc co me too") == set()
+
+    def test_trailing_punctuation_normalized(self):
+        assert _urls("见 https://a.com/x，与 https://b.com/y.") == {
+            "https://a.com/x", "https://b.com/y",
+        }
+
+
 class TestCleanGuards:
     """清洗护栏——防丢数据的核心，不能省。"""
 
@@ -233,6 +259,97 @@ class TestCleanGuards:
         v = asyncio.run(_proc().process(original))
         assert v.cleaned_text is not None
         assert "https://t.me/ZYShares/80808" in v.cleaned_text
+
+    def test_bare_link_loss_rejected(self, monkeypatch):
+        """裸链 `t.me/xxx`（无 scheme）同样受守恒——TG 原文裸链极常见，
+        护栏只认带 scheme 的等于形同虚设：模型删掉裸链行时差集恒为空。"""
+        original = (
+            "正文第一行说明该软件的更新内容与适用平台\n"
+            "第二行补充更多细节描述文字\n"
+            "第三行继续补充说明文字内容\n"
+            "➡️➡️➡️ 点击下载 t.me/ZYShares/80808 ⬅️⬅️⬅️"
+        )
+        _patch_httpx(monkeypatch, _chat_resp(
+            '{"is_ad":false,"confidence":0.02,"changed":true,"cleaned_text":"'
+            '正文第一行说明该软件的更新内容与适用平台\\n'
+            '第二行补充更多细节描述文字\\n'
+            '第三行继续补充说明文字内容"}'
+        ))
+        assert asyncio.run(_proc().process(original)).cleaned_text is None
+
+    def test_bare_link_kept_clean_applied(self, monkeypatch):
+        """裸链没丢、只删装饰 → 采纳 cleaned（新增裸链形态不误伤正常清洗）。
+
+        原文里同时放了 `v2.1` / `2024.09` / `192.168.1.1/24` 这类近似的正常文本：
+        裸链正则宽一点就会把它们当成链接，正常清洗反被误判成丢链。
+        """
+        original = (
+            "某软件 v2.1 更新，2024.09 发布，内网 192.168.1.1/24\n"
+            "➡️➡️➡️ 下载 t.me/ZYShares/80808 ⬅️⬅️⬅️\n"
+            "关注公众号送福利"
+        )
+        _patch_httpx(monkeypatch, _chat_resp(
+            '{"is_ad":false,"confidence":0.02,"changed":true,"cleaned_text":"'
+            '某软件 v2.1 更新，2024.09 发布，内网 192.168.1.1/24\\n'
+            '下载 t.me/ZYShares/80808"}'
+        ))
+        v = asyncio.run(_proc().process(original))
+        assert v.cleaned_text is not None
+        assert "t.me/ZYShares/80808" in v.cleaned_text
+
+    def test_url_tail_punctuation_only_accepted(self, monkeypatch):
+        """模型把 URL 规范化加了尾标点（`…/1` → `…/1,`）→ 归一后仍相等，
+        采纳 cleaned；真丢链接仍然弃用。
+
+        两种尾标点都要覆盖：`。` 被 URL 字符集天然截断，而 `,`/`.` 属于 RFC 3986
+        的 sub-delims、会被吃进匹配，只有尾标点归一才拦得住——少测一个就等于
+        没测（变异验证时已实测：只留 `。` 的用例在撤掉归一后照样绿）。
+        """
+        original = "今日更新：某软件 v2.1 破解版\n下载地址 https://a.com/1\n关注公众号送福利"
+        for tail in ("，", ",", "。", ".", "）"):
+            _patch_httpx(monkeypatch, _chat_resp(
+                '{"is_ad":false,"confidence":0.02,"changed":true,'
+                f'"cleaned_text":"今日更新：某软件 v2.1 破解版\\\\n下载地址 https://a.com/1{tail}"}}'
+            ))
+            v = asyncio.run(_proc().process(original))
+            assert v.cleaned_text is not None, f"尾标点 {tail} 被误判成丢链"
+        # 反向（原文带标点、清洗剥掉）同样归一，不算丢链
+        _patch_httpx(monkeypatch, _chat_resp(
+            '{"is_ad":false,"confidence":0.02,"changed":true,'
+            '"cleaned_text":"今日更新：某软件 v2.1 破解版\\n下载地址 https://a.com/1"}'
+        ))
+        v2 = asyncio.run(_proc().process("今日更新：某软件 v2.1 破解版\n"
+                                         "下载地址 https://a.com/1，\n关注公众号送福利"))
+        assert v2.cleaned_text is not None
+        # 真的换成别的链接 → 仍判定丢链弃用
+        _patch_httpx(monkeypatch, _chat_resp(
+            '{"is_ad":false,"confidence":0.02,"changed":true,'
+            '"cleaned_text":"今日更新：某软件 v2.1 破解版\\n下载地址 https://b.com/2。"}'
+        ))
+        assert asyncio.run(_proc().process(original)).cleaned_text is None
+
+    def test_url_loss_warning_masks_url(self, monkeypatch):
+        """丢链 WARNING 不得落完整 URL——私有邀请链接 `t.me/+xxxx` 会被
+        `docker logs` 读走，只留 host + 掩码。"""
+        from loguru import logger
+
+        records = []
+        sink_id = logger.add(records.append, level="WARNING")
+        try:
+            original = "正文第一行说明该软件的更新内容\n第二行补充更多细节\n邀请链接 https://t.me/+SecretAbc123"
+            _patch_httpx(monkeypatch, _chat_resp(
+                '{"is_ad":false,"confidence":0.02,"changed":true,'
+                '"cleaned_text":"正文第一行说明该软件的更新内容\\n第二行补充更多细节"}'
+            ))
+            assert asyncio.run(_proc().process(original)).cleaned_text is None
+        finally:
+            logger.remove(sink_id)
+
+        warn = "".join(str(r) for r in records)
+        assert "丢失原文中的" in warn
+        assert "https://t.me/+SecretAbc123" not in warn
+        assert "SecretAbc123" not in warn
+        assert "t.me/***" in warn
 
     def test_too_short_rejected(self, monkeypatch):
         """清洗结果只剩 10% → 判定内容截失，弃用回原文（绝不静默丢内容）。"""

@@ -43,7 +43,8 @@ AD_THRESHOLD = 0.85
 
 # 清洗结果采纳护栏（防丢数据，不可省）：
 #   - 清洗后为空 → 拒（模型可能把整条消息清掉）
-#   - 丢了原文任一 URL → 拒（模型把「点击下载」整行当引流尾巴删掉过）
+#   - 丢了原文任一 URL（带 scheme 的与裸链同等对待）→ 拒（模型把「点击下载」
+#     整行当引流尾巴删掉过）
 #   - 长度不足原文 min_ratio 倍 → 拒（内容被截没了）
 #   - 长度超原文 2 倍 → 拒（模型跑偏输出长文，会把垃圾推进转发频道）
 MIN_KEEP_RATIO = 0.3
@@ -57,8 +58,29 @@ _FENCE_RE = re.compile(r"^```(?:json)?\s*|\s*```$", re.IGNORECASE)
 
 # URL 提取（守恒比对用）。不复用 link_checker.URL_PATTERN——那条 `https://?[^\s]+`
 # 会把链接后面的装饰 emoji 一并吞掉（`...80808)⬅️⬅️`），原文与清洗结果两边必然
-# 不等，正常清洗会被误判成丢链接。这里截到右括号/方括号，空格为止。
-_URL_RE = re.compile(r"https?://[^\s)\]<>\"]+")
+# 不等，正常清洗会被误判成丢链接。字集只取 RFC 3986 的 URL 合法字符：右括号/
+# 方括号/引号/句读/CJK/emoji 天然截断，链接后面的装饰符号不会进匹配。
+_URL_BODY = r"[A-Za-z0-9\-._~:/?#@!$&*+,;=%]"
+# 裸链（TG 原文不带 https:// 直接写 `t.me/xxx` 极常见）也必须纳入守恒，否则
+# 模型删掉裸链行时差集恒为空、护栏形同虚设——同型故障换个链接写法就复发。
+# 刻意只收「TLD + 路径」（`t.me/xxx`）而不收光域名：宽了会把 `v2.1`/`2024.09`
+# 这类正常文本当成链接，正常清洗反被误判成丢链。
+_BARE_TLD = (
+    "com|net|org|cn|io|co|me|tv|cc|xyz|top|vip|app|dev|gg|sh|info|edu"
+    "|ru|jp|kr|de|uk|fr|us|hk|tw"
+)
+# TLD 必须整组括起：裸写会变成顶层 `|me`/`|sh` 分支，「me」「tv」等英文词
+# 一律被当成链接。
+_URL_RE = re.compile(
+    rf"(?:https?://|www\.){_URL_BODY}+"
+    rf"|(?:[A-Za-z0-9](?:[A-Za-z0-9-]*[A-Za-z0-9])?\.)+(?:{_BARE_TLD})/{_URL_BODY}*",
+    re.IGNORECASE,
+)
+
+# 尾随标点：模型清洗时常把 `https://a.com/1` 规范化成 `https://a.com/1。`（或反向），
+# 字符串差集非空就会误判「丢链接」，把一条合格清洗整条丢弃、还打出误导性的
+# WARNING——等于清洗静默失效。比对前两侧都剥掉这些尾标点。
+_TRAILING_PUNCT = "。．.，,、；;：:）)】]」』》〉？！?！…～~"
 
 _SYSTEM_PROMPT = (
     "你是 Telegram 频道消息的内容审核与清洗助手。只输出一个 JSON 对象，不要任何解释文字。\n\n"
@@ -123,8 +145,20 @@ def _clamp01(value: Any) -> float:
         return 0.0
 
 
+def _norm_url(url: str) -> str:
+    return (url or "").rstrip(_TRAILING_PUNCT)
+
+
 def _urls(text: str) -> set:
-    return set(_URL_RE.findall(text or ""))
+    return {_norm_url(u) for u in _URL_RE.findall(text or "")}
+
+
+def _url_hint(url: str) -> str:
+    """日志脱敏：只留 host + 路径掩码。丢失的链接可能是私有邀请链接
+    （`https://t.me/+xxxx`），完整片段打进 WARNING 会被 `docker logs` 读走。"""
+    rest = re.sub(r"^(?:https?://|www\.)", "", url or "", flags=re.IGNORECASE)
+    host = re.split(r"[/?#]", rest, maxsplit=1)[0]
+    return f"{host}/***" if len(host) < len(rest) else host
 
 
 class AiContentProcessor:
@@ -262,7 +296,8 @@ class AiContentProcessor:
         return verdict
 
     def _acceptable_clean(self, candidate: Any, original: str) -> Optional[str]:
-        """清洗结果护栏：空/截没/跑偏一律拒绝，返回 None 表示「用原文」。"""
+        """清洗结果护栏：空 / 丢了原文任一 URL（含裸链，尾标点归一后比）/ 截没 /
+        跑偏一律拒绝，返回 None 表示「用原文」。"""
         if not isinstance(candidate, str):
             return None
         cleaned = candidate.strip()
@@ -271,11 +306,13 @@ class AiContentProcessor:
         # URL 守恒：清洗只许删噪音，不许把链接连行删掉。提示词已硬性要求保留下载
         # 链接，但那是概率保证——现网实锤过模型判定段放行、清洗段仍把
         # 「➡️➡️➡️ [『点击下载』](url)⬅️⬅️」整行当引流尾巴删掉（09-29）。此处是
-        # 确定保证：丢了原文任一 URL 就整条弃用回原文，宁可少清洗也不静默丢链接。
+        # 确定保证：丢了原文任一 URL（裸链同等对待）就整条弃用回原文，宁可少清洗
+        # 也不静默丢链接。两侧都先剥尾随标点，模型规范化 URL 标点不算丢链。
         lost = _urls(original) - _urls(cleaned)
         if lost:
             logger.warning(
-                f"F14 清洗结果丢失原文中的 {len(lost)} 个 URL（示例 {sorted(lost)[0][:80]}），"
+                f"F14 清洗结果丢失原文中的 {len(lost)} 个 URL"
+                f"（示例 {_url_hint(sorted(lost)[0])}），"
                 "判定为链接被误删，弃用。"
             )
             return None
