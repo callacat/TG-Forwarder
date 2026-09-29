@@ -212,6 +212,17 @@ class TestUrlExtraction:
             "https://a.com/x", "https://b.com/y",
         }
 
+    def test_pathological_input_does_not_blow_up(self):
+        """一串 `a.a.a…` 不能让 URL 提取退化成平方级重扫——`_urls` 跑在转发
+        事件循环里，几秒的正则停顿等于把整条转发链路堵住。裸链分支的前置否定
+        环视是扛住这条的那一环：去掉它 4096 字符要 2.9s，加上则 3ms。"""
+        import time
+
+        for blob in ("a." * 2048, "1.2.3.4." * 512, "a" * 4096):
+            t = time.perf_counter()
+            assert _urls(blob) == set()
+            assert time.perf_counter() - t < 0.5, f"退化成平方级：{len(blob)} 字符"
+
 
 class TestCleanGuards:
     """清洗护栏——防丢数据的核心，不能省。"""
