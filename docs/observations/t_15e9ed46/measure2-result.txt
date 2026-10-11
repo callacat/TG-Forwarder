@@ -1,0 +1,45 @@
+# t_15e9ed46 逐条独立测量（2026-10-12 02:0x CST）
+#
+# 端点 http://100.64.0.2:8091/v1   模型 gpt-5.6-luna（现网在用，本卡未改）
+# 每组 12 条**内容唯一**的消息（带序号，避开 TranslationCache 命中）
+# 形态按**原始串**分类（envelope / bare_json / prose / network_fail 分开统计），
+# 判定按**消息级** confidence>0（A3 看的是消息级放行率，不是单次调用成功率）
+#
+# 摘要
+#   ad     max_retries=0: 判定  4/12 | 形态 {prose:7, bare_json:4, network_fail:1}
+#   ad     max_retries=2: 判定 10/12 | 形态 {prose:9, bare_json:8, envelope:2}
+#   normal max_retries=0: 判定  8/12 | 形态 {prose:3, bare_json:7, network_fail:1, envelope:1}
+#   normal max_retries=2: 判定 12/12 | 形态 {prose:4, bare_json:12, network_fail:2}
+#
+# 读法
+#   - max_retries=0 一列是**修复前**的等价行为（首发即定，失败即放行）：
+#     广告消息判定率仅 4/12（33%），与现网 71% fail-open 基线同量级，可互相印证。
+#   - max_retries=2 是**修复后**默认：广告 10/12（83%）、普通 12/12（100%）。
+#   - envelope 形态确实存在但**占比不高**（21 次调用里 3 次 ≈ 14%），
+#     真正的大头是 prose（模型跑偏写散文）：ad 组 21 次调用里 9 次。
+#   - prose 集中在**广告文案**上：模型对「破解版/免内购 + 加微信」这类内容
+#     更倾向转成安全 advisories 散文而非按指令输出 JSON——
+#     这正是现网漏放广告 apk 的机制性原因（越像广告越容易解析失败）。
+#   - 单次调用成功率与消息级判定率不是一回事：重试把 ad 从 4/12 拉到 10/12。
+#   - 样本量小（每组 12 条），只能作量级参考，不作精确估计；
+#     A3 的 24h 现网复测才是判定依据。
+#
+# 完整 JSON
+{
+  "ad_r0": {
+    "shapes": {"prose": 7, "bare_json": 4, "network_fail": 1},
+    "judged": 4, "total": 12, "rate": "4/12"
+  },
+  "ad_r2": {
+    "shapes": {"prose": 9, "bare_json": 8, "envelope": 2},
+    "judged": 10, "total": 12, "rate": "10/12"
+  },
+  "normal_r0": {
+    "shapes": {"prose": 3, "bare_json": 7, "network_fail": 1, "envelope": 1},
+    "judged": 8, "total": 12, "rate": "8/12"
+  },
+  "normal_r2": {
+    "shapes": {"prose": 4, "bare_json": 12, "network_fail": 2},
+    "judged": 12, "total": 12, "rate": "12/12"
+  }
+}
