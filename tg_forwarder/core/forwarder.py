@@ -407,6 +407,8 @@ class Forwarder:
             "forwarded": 0,  # 发送成功
             "failed": 0,     # 无目标/无客户端/发送异常
         }
+        # catchup 单源异常去重计数：同一 (源, 错误文本) 连刷只打第 1 次与每 12 次 1 次
+        self._catchup_err_counts: Dict[tuple, int] = {}
 
     # --- 快照（R8 原子化）---
 
@@ -1161,10 +1163,25 @@ class Forwarder:
             try:
                 total += await self._catchup_source(client, src, limit)
             except Exception as e:
-                logger.error(f"catchup 源 {src.resolved_id} 异常: {e}")
+                self._log_catchup_error(src.resolved_id, e)
         if total:
             logger.info(f"🧩 catchup 兜底补齐 {total} 条（事件漏送窗口）。")
         return total
+
+    def _log_catchup_error(self, chat_id: Any, exc: Exception) -> None:
+        """catchup 单源异常去重限频：同一 (源, 错误) 连刷只打第 1 次与每 12 次 1 次。
+
+        源失效（私有频道无权限、被踢）会让每轮 cron 各打一条 ERROR，288 次/天
+        纯噪音，还会把同窗口的真事故日志冲走。现网 -1002926374261 即此情况。
+        换错误内容（如被限流 FloodWait）会重新打第 1 次，不被旧去重吃掉。
+        """
+        key = (str(chat_id), str(exc))
+        count = self._catchup_err_counts.get(key, 0) + 1
+        self._catchup_err_counts[key] = count
+        if count > 1 and count % 12 != 0:
+            logger.debug(f"catchup 源 {chat_id} 异常（第 {count} 次，同错误已限频）: {exc}")
+            return
+        logger.error(f"catchup 源 {chat_id} 异常: {exc}")
 
     async def _catchup_source(self, client: Any, src, limit: int) -> int:
         """单源增量兜底（对齐 v2 process_history 的 50 条/次 + 相册合并 + F4 年龄截断）。

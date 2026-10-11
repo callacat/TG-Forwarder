@@ -192,6 +192,13 @@ def _reconcile_ai_features(forwarder, new_cfg) -> None:
             int(getattr(ai_cfg, "cache_max_entries", 256) or 256),
             int(getattr(ai_cfg, "cache_ttl_seconds", 3600)),
             tuple(str(s) for s in (getattr(ai_cfg, "sources", None) or [])),
+            # 10-12 加固：重试/兜底/打点三项也必须入键，否则 yaml 改了
+            # fail_open: false 后 /reload 静默沿用旧实例 = 配置看着生效实际没变。
+            int(getattr(ai_cfg, "max_retries", 2)),
+            float(getattr(ai_cfg, "retry_backoff", 0.5)),
+            bool(getattr(ai_cfg, "fail_open", True)),
+            int(getattr(ai_cfg, "warn_every", 50)),
+            float(getattr(ai_cfg, "warn_ratio", 0.2)),
         )
         cur_key = None
         if cur_ai is not None:
@@ -210,6 +217,11 @@ def _reconcile_ai_features(forwarder, new_cfg) -> None:
                     int(getattr(cur_ai, "cache_max_entries", 256)),
                     int(getattr(cur_ai, "cache_ttl_seconds", 3600)),
                     tuple(str(s) for s in (getattr(cur_ai, "sources", None) or [])),
+                    int(getattr(cur_ai, "max_retries", 2)),
+                    float(getattr(cur_ai, "retry_backoff", 0.5)),
+                    bool(getattr(cur_ai, "fail_open", True)),
+                    int(getattr(cur_ai, "warn_every", 50)),
+                    float(getattr(cur_ai, "warn_ratio", 0.2)),
                 )
             except Exception:  # noqa: BLE001 —— 兼容假实例/测试替身
                 cur_key = None

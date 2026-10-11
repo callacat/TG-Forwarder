@@ -22,6 +22,7 @@ fail-open 铁律：请求失败/超时/解析失败/字段缺失 → 返回默�
 """
 from __future__ import annotations
 
+import asyncio
 import json
 import os
 import re
@@ -36,6 +37,21 @@ from tg_forwarder.core.ai_translate import TranslationCache
 DEFAULT_BASE_URL = "http://100.64.0.2:8091/v1"
 DEFAULT_MODEL = "glm-5.3-flash"
 DEFAULT_API_KEY_ENV = "AXONHUB_API_KEY"
+
+# 解析失败重试（10-12 加固）：现网 gpt-5.6-luna 实测约 1/3 概率返回纯散文而非
+# JSON，重试 2 次（退避 0.5s/1.0s）即可捞回。退避基数小是因为转发管线在线等，
+# 拉太长会把消息处理循环拖慢。
+DEFAULT_MAX_RETRIES = 2
+DEFAULT_RETRY_BACKOFF = 0.5
+
+# 失败率打点：满 warn_every 条且失败占比 ≥ warn_ratio 打一条 WARN 汇总并清零。
+# 本次事故的教训是「静默的大面积 fail-open」——逐条 WARNING 淹没在日志里没人看，
+# 汇总才能一眼看出趋势。
+DEFAULT_WARN_EVERY = 50
+DEFAULT_WARN_RATIO = 0.2
+
+# 非 JSON 响应打印原文的上限（能归因即可；再长只是刷屏）
+RAW_HINT_CHARS = 500
 
 # 广告判定阈值：confidence >= threshold 才 drop；低于即放行（等价 F13 的
 # 「模糊区 fail-open」，此处不设双阈值——结构化输出多给了 reason，可事后复盘）。
@@ -121,7 +137,14 @@ class Verdict:
 
 
 def _extract_json(raw: str) -> Optional[Dict[str, Any]]:
-    """从模型回复里抠出 JSON 对象；代码围栏/前后解说都能容忍。失败 → None。"""
+    """从模型回复里抠出 JSON 对象；代码围栏/前后解说都能容忍。失败 → None。
+
+    逐个候选起点用 raw_decode 扫描，**而不是**「首个 `{` 到末个 `}`」切片：
+    现网 gpt-5.6-luna 实测会把合法 JSON 包进 `:::writing{variant="standard" …}`
+    信封（10-11 晚间 37 次 fail-open 的主因之一）。旧切片从信封那个 `{` 起截到
+    末尾的 `}`，得到 `{variant="standard"…}\n{…json…}` 这种双对象串，json.loads
+    必炸 → 整条放行。raw_decode 在候选起点失败就顺移，天然跳过信封。
+    """
     s = (raw or "").strip()
     if not s:
         return None
@@ -129,16 +152,39 @@ def _extract_json(raw: str) -> Optional[Dict[str, Any]]:
     try:
         data = json.loads(s)
         return data if isinstance(data, dict) else None
-    except Exception:  # noqa: BLE001 —— 下面还有一次兜底尝试
+    except Exception:  # noqa: BLE001 —— 下面逐起点扫
         pass
-    start, end = s.find("{"), s.rfind("}")
-    if start != -1 and end > start:
+    decoder = json.JSONDecoder()
+    for idx in _brace_positions(s):
         try:
-            data = json.loads(s[start:end + 1])
-            return data if isinstance(data, dict) else None
-        except Exception:  # noqa: BLE001 —— 确实不是 JSON，交给调用方 fail-open
-            return None
+            data, _ = decoder.raw_decode(s, idx)
+        except Exception:  # noqa: BLE001 —— 该起点不是 JSON，顺移到下一个
+            continue
+        if isinstance(data, dict):
+            return data
     return None
+
+
+def _brace_positions(s: str):
+    """产出每个 `{` 的下标（跳过字符串字面量内的花括号）。
+
+    raw_decode 天然认得字符串内的 `}`，但**起点**落在字符串里会误报；跳过
+    转义引号即可，模型输出短（≤ 数百字符），线性扫描足够。
+    """
+    in_str = False
+    escaped = False
+    for i, ch in enumerate(s):
+        if escaped:
+            escaped = False
+            continue
+        if ch == "\\":
+            escaped = True
+            continue
+        if ch == '"':
+            in_str = not in_str
+            continue
+        if ch == "{" and not in_str:
+            yield i
 
 
 def _clamp01(value: Any) -> float:
@@ -164,6 +210,20 @@ def _url_hint(url: str) -> str:
     rest = re.sub(r"^(?:https?://|www\.)", "", url or "", flags=re.IGNORECASE)
     host = re.split(r"[/?#]", rest.rsplit("@", 1)[-1], maxsplit=1)[0]
     return f"{host}/***" if len(host) < len(rest) else host
+
+
+def _raw_hint(raw: str) -> str:
+    """非 JSON 响应的日志摘要：脱敏 URL + 截断 + 压掉换行。
+
+    脱敏不是可选项：模型回复里会原样带回正文的 URL（含私有邀请链接
+    `t.me/+xxxx`），直接打进 docker logs 等于泄露。换行压成 `\\n` 是为了让
+    一条 WARNING 仍是一条，日志聚合按行切。
+    """
+    text = _URL_RE.sub(lambda m: _url_hint(m.group(0)), raw or "")
+    text = text.replace("\r", "").replace("\n", "\\n")
+    if len(text) > RAW_HINT_CHARS:
+        text = text[:RAW_HINT_CHARS] + f"…（已截断，全长 {len(raw or '')}）"
+    return repr(text)
 
 
 class AiContentProcessor:
@@ -192,6 +252,11 @@ class AiContentProcessor:
         sources: Optional[List[Union[int, str]]] = None,
         cache_max_entries: int = 256,
         cache_ttl_seconds: int = 3600,
+        max_retries: int = DEFAULT_MAX_RETRIES,
+        retry_backoff: float = DEFAULT_RETRY_BACKOFF,
+        fail_open: bool = True,
+        warn_every: int = DEFAULT_WARN_EVERY,
+        warn_ratio: float = DEFAULT_WARN_RATIO,
         cache: Optional[TranslationCache] = None,
     ) -> None:
         self.base_url = (base_url or DEFAULT_BASE_URL).rstrip("/")
@@ -216,6 +281,13 @@ class AiContentProcessor:
         # 否则 yaml 改了 cache_ttl 后 reload 会静默沿用旧缓存。
         self.cache_max_entries = cache_max_entries
         self.cache_ttl_seconds = cache_ttl_seconds
+        # 10-12 加固：解析失败重试（现网 luna 偶发返回散文）+ 可配置兜底 + 失败率打点
+        self.max_retries = max(0, int(max_retries))
+        self.retry_backoff = max(0.0, float(retry_backoff))
+        self.fail_open = fail_open
+        self.warn_every = max(1, int(warn_every))
+        self.warn_ratio = min(1.0, max(0.0, float(warn_ratio)))
+        self._stats: Dict[str, int] = {"total": 0, "ok": 0}
         self.cache = cache or TranslationCache(
             max_entries=cache_max_entries, ttl_seconds=cache_ttl_seconds
         )
@@ -235,12 +307,17 @@ class AiContentProcessor:
     # --- 对外接口（永不抛异常）---
 
     async def process(self, text: str) -> Verdict:
-        """判定 + 清洗。失败/空文本/无 key → 默认 Verdict（放行且不替换）。"""
+        """判定 + 清洗。失败/空文本/无 key → 按 fail_open 策略返回。
+
+        解析失败会重试（指数退避）：现网 gpt-5.6-luna 偶发返回纯散文而非 JSON
+        （10-11 晚间实测 1/3 概率），重试一轮即可捞回，胜过直接 fail-open 放行。
+        重试仍失败才走 fail_open（默认放行，绝不因 AI 不可用丢消息）。
+        """
         if not text or not text.strip():
             return Verdict()
         if not self._api_key:
             logger.warning("F14 AI 内容处理未配置 API key，静默跳过（原文放行）。")
-            return Verdict()
+            return self._fail_open("no_api_key")
 
         # 清洗基准 = 完整原文，但只有全文都看得见才允许改写：模型只收到前
         # max_text_chars，若让它改写并用结果整体替换长文本，模型没看见的尾巴会被
@@ -251,26 +328,74 @@ class AiContentProcessor:
             if parsed is not None:
                 return self._to_verdict(parsed, text)
 
-        try:
-            raw = await self._call(text)
-        except Exception as e:  # noqa: BLE001 —— 运行期异常也 fail-open
-            logger.warning(f"F14 AI 内容处理异常（原文放行）: {e}")
-            return Verdict()
+        last_raw: Optional[str] = None
+        # ponytail: 最坏延迟 = (max_retries+1) × timeout + 退避合计（现网 20s 配置
+        # 下约 61.5s/条，仅在端点持续不可用时达到）。每条消息在 Telethon 独立
+        # task 里跑，不阻塞其他消息。若日后嫌慢：给「已重试过的消息」降级为
+        # 单次快探测（短 timeout 探活，通了再走全量），而不是直接调小 timeout。
+        for attempt in range(self.max_retries + 1):
+            if attempt:
+                await asyncio.sleep(self.retry_backoff * (2 ** (attempt - 1)))
+            try:
+                raw = await self._call(text)
+            except Exception as e:  # noqa: BLE001 —— 运行期异常也 fail-open
+                logger.warning(f"F14 AI 内容处理异常（原文放行）: {e}")
+                raw = None
 
-        if raw is None:
-            return Verdict()
-        data = _extract_json(raw)
-        if data is None:
-            logger.warning("F14 AI 内容处理响应不是可解析的 JSON（原文放行）。")
-            return Verdict()
+            if raw is None:
+                continue  # 网络/状态码失败：_call 已记日志，重试下一轮
+            last_raw = raw
+            data = _extract_json(raw)
+            if data is not None:
+                self.cache.put(text, raw)
+                return self._to_verdict(data, text)
+            # 拿到内容但解析不出来：模型跑偏（散文/空壳），重试有意义
+            logger.warning(
+                f"F14 AI 内容处理响应不是可解析的 JSON"
+                f"（第 {attempt + 1}/{self.max_retries + 1} 次）："
+                f"{_raw_hint(raw)}"
+            )
 
-        self.cache.put(text, raw)
-        return self._to_verdict(data, text)
+        if last_raw is not None:
+            logger.warning(
+                f"F14 AI 内容处理重试 {self.max_retries} 次仍不可解析，"
+                f"按 {'fail-open 放行' if self.fail_open else 'fail-closed 丢弃'} 处理。"
+            )
+        return self._fail_open("unparseable" if last_raw is not None else "call_failed")
+
+    def _fail_open(self, reason: str) -> Verdict:
+        """失败兜底 + 放行率打点。
+
+        fail_open=True（默认，铁律）：放行并清洗正文，留原文。
+        fail_open=False：丢弃该条（严格模式，AI 挂掉时宁可漏放不漏过广告）。
+        两种都记打点，超阈值打 WARN 汇总——静默的大面积 fail-open 是本次事故
+        的核心教训，光有逐条 WARNING 看不出趋势。
+        """
+        self._stats["total"] += 1
+        self._stats[reason] = self._stats.get(reason, 0) + 1
+        failed = self._stats["total"] - self._stats["ok"]
+        if self._stats["total"] >= self.warn_every and (
+            failed / self._stats["total"] >= self.warn_ratio
+        ):
+            logger.warning(
+                f"F14 失败率 {failed}/{self._stats['total']}"
+                f"（{failed / self._stats['total']:.0%} ≥ 阈值 {self.warn_ratio:.0%}）："
+                f"分类 {({k: v for k, v in self._stats.items() if k not in ('total', 'ok')})}。"
+                f"广告可能漏放，请检查上游模型/端点。"
+            )
+            self._stats["total"] = 0
+            self._stats["ok"] = 0
+        if self.fail_open:
+            return Verdict()
+        return Verdict(is_ad=True, ad_type="ai_unavailable", drop=True,
+                       reason=f"F14 {reason}（fail-closed）")
 
     # --- 内部 ---
 
     def _to_verdict(self, data: Dict[str, Any], original: str) -> Verdict:
         """把模型 JSON 映射成 Verdict；只有 is_ad 且 confidence 过阈值才 drop。"""
+        self._stats["total"] += 1
+        self._stats["ok"] += 1
         is_ad = data.get("is_ad") is True
         confidence = _clamp01(data.get("confidence"))
         verdict = Verdict(
@@ -410,6 +535,14 @@ def build_ai_content(ai_cfg: Any) -> Optional[AiContentProcessor]:
             # 「永不过期」，`or 3600` 会把它悄悄改成 1 小时。
             cache_max_entries=int(getattr(ai_cfg, "cache_max_entries", 256)),
             cache_ttl_seconds=int(getattr(ai_cfg, "cache_ttl_seconds", 3600)),
+            max_retries=int(getattr(ai_cfg, "max_retries", DEFAULT_MAX_RETRIES)),
+            retry_backoff=float(
+                getattr(ai_cfg, "retry_backoff", DEFAULT_RETRY_BACKOFF)
+            ),
+            # fail_open 刻意不用 `or`：显式 False（严格模式）不能被当成缺省 True 吞掉。
+            fail_open=bool(getattr(ai_cfg, "fail_open", True)),
+            warn_every=int(getattr(ai_cfg, "warn_every", DEFAULT_WARN_EVERY)),
+            warn_ratio=float(getattr(ai_cfg, "warn_ratio", DEFAULT_WARN_RATIO)),
         )
     except Exception as e:  # noqa: BLE001 —— 构建失败降级为关闭，绝不阻塞转发
         logger.warning(f"F14 AI 内容处理器构建失败（功能降级为关闭）: {e}")

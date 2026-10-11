@@ -259,6 +259,12 @@ class AiContentConfig(BaseModel):
       届时关掉本项退回纯提示词模式（模型仍会输出 JSON，解析层容错）；
     - min_ratio/max_ratio：清洗结果采纳护栏（过短=内容截失、过长=模型跑偏则弃用）；
     - sources：空=全部源生效；非空则仅对列表内源生效（按 resolved_id 匹配）。
+    - max_retries/retry_backoff：响应不可解析时的重试次数与退避基数（指数退避）。
+      现网 gpt-5.6-luna 实测约 1/3 概率返回纯散文而非 JSON，重试即可捞回；
+    - fail_open：重试仍失败时的兜底。True=放行（默认，铁律：绝不因 AI 不可用
+      丢消息）；False=严格模式，AI 不可用时丢弃该条（宁可漏放不漏过广告）；
+    - warn_every/warn_ratio：失败率打点，满 warn_every 条且失败占比达 warn_ratio
+      即打 WARN 汇总（静默的大面积 fail-open 靠逐条 WARNING 看不出来）。
     """
 
     enabled: bool = False
@@ -276,6 +282,11 @@ class AiContentConfig(BaseModel):
     sources: List[Union[int, str]] = Field(default_factory=list)
     cache_max_entries: int = 256
     cache_ttl_seconds: int = 3600
+    max_retries: int = 2
+    retry_backoff: float = 0.5
+    fail_open: bool = True
+    warn_every: int = 50
+    warn_ratio: float = 0.2
 
     @field_validator("threshold")
     @classmethod
@@ -289,6 +300,22 @@ class AiContentConfig(BaseModel):
     def check_ai_positive(cls, v):
         if v is not None and v <= 0:
             raise ValueError("timeout/max_text_chars/cache_max_entries 必须为正数")
+        return v
+
+    @field_validator("max_retries", "warn_every")
+    @classmethod
+    def check_ai_counters(cls, v, info):
+        if v is not None and v < 0:
+            raise ValueError(f"{info.field_name} 不能为负数")
+        return v
+
+    @field_validator("retry_backoff", "warn_ratio")
+    @classmethod
+    def check_ai_ratio_bounds(cls, v, info):
+        if v is None:
+            return v
+        if v < 0 or (info.field_name == "warn_ratio" and v > 1):
+            raise ValueError(f"{info.field_name} 超出合法区间")
         return v
 
     @field_validator("min_ratio")

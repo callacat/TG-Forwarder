@@ -876,3 +876,240 @@ class TestForwarderIntegration:
         assert seen == ["任意消息"]
         assert fwd._msg_stats["filtered"] == 0
         await db.close()
+
+
+# ---------------------------------------------------------------------------
+# 10-12 加固：非 JSON 响应 fail-open 事故（现网 10-11 晚间 37/52 ≈ 71% 放行）
+#
+# 根因（2026-10-12 直连 100.64.0.2:8091 用 gpt-5.6-luna 实测复现）：
+#   同一提示词下模型有三种输出形态——
+#     1) 纯散文（「你发来的是一则手游资源推广帖…告诉我具体需求即可」）
+#     2) **合法 JSON 被包进 `:::writing{variant="standard" …} … :::` 信封**
+#     3) 裸 JSON
+#   旧解析器「首个 `{` 到末个 `}`」切片在形态 2 上截出双对象串必炸 →
+#   整条 fail-open 放行，广告 apk 漏过（关键词黑名单拦不住这类文案）。
+# ---------------------------------------------------------------------------
+
+
+# 形态 2：现网真实响应（2026-10-12 实测逐字捕获）
+LUNA_WRAPPED = (
+    ':::writing{variant="standard" id="58321" title="审核结果"}\n'
+    "{\n"
+    '  "is_ad": true,\n'
+    '  "ad_type": "resource_share",\n'
+    '  "confidence": 0.99,\n'
+    '  "cleaned_text": "#游戏 @PJAPK\\n\\n下载",\n'
+    '  "reason": "游戏破解版属于正常资源分享，已删除频道尾巴及微信引流广告。"\n'
+    "}\n"
+    ":::"
+)
+# 形态 1：现网真实响应（逐字捕获）
+LUNA_PROSE = (
+    "你发来的是一则手游资源推广帖，内容包括：\n\n"
+    "- 游戏：**开心消消乐 3.8.2**\n"
+    "- 声称版本：**“免内购版 / 破解版”**\n"
+    "- 包含 Telegram 频道、群聊、投稿入口\n"
+    "- 提供网盘下载地址\n"
+    "- 还带有微信加群领红包广告\n\n"
+    "如果你希望我帮你做某件事（例如提取信息、判断是否可信、润色文案、翻译、总结、"
+    "识别风险等），告诉我具体需求即可。"
+)
+
+
+class TestLunaEnvelopeParsing:
+    """根因回归：信封包裹的合法 JSON 必须解析出来（旧版整条 fail-open）。"""
+
+    def test_wrapped_json_parses(self):
+        data = _extract_json(LUNA_WRAPPED)
+        assert data is not None, "信封包裹的合法 JSON 被丢弃 = 广告漏放"
+        assert data["is_ad"] is True
+        assert data["confidence"] == 0.99
+
+    def test_wrapped_json_end_to_end_drops_ad(self, monkeypatch):
+        """端到端：信封形态的广告消息必须真拦，而不是 fail-open 放行。"""
+        _patch_httpx(monkeypatch, _chat_resp(LUNA_WRAPPED))
+        v = asyncio.run(_proc().process("游戏破解版 加微信领红包"))
+        assert v.drop is True
+        assert v.confidence == 0.99
+
+    def test_prose_still_returns_none(self):
+        """形态 1 真无 JSON：解析层如实返回 None（由重试兜，不在此层硬编造）。"""
+        assert _extract_json(LUNA_PROSE) is None
+
+    def test_brace_inside_string_not_mistaken_for_start(self):
+        """字符串字面量里的 `{` 不能被当成 JSON 起点。"""
+        data = _extract_json('{"is_ad": true, "reason": "含{花括号}说明", "confidence": 0.9}')
+        assert data["reason"] == "含{花括号}说明"
+
+    def test_nested_object_picked_not_outer_wrapper(self):
+        """首个 `{` 是信封时，顺移到真正那个对象。"""
+        data = _extract_json(':::writing{title="x"}\n{"is_ad": false, "confidence": 0.1}\n:::')
+        assert data == {"is_ad": False, "confidence": 0.1}
+
+
+class TestRetryOnUnparseable:
+    """重试：模型偶发跑偏（实测 ~1/3）时重发一轮捞回，而不是直接放行。"""
+
+    def test_recovers_on_second_attempt(self, monkeypatch):
+        """第一次散文、第二次正常 → 必须判定成功（1 次请求不够就放行=广告漏过）。"""
+        seq = [_chat_resp(LUNA_PROSE), _chat_resp('{"is_ad": true, "confidence": 0.99}')]
+        fake = _patch_httpx(monkeypatch, lambda _j: seq.pop(0))
+        v = asyncio.run(_proc(retry_backoff=0).process("加微信领红包"))
+        assert v.drop is True
+        assert len(fake.calls) == 2
+
+    def test_retries_exhausted_then_fail_open(self, monkeypatch):
+        """一直跑偏 → 重试用尽后放行（铁律：绝不因 AI 不可用丢消息）。"""
+        fake = _patch_httpx(monkeypatch, _chat_resp(LUNA_PROSE))
+        v = asyncio.run(_proc(retry_backoff=0).process("任意消息"))
+        assert v.drop is False          # fail_open 默认 True
+        assert len(fake.calls) == 3     # 首发 + 2 次重试
+
+    def test_max_retries_zero_keeps_single_call(self, monkeypatch):
+        """max_retries=0 = 旧行为（一次即定），供想关掉重试的人用。"""
+        fake = _patch_httpx(monkeypatch, _chat_resp(LUNA_PROSE))
+        asyncio.run(_proc(max_retries=0, retry_backoff=0).process("任意消息"))
+        assert len(fake.calls) == 1
+
+    def test_network_failure_also_retried(self, monkeypatch):
+        """网络失败同样重试（不止解析失败）。"""
+        seq = [RuntimeError("boom"), _chat_resp('{"is_ad": false, "confidence": 0.1}')]
+        fake = _patch_httpx(monkeypatch, lambda _j: seq.pop(0))
+        v = asyncio.run(_proc(retry_backoff=0).process("任意消息"))
+        assert v.drop is False
+        assert len(fake.calls) == 2
+
+
+class TestFailClosed:
+    """fail_open=false（严格模式）：AI 挂掉宁可漏放不漏过广告。"""
+
+    def test_fail_closed_drops_when_unavailable(self, monkeypatch):
+        _patch_httpx(monkeypatch, _chat_resp(LUNA_PROSE))
+        v = asyncio.run(
+            _proc(fail_open=False, max_retries=0, retry_backoff=0).process("加微信领红包")
+        )
+        assert v.drop is True
+        assert v.ad_type == "ai_unavailable"
+
+    def test_fail_open_default_keeps_release_behavior(self):
+        """默认必须 fail_open=True（现网行为零变化是硬约束）。"""
+        assert _proc().fail_open is True
+        assert AiContentConfig().fail_open is True
+
+    def test_fail_closed_still_judges_normally(self, monkeypatch):
+        """严格模式下正常判定不受影响。"""
+        _patch_httpx(monkeypatch, _chat_resp('{"is_ad": true, "confidence": 0.99}'))
+        v = asyncio.run(_proc(fail_open=False).process("卖号广告"))
+        assert v.drop is True
+        assert v.ad_type != "ai_unavailable"
+
+    def test_build_passes_fail_open_false_through(self):
+        """build_ai_content 必须真把 fail_open=False 传下去（`or` 兜底会吞掉 False）。"""
+        p = build_ai_content(AiContentConfig(enabled=True, fail_open=False))
+        assert p.fail_open is False
+
+
+class TestFailureRateWarning:
+    """放行率打点：静默的大面积 fail-open 靠逐条 WARNING 看不出来。"""
+
+    @staticmethod
+    def _capture():
+        """收集本次调用的 WARNING 文本（loguru 走 stderr，不走 capsys）。"""
+        from loguru import logger
+
+        records = []
+        sink_id = logger.add(records.append, level="WARNING")
+        return records, sink_id
+
+    def test_warns_when_failure_ratio_exceeded(self, monkeypatch):
+        records, sink = self._capture()
+        try:
+            _patch_httpx(monkeypatch, _chat_resp(LUNA_PROSE))
+            p = _proc(max_retries=0, retry_backoff=0, warn_every=4, warn_ratio=0.5)
+            for _ in range(4):
+                asyncio.run(p.process("任意消息"))
+        finally:
+            from loguru import logger
+            logger.remove(sink)
+        warn = "".join(str(r) for r in records)
+        assert "失败率" in warn and "4/4" in warn
+
+    def test_no_warn_when_healthy(self, monkeypatch):
+        records, sink = self._capture()
+        try:
+            _patch_httpx(monkeypatch, _chat_resp('{"is_ad": false, "confidence": 0.1}'))
+            p = _proc(warn_every=4, warn_ratio=0.5)
+            for _ in range(4):
+                asyncio.run(p.process("任意消息"))
+        finally:
+            from loguru import logger
+            logger.remove(sink)
+        assert "失败率" not in "".join(str(r) for r in records)
+
+    def test_counter_resets_after_warning(self, monkeypatch):
+        """告警后计数清零，下个窗口重新统计（否则一次告警后再也不告警）。"""
+        _patch_httpx(monkeypatch, _chat_resp(LUNA_PROSE))
+        p = _proc(max_retries=0, retry_backoff=0, warn_every=2, warn_ratio=0.5)
+        for _ in range(4):
+            asyncio.run(p.process("任意消息"))
+        assert p._stats["total"] == 0
+
+
+class TestRawHintRedaction:
+    """A1：非 JSON 响应要打截断原文（能归因），但必须脱敏。"""
+
+    @staticmethod
+    def _run_and_capture(monkeypatch, content):
+        from loguru import logger
+
+        records = []
+        sink_id = logger.add(records.append, level="WARNING")
+        try:
+            _patch_httpx(monkeypatch, _chat_resp(content))
+            asyncio.run(_proc(max_retries=0, retry_backoff=0).process("任意消息"))
+        finally:
+            logger.remove(sink_id)
+        return "".join(str(r) for r in records)
+
+    def test_log_contains_raw_text(self, monkeypatch):
+        """A1 验收：复现一次即可证——日志里能看到模型返回的原文。"""
+        warn = self._run_and_capture(monkeypatch, LUNA_PROSE)
+        assert "不是可解析的 JSON" in warn
+        assert "手游资源推广帖" in warn      # 原文片段真的落进日志
+
+    def test_private_invite_link_masked(self, monkeypatch):
+        """私有邀请链接绝不能原样进 docker logs。"""
+        warn = self._run_and_capture(
+            monkeypatch, "无法处理 https://t.me/+AbCdEfGhIjKl/999 邀请"
+        )
+        assert "AbCdEfGhIjKl" not in warn, "私有邀请链接泄露到日志"
+        assert "t.me/***" in warn
+
+    def test_truncated_to_500_chars(self, monkeypatch):
+        """超长响应只打前 500 字符，防刷屏。"""
+        warn = self._run_and_capture(monkeypatch, "错误" * 2000)
+        assert "已截断" in warn
+        assert warn.count("错误") < 600
+
+
+class TestCatchupErrorRateLimit:
+    """catchup 源失效刷屏限频（现网 -1002926374261 288 条/天纯噪音）。"""
+
+    def test_repeat_error_suppressed(self):
+        from tg_forwarder.core.forwarder import Forwarder
+        fwd = Forwarder.__new__(Forwarder)
+        fwd._catchup_err_counts = {}
+        err = RuntimeError("The channel specified is private")
+        for _ in range(20):
+            fwd._log_catchup_error(-1002926374261, err)
+        # 首刷 + 第 12 次 = 2 条 ERROR，其余降级
+        assert fwd._catchup_err_counts[("-1002926374261", str(err))] == 20
+
+    def test_different_error_not_suppressed(self):
+        """错误内容变了（如换成 FloodWait）要重新计数，不被旧去重吃掉。"""
+        from tg_forwarder.core.forwarder import Forwarder
+        fwd = Forwarder.__new__(Forwarder)
+        fwd._catchup_err_counts = {}
+        fwd._log_catchup_error(-1, RuntimeError("private"))
+        fwd._log_catchup_error(-1, RuntimeError("FloodWait"))
+        assert len(fwd._catchup_err_counts) == 2

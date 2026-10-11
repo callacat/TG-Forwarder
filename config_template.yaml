@@ -156,3 +156,9 @@ link_checker:
 #   sources: []                            # 空=全部源；非空仅对列表内源生效
 #   cache_max_entries: 256
 #   cache_ttl_seconds: 3600
+#   max_retries: 2                          # 响应不可解析时重试几次（指数退避）
+#   retry_backoff: 0.5                      # 退避基数秒；第 n 次等 base*2^(n-1)
+#   fail_open: true                         # 重试仍失败的兜底：true=放行（默认，绝不因 AI 挂丢消息）
+#                                           #   false=严格模式，AI 不可用时丢弃该条（宁可漏放不漏过广告）
+#   warn_every: 50                          # 失败率打点窗口（条）
+#   warn_ratio: 0.2                         # 窗口内失败占比 ≥ 此值打 WARN 汇总
