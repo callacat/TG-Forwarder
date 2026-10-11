@@ -144,6 +144,12 @@ def _extract_json(raw: str) -> Optional[Dict[str, Any]]:
     信封（10-11 晚间 37 次 fail-open 的主因之一）。旧切片从信封那个 `{` 起截到
     末尾的 `}`，得到 `{variant="standard"…}\n{…json…}` 这种双对象串，json.loads
     必炸 → 整条放行。raw_decode 在候选起点失败就顺移，天然跳过信封。
+
+    候选起点取**每一个** `{`，不做字符串态过滤：模型输出是散文 + JSON 的混合体，
+    散文里的 ASCII 双引号常不成对（`说明 "这是广告 如下`），一旦用 in_str 状态机
+    预判「后面的 `{` 在字符串里」就会整段漏扫，把能解析的回复判成不可解析 →
+    比修复前的切片法还弱。raw_decode 对字符串内的 `{` 起点本就解码失败并顺移，
+    过滤是多余的一层，且这层会误杀。
     """
     s = (raw or "").strip()
     if not s:
@@ -155,7 +161,9 @@ def _extract_json(raw: str) -> Optional[Dict[str, Any]]:
     except Exception:  # noqa: BLE001 —— 下面逐起点扫
         pass
     decoder = json.JSONDecoder()
-    for idx in _brace_positions(s):
+    for idx, ch in enumerate(s):
+        if ch != "{":
+            continue
         try:
             data, _ = decoder.raw_decode(s, idx)
         except Exception:  # noqa: BLE001 —— 该起点不是 JSON，顺移到下一个
@@ -163,28 +171,6 @@ def _extract_json(raw: str) -> Optional[Dict[str, Any]]:
         if isinstance(data, dict):
             return data
     return None
-
-
-def _brace_positions(s: str):
-    """产出每个 `{` 的下标（跳过字符串字面量内的花括号）。
-
-    raw_decode 天然认得字符串内的 `}`，但**起点**落在字符串里会误报；跳过
-    转义引号即可，模型输出短（≤ 数百字符），线性扫描足够。
-    """
-    in_str = False
-    escaped = False
-    for i, ch in enumerate(s):
-        if escaped:
-            escaped = False
-            continue
-        if ch == "\\":
-            escaped = True
-            continue
-        if ch == '"':
-            in_str = not in_str
-            continue
-        if ch == "{" and not in_str:
-            yield i
 
 
 def _clamp01(value: Any) -> float:
@@ -357,9 +343,14 @@ class AiContentProcessor:
             )
 
         if last_raw is not None:
+            # 终态处置行：**A3 验收的监测锚点**。一条消息无论重试几轮只打一次，
+            # 且「原文放行」/「原文丢弃」是与 fail_open 取值绑定的稳定字面量——
+            # 改文案会静默打断验收期的 grep 统计（10-11 基线就是这么数出来的）。
+            # 中间每次尝试的 WARNING 不含这两个串，避免一条消息被重复计数。
             logger.warning(
                 f"F14 AI 内容处理重试 {self.max_retries} 次仍不可解析，"
-                f"按 {'fail-open 放行' if self.fail_open else 'fail-closed 丢弃'} 处理。"
+                f"按 {'fail-open 放行' if self.fail_open else 'fail-closed 丢弃'} 处理："
+                f"{'原文放行' if self.fail_open else '原文丢弃'}"
             )
         return self._fail_open("unparseable" if last_raw is not None else "call_failed")
 

@@ -946,6 +946,28 @@ class TestLunaEnvelopeParsing:
         data = _extract_json(':::writing{title="x"}\n{"is_ad": false, "confidence": 0.1}\n:::')
         assert data == {"is_ad": False, "confidence": 0.1}
 
+    def test_unpaired_quote_prose_does_not_hide_json(self):
+        """回归（Codex 驳回项 t_15e9ed46）：前导散文含**未配对** ASCII 双引号时，
+        合法 JSON 仍须解析出来。
+
+        曾经的 `_brace_positions` 用 in_str 状态机预判字符串边界，散文里一个
+        落单的 `"` 就把状态永久卡在 True，后面的 `{` 全部漏扫 → 返回 None →
+        fail-open 放行广告，比修复前的切片法还弱。模型散文里落单引号很常见
+        （`说明 "这是广告 如下`）。
+        """
+        raw = '说明 "这是广告 如下\n{"is_ad": true, "confidence": 0.99}'
+        data = _extract_json(raw)
+        assert data is not None, "落单引号致合法 JSON 漏检 = 广告漏放"
+        assert data["is_ad"] is True
+        assert data["confidence"] == 0.99
+
+    def test_unpaired_quote_end_to_end_drops_ad(self, monkeypatch):
+        """端到端同形：落单引号散文 + 合法 JSON → 必须真拦。"""
+        raw = '这是广告 "如下\n{"is_ad": true, "ad_type": "sell_account", "confidence": 0.97}'
+        _patch_httpx(monkeypatch, _chat_resp(raw))
+        v = asyncio.run(_proc().process("限时开户送500 加微信"))
+        assert v.drop is True
+
 
 class TestRetryOnUnparseable:
     """重试：模型偶发跑偏（实测 ~1/3）时重发一轮捞回，而不是直接放行。"""
@@ -1076,6 +1098,33 @@ class TestRawHintRedaction:
         warn = self._run_and_capture(monkeypatch, LUNA_PROSE)
         assert "不是可解析的 JSON" in warn
         assert "手游资源推广帖" in warn      # 原文片段真的落进日志
+
+    def test_a3_monitor_string_survives(self, monkeypatch):
+        """A3 验收监测锚点：终态处置行必须含「原文放行」。
+
+        10-11 基线就是 `docker logs | grep '原文放行'` 数出来的；加固版改文案
+        （「按 fail-open 放行 处理」）后该 grep 归零，会让人误判 fail-open 已清零。
+        中间每次重试的 WARNING 不含该串，一条消息只被计一次。
+        """
+        warn = self._run_and_capture(monkeypatch, LUNA_PROSE)
+        assert "原文放行" in warn, "A3 监测串丢失，验收期 grep 统计不到 fail-open"
+
+    def test_fail_closed_logs_discard_literal(self, monkeypatch):
+        """fail_open=False 时终态打「原文丢弃」，与放行口径可区分。"""
+        from loguru import logger
+
+        records = []
+        sink_id = logger.add(records.append, level="WARNING")
+        try:
+            _patch_httpx(monkeypatch, _chat_resp(LUNA_PROSE))
+            asyncio.run(
+                _proc(max_retries=0, retry_backoff=0, fail_open=False).process("任意消息")
+            )
+        finally:
+            logger.remove(sink_id)
+        warn = "".join(str(r) for r in records)
+        assert "原文丢弃" in warn
+        assert "原文放行" not in warn
 
     def test_private_invite_link_masked(self, monkeypatch):
         """私有邀请链接绝不能原样进 docker logs。"""

@@ -95,6 +95,9 @@ def _compile_patterns(patterns: List[str]) -> List[re.Pattern]:
 CAPTION_LIMIT_UNITS = 1024
 _CAPTION_ELLIPSIS = "…"  # U+2026 占 1 个 UTF-16 代码元
 
+# catchup 异常去重表的键数上限（源数 × 错误种类，正常场景远小于此）
+_CATCHUP_ERR_KEYS_MAX = 512
+
 
 def _utf16_len(s: str) -> int:
     return len(s.encode("utf-16-le")) // 2
@@ -408,6 +411,9 @@ class Forwarder:
             "failed": 0,     # 无目标/无客户端/发送异常
         }
         # catchup 单源异常去重计数：同一 (源, 错误文本) 连刷只打第 1 次与每 12 次 1 次
+        # ponytail: 定容上限 _CATCHUP_ERR_KEYS_MAX，错误文本含变化串（时间戳/ID）
+        # 时键会持续新增，满额即整表清空。正常场景键数=源数×错误种类，恒定小；
+        # 清空只让该源的下一次异常重新打第 1 次 ERROR，不丢日志。
         self._catchup_err_counts: Dict[tuple, int] = {}
 
     # --- 快照（R8 原子化）---
@@ -1176,6 +1182,8 @@ class Forwarder:
         换错误内容（如被限流 FloodWait）会重新打第 1 次，不被旧去重吃掉。
         """
         key = (str(chat_id), str(exc))
+        if len(self._catchup_err_counts) >= _CATCHUP_ERR_KEYS_MAX:
+            self._catchup_err_counts.clear()
         count = self._catchup_err_counts.get(key, 0) + 1
         self._catchup_err_counts[key] = count
         if count > 1 and count % 12 != 0:
