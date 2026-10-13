@@ -316,12 +316,28 @@ def build_header(source_config, message) -> Optional[str]:
     return text
 
 
-def find_target(text: str, media: Any, snapshot) -> Tuple[Optional[int], Optional[int]]:
-    """目标路由（对齐 v2 _find_target）：分发规则命中 → 默认目标。"""
+def find_target(
+    text: str,
+    media: Any,
+    snapshot,
+    *,
+    src: Any = None,
+    mid: Any = None,
+) -> Tuple[Optional[int], Optional[int]]:
+    """目标路由（对齐 v2 _find_target）：分发规则命中 → 默认目标。
+
+    src/mid 只进日志。现网日志级别 INFO，原「命中分发规则」是 debug 行，
+    **成功转发在日志里一行都没有**——漏放排查时无法区分「已转发」与
+    「没进管线」，也无法把目标群消息号关联回源消息。提到 INFO 并带
+    <源chat>/<消息id> → chat/topic 后，转发成功才可核对。
+    """
     for rule in snapshot.distribution_rules:
         try:
             if rule.check(text, media):
-                logger.debug(f"命中分发规则: '{rule.name}'")
+                logger.info(
+                    f"命中分发规则: '{rule.name}' <- {src}/{mid} "
+                    f"→ chat={rule.resolved_target_id} topic={rule.topic_id}"
+                )
                 return rule.resolved_target_id, rule.topic_id
         except Exception as e:
             logger.error(f"分发规则 '{rule.name}' 检查异常: {e}")
@@ -618,7 +634,9 @@ class Forwarder:
                         return
 
             # 目标路由
-            target_id, topic_id = find_target(text, media, snapshot)
+            target_id, topic_id = find_target(
+                text, media, snapshot, src=numeric_chat_id, mid=message.id
+            )
             if not target_id:
                 logger.error(f"消息 {message.id} 无有效目标。")
                 self._msg_stats["failed"] += 1
