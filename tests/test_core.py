@@ -657,6 +657,20 @@ class TestMessageHash:
     def test_doc_hash(self):
         assert message_hash("t", _Media(doc_id=7, size=1024), 1) == "doc:7:1024"
 
+    def test_doc_hash_same_name_different_file_id(self):
+        """同名同大小重传（file_id 变）必须同键——现网 20:21/20:25 两批同名同大小
+        APK 就是靠原 doc:{id}:{size} 逃过去重被转发两次的。"""
+        a = message_hash("", _Media(doc_id=7, size=38237418, file_name="姨太坊.apk"), 1)
+        b = message_hash("", _Media(doc_id=999, size=38237418, file_name="姨太坊.apk"), 2)
+        assert a == b == "doc:姨太坊.apk:38237418"
+
+    def test_doc_hash_different_content_differs(self):
+        """内容不同（同大小不同名 / 同名不同大小）必须不同键，别把正常资源误并。"""
+        a = message_hash("", _Media(doc_id=7, size=1024, file_name="a.apk"), 1)
+        b = message_hash("", _Media(doc_id=8, size=1024, file_name="b.apk"), 2)
+        c = message_hash("", _Media(doc_id=9, size=2048, file_name="a.apk"), 3)
+        assert a != b and a != c
+
     def test_short_text_uses_id(self):
         assert message_hash("短", None, 55) == "id:55"
 
