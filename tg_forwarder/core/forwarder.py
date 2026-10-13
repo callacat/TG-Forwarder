@@ -201,12 +201,16 @@ def apply_replacements(text: str, snapshot) -> str:
 def message_hash(text: str, media: Any, msg_id: Any) -> Optional[str]:
     """去重哈希（对齐 v2 语义；长文本改 sha256 修复内置 hash 跨重启不稳定）。
 
-    photo → photo:{id}；document → doc:{id}:{size}；文本>50 → text:{sha256[:16]}；
+    photo → photo:{id}；document → doc:{文件名或id}:{size}；文本>50 → text:{sha256[:16]}；
     其他 → id:{msg_id}。
 
     修复 v2 隐藏 bug：v2 用 ``media.document.id``，但真实 telethon 对象上
     MessageMediaDocument 的嵌套 Document 在 ``media.document.document``——
     v2 该路径 AttributeError 被 add_hash 的 try 静默吃掉，文档消息从未入 dedup。
+
+    document 的键用文件名而非 file_id：同一份文件重传时 file_id 必变，原
+    doc:{id}:{size} 于是每次都是新键，同内容被转发两次（现网 20:21 与 20:25
+    两批同名同大小 APK 即此）。无文件名的裸 Document 退回 file_id。
     """
     if media:
         if hasattr(media, "photo") and media.photo:
@@ -215,7 +219,8 @@ def message_hash(text: str, media: Any, msg_id: Any) -> Optional[str]:
             doc = media.document
             # 兼容两层形状：MessageMediaDocument（嵌套 .document）或裸 Document
             doc = getattr(doc, "document", doc)
-            return f"doc:{doc.id}:{getattr(doc, 'size', '0')}"
+            name = _doc_file_name(media)
+            return f"doc:{name or doc.id}:{getattr(doc, 'size', '0')}"
     text = text or ""
     if len(text) > 50:
         digest = hashlib.sha256(text.encode("utf-8")).hexdigest()
