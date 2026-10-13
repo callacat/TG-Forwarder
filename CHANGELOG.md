@@ -17,6 +17,8 @@
 
 - **catchup 无权限源每 5 分钟刷一条 ERROR（现网 `-1002926374261` 10-11 全天 288 条纯噪音）**：源失效（私有频道无权限/被踢）后每轮 cron 各打一条 ERROR，还会把同窗口的真事故日志冲走。改为按 `(源, 错误文本)` 去重限频：连刷只打第 1 次与每 12 次 1 次 ERROR，其余降 DEBUG；错误内容变化（如换成 FloodWait）重新计数，不被旧去重吃掉。
 
+- **同名同大小 APK 靠 `file_id` 逃过去重，被转发两次（现网 2026-10-13 20:21/20:25 实锤）**：去重键 `message_hash` 的 document 分支只用 `doc:{file_id}:{size}`，而**同一份文件每次重传 `file_id` 必变**，于是每批重发都是全新键，同内容被转发两次——目标群 `.../1/19057-19062`（姨太坊/推特.中国/91短视频/奶糖Baby/色色AI/萝莉快递，`caption` 全空）与 `.../1/19065-19070` 文件名+大小逐条一致即此。改为文件名优先：`doc:{文件名或file_id}:{size}`，无文件名的裸 `Document`（无 `DocumentAttributeFilename`）仍退回 `file_id`，老行为零变化。**刻意不并入既有 F1 跨源指纹**：F1 的 `file:{name}:{size}` 能力早已存在（`content_fingerprints`），但闸在 `deduplication.cross_source_enable` 上，该开关现网为默认 `False`、且 `app_config` 无 `deduplication` 行，实测 `dedup_hashes` 390 条里 `file:` 前缀 **0** 条——它是「另一个开关 + 另一套跨源 URL 语义」，打开它等于顺带开启全源 URL 指纹去重，远超本次止血范围，属另一项决策。单源 `message_hash` 这条是本次最小闭环。回归 `test_doc_hash_same_name_different_file_id` / `test_doc_hash_different_content_differs`，另有「无文件名仍走 file_id」「photo 键不变」的老用例兜底。
+
 > **验收状态**：A1 非 JSON 日志含截断原文 ✅、A2 重试/兜底有可跑单测 ✅（全套 546 passed，
 > CI run 38164398573 pytest + docker 双 job 绿）。本卡闭环判据为**代码修复过审 + tag rc.15 +
 > CI 绿 + oraarm 部署 + `/api/version` 三验一致**；**24h 现网复测是部署后的异步观察项**，
@@ -26,6 +28,11 @@
 > 可直接对 10-11 基线（37 次/13h）。离线逐条测量的判定率 10/12 换算相对降幅约 76.5%，
 > 略低于 ≥80%，达标与否以 24h 现网统计为准。
 > 模型名与 `fail_open` 默认值待东哥拍板，未回前按现默认（fail-open）执行，代码未擅改。
+
+### Changed
+
+- **`命中分发规则` 从 debug 提到 INFO，行内带 `<源chat>/<消息id> → chat=/topic=`**：现网日志级别 INFO，原行是 `logger.debug`，**成功转发在日志里一行都没有**——漏放排查时无法区分「已转发」与「没进管线」，也无法把目标群消息号关联回源消息（`grep 命中分发规则` 在 30 分钟窗口返回 0 条即此故，2026-10-13 排查受阻的直接原因）。`find_target` 加两个仅进日志的可选参 `src`/`mid`（关键字参数，不传即旧行为，已有调用方与用例不受影响），行内补规则名、源 chat、源消息 id、目标 chat 与 topic。**这是后续所有漏放/误杀排查的前置条件**，本次未改任何过滤/转发语义。
+
 
 ## [v3.0.0-rc.14] - 2026-09-29
 
