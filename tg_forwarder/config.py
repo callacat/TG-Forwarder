@@ -199,7 +199,10 @@ class AdJudgeConfig(BaseModel):
       「附网盘链接」0.69 的边界误伤，实测硬广 0.98+、正常 0.03-0.07）；
     - fuzzy_low：模糊区下界（[fuzzy_low, threshold) 判模糊返回 None → fail-open
       放行，默认 0.60）；
-    - timeout：单次请求超时（秒）。
+    - timeout：单次请求超时（秒）；
+    - api_key：Bearer 密钥。**不落面板 sqlite / 不被 GET 回读**：面板选了渠道时由
+      ``channels`` 的 ``api_key_ref`` 从 config.yaml 注入；不用渠道时可手填本段
+      （同样只存在 config.yaml）。None = 不带 Authorization（jev 本机端点即如此）。
 
     fail-open 铁律：判定/请求任何失败 → None → 调用方放行，绝不因 AI 不可用丢消息。
     """
@@ -210,6 +213,7 @@ class AdJudgeConfig(BaseModel):
     threshold: float = 0.85
     fuzzy_low: float = 0.60
     timeout: float = 20.0
+    api_key: Optional[str] = None
 
     @field_validator("threshold", "fuzzy_low")
     @classmethod
@@ -343,6 +347,85 @@ class AiContentConfig(BaseModel):
         return self
 
 
+class Channel(BaseModel):
+    """AI 渠道：一处登记「端点 + 协议 + 密钥引用 + 候选模型」，消费者只引用渠道+模型。
+
+    存在 app_config 的 ``channels`` 键（JSON 数组）。为什么不建新表：渠道是纯配置、
+    无外键关联、量级个位数，复用既有 ConfigRepository 的 get/save 是零迁移改动。
+
+    - name：渠道标识，消费者按名引用（唯一，保存时查重）；
+    - protocol：``systemone``（noul 决策协议，jev/laya 同族）或 ``openai``
+      （``/chat/completions``，axonhub 等）；
+    - base_url：渠道根地址。systemone 由 AdJudge 拼 ``/v1/systemone``；openai 由
+      LLMClient/AiContentProcessor 拼 ``/chat/completions``，故 openai 渠道应含 ``/v1``；
+    - models：面板「探测渠道」时从 ``GET {base_url}/models`` 拉到的候选列表
+      （仅用于下拉提示，消费者仍可手填任意模型名——端点不实现 /models 时也能用）；
+    - api_key_ref：**密钥所在的 config.yaml 段名，不是密钥本身**。面板新建渠道时
+      自动填 ``channel_<name>``（写 ``channel_<name>.api_key``）；也可指向既有段
+      （``ad_judge``/``ai_content``/``digest``/``translate``）复用同一个 key；
+      留空 = 无鉴权。密钥永不落 app_config/面板 sqlite，也不出现在任何 GET 响应里。
+
+    为什么端点也搬进渠道（不再写死 DEFAULT_BASE_URL）：CMP-281 的故障形态就是
+    端点与模型名硬绑在代码常量里，上游换人整条判读失效。渠道化后换上游=面板改一行。
+    """
+
+    name: str
+    protocol: str = "systemone"
+    base_url: str
+    models: List[str] = Field(default_factory=list)
+    api_key_ref: str = ""
+
+    @field_validator("name", "base_url")
+    @classmethod
+    def check_not_blank(cls, v):
+        if not str(v or "").strip():
+            raise ValueError("渠道 name/base_url 不能为空")
+        return str(v).strip()
+
+    @field_validator("name")
+    @classmethod
+    def check_name_charset(cls, v):
+        """渠道名同时是 yaml 段名后缀（``channel_<name>``）与消费者引用键，
+        限制在标识符字符集内，避免中文/空格/冒号把 yaml 行级改写搞坏。"""
+        if not _CHANNEL_NAME_RE.fullmatch(v):
+            raise ValueError("渠道名只能含字母、数字、下划线、点、连字符")
+        return v
+
+    @field_validator("protocol")
+    @classmethod
+    def check_protocol(cls, v):
+        v = str(v or "").strip().lower()
+        if v not in CHANNEL_PROTOCOLS:
+            raise ValueError(f"protocol 必须是 {'/'.join(CHANNEL_PROTOCOLS)}")
+        return v
+
+    @field_validator("models")
+    @classmethod
+    def check_models(cls, v):
+        return [str(m).strip() for m in (v or []) if str(m).strip()]
+
+
+# 渠道支持的协议：systemone = noul 决策（jev/laya），openai = /chat/completions。
+CHANNEL_PROTOCOLS = ("systemone", "openai")
+
+# 渠道名限制（同时用作 config.yaml 段名后缀，见 Channel.check_name_charset）
+_CHANNEL_NAME_RE = re.compile(r"[A-Za-z0-9_.\-]{1,64}")
+
+# 渠道密钥段的固定前缀：面板写 channel_<name>.api_key，与消费者段名空间隔离
+CHANNEL_SECRET_PREFIX = "channel_"
+
+
+def resolve_channel(ref: Optional[str], channels: List[Channel]) -> Optional[Channel]:
+    """按名找渠道；未配置/找不到 → None（调用方回落旧字段，回退能力见 load_runtime_config）。"""
+    if not ref:
+        return None
+    for ch in channels or []:
+        if ch.name == ref:
+            return ch
+    logger.warning(f"渠道 '{ref}' 不存在（可能已被删除），回落旧端点配置。")
+    return None
+
+
 class DeduplicationConfig(BaseModel):
     """跨源内容级去重（F1，默认全关=现网行为零变化）。
 
@@ -431,6 +514,16 @@ class SystemSettings(BaseModel):
     ai_content_threshold: float = 0.85
     ai_content_clean_enabled: bool = True
     ai_content_timeout: float = 8.0
+
+    # 渠道选择（CMP-284）：三个 AI 消费者各自从渠道列表里选 {channel, model}。
+    # **空串 = 回退旧字段**（ad_judge_base_url/ad_judge_model 等），老库升级后
+    # 面板点开就是原来的端点，行为零变化；一旦填了渠道名，渠道即接管该消费者
+    # 的 base_url + model + api_key（阈值/超时/模糊区仍走本段字段）。
+    # 为什么用「渠道名」而不是 id：面板是人类在维护，名字比 uuid 可读，改名成本
+    # 也低（消费者跟着改一行）；重名在建渠道时直接拒掉，故名字仍是唯一键。
+    ad_judge_channel: str = ""
+    ai_content_channel: str = ""
+    digest_channel: str = ""
 
     @field_validator("forwarding_mode")
     @classmethod
@@ -670,6 +763,8 @@ class RulesDatabase(BaseModel):
     settings: SystemSettings = Field(default_factory=SystemSettings)
     content_filter: ContentFilterConfig = Field(default_factory=ContentFilterConfig)
     replacements: Dict[str, str] = Field(default_factory=dict)
+    # CMP-284：渠道列表随快照同步（面板 GET /api/rules 一并拿到，省一个请求）
+    channels: List[Channel] = Field(default_factory=list)
 
 
 # ---------------------------------------------------------------------------
@@ -703,6 +798,10 @@ class RuntimeConfig(BaseModel):
     ad_judge: AdJudgeConfig = Field(default_factory=AdJudgeConfig)
     # F14 AI 结构化内容处理（OpenAI 兼容，默认关=现网行为零变化）
     ai_content: AiContentConfig = Field(default_factory=AiContentConfig)
+
+    # CMP-284 渠道列表（app_config ``channels`` 键权威）。消费者按 settings.*_channel
+    # 引用；未引用则用各自段里的旧 base_url/model（升级回退路径）。
+    channels: List[Channel] = Field(default_factory=list)
 
     # Web 可编辑（app_config 表权威）
     sources: List[SourceConfig] = Field(default_factory=list)
@@ -823,6 +922,14 @@ _AI_CONTENT_MIRROR_KEYS = (
     "ai_content_timeout",
 )
 
+# 渠道选择键（CMP-284）：空串=回退各自旧 base_url/model 字段，故也进 M4 镜像，
+# 保证「面板从未管过」的老库升级后仍走原端点。
+_CHANNEL_SELECT_KEYS = (
+    "ad_judge_channel",
+    "ai_content_channel",
+    "digest_channel",
+)
+
 # 实验功能键（Web 面板 SystemSettings 镜像 → 覆盖摘要段；M4 起，F13 沿用同机制）。
 # 常量集中定义，bootstrap 剥离与 load_runtime_config 覆盖共用，避免两处漂移。
 _M4_EXPERIMENTAL_KEYS = (
@@ -830,7 +937,76 @@ _M4_EXPERIMENTAL_KEYS = (
     "translate_sources",
     "semantic_dedup_enabled",
     "semantic_dedup_threshold",
-) + _DIGEST_MIRROR_KEYS + _AD_JUDGE_MIRROR_KEYS + _AI_CONTENT_MIRROR_KEYS
+) + _DIGEST_MIRROR_KEYS + _AD_JUDGE_MIRROR_KEYS + _AI_CONTENT_MIRROR_KEYS + _CHANNEL_SELECT_KEYS
+
+
+def _apply_channel_selection(cfg: RuntimeConfig, yaml_path: str) -> None:
+    """把面板选中的渠道端点灌进三个消费者段（CMP-284）。
+
+    语义：``settings.<consumer>_channel`` 非空且渠道存在 → 该消费者的 base_url /
+    model 取自渠道（覆盖旧字段）；渠道不存在或未选 → 保留旧字段，老库行为不变。
+    这就是「一键切回 jev」的实现：面板把 ad_judge_channel 清空即回落到
+    ad_judge_base_url/ad_judge_model。
+
+    model 解析顺序：面板显式填的 model 优先于渠道候选列表——用户可能在渠道里挂了
+    N 个模型，选哪个由消费者决定；渠道只提供端点与密钥。
+    """
+    pairs = (
+        ("ad_judge_channel", cfg.ad_judge),
+        ("ai_content_channel", cfg.ai_content),
+        ("digest_channel", cfg.digest),
+    )
+    for key, section in pairs:
+        ref = getattr(cfg.settings, key, "") or ""
+        ch = resolve_channel(ref, cfg.channels)
+        if ch is None:
+            continue
+        section.base_url = ch.base_url
+        # 密钥按 api_key_ref 从 config.yaml 的对应段取；None = 该段没配 → 无鉴权。
+        section.api_key = _channel_api_key(ch, yaml_path)
+        section.model = _channel_model(ch, getattr(section, "model", ""))
+        # 候选列表外的旧默认模型（如 jev-1.13）会被渠道首个模型替换
+        logger.info(
+            f"渠道 '{ch.name}' 接管 {key[: -len('_channel')]}: "
+            f"{ch.base_url}（协议 {ch.protocol}）"
+        )
+
+
+def _channel_model(ch: Channel, current: str) -> str:
+    """消费者该用渠道里的哪个模型。
+
+    - 当前值在渠道候选列表里 → 尊重用户选择（面板从渠道下拉里挑的那个）；
+    - 不在（含沿用旧端点留下的 ``jev-1.13`` 这类历史默认值）→ 用候选列表首个，
+      切渠道就该换模型，否则会出现「打 laya 端点却发 jev-1.13 模型名」；
+    - 渠道没有候选列表（端点不支持 /models）→ 保留当前值，允许手填。
+    """
+    cur = (current or "").strip()
+    if not ch.models:
+        return cur
+    return cur if cur in ch.models else ch.models[0]
+
+
+
+def _channel_api_key(ch: Channel, yaml_path: str) -> Optional[str]:
+    """按 api_key_ref 取渠道密钥。只从 config.yaml 读，**永不进 app_config**。
+
+    - ``channel_<渠道名>``（面板默认）= 该渠道专用段；
+    - 既有消费者段（``ad_judge`` / ``ai_content`` / ``digest`` / ``translate``）
+      = 复用同一个 key，方便一个 key 服务多个渠道；
+    - 空串 = 明确无鉴权。
+    取不到返回 None（消费者按「不带 Authorization」处理，不静默改用别的 key）。
+    """
+    ref = (ch.api_key_ref or "").strip()
+    if not ref:
+        return None
+    try:
+        with open(yaml_path, "r", encoding="utf-8") as f:
+            data = yaml.safe_load(f) or {}
+    except (OSError, yaml.YAMLError):
+        return None
+    sec = data.get(ref) or {}
+    value = sec.get("api_key") if isinstance(sec, dict) else None
+    return str(value) if value else None
 
 
 def _has_real_rules(cfg: RuntimeConfig) -> bool:
@@ -964,6 +1140,18 @@ async def load_runtime_config(db: Database, yaml_path: str) -> RuntimeConfig:
     for _k in _AI_CONTENT_MIRROR_KEYS:
         setattr(_settings, _k, getattr(cfg.ai_content, _k[len("ai_content_"):]))
 
+    # CMP-284 渠道：列表从 app_config 读（yaml 仅在 bootstrap 时作为初值），
+    # 然后按面板选择的渠道名把 base_url/model 解析进各消费者段。
+    # 解析发生在镜像循环**之后**：渠道值优先级高于面板里遗留的旧 base_url/model，
+    # 但阈值/模糊区/超时等非端点字段仍以面板为准。
+    _channels_json = await config_repo.get("channels")
+    if _channels_json:
+        try:
+            cfg.channels = [Channel(**c) for c in _channels_json]
+        except Exception as e:  # noqa: BLE001 —— 单个坏渠道不该让整机起不来
+            logger.error(f"渠道列表解析失败（按无渠道处理，回落旧端点）: {e}")
+    _apply_channel_selection(cfg, yaml_path)
+
     ad_json = await config_repo.get("ad_filter")
     if ad_json:
         cfg.ad_filter = AdFilterConfig(**ad_json)
@@ -1000,6 +1188,19 @@ async def load_runtime_config(db: Database, yaml_path: str) -> RuntimeConfig:
 # 允许面板写密钥的段白名单：写操作只能落在这几段，防越权写任意顶层键。
 # digest（F10）与 ai_content（F14）都往各自段的 api_key 写；translate（F11）同。
 AI_SECRET_SECTIONS = ("ai_content", "translate", "digest")
+
+
+def _is_secret_section(section: str) -> bool:
+    """密钥写入段校验：固定白名单，或 ``channel_<合法渠道名>``。
+
+    渠道段名由前缀 + 受限字符集共同约束（见 _CHANNEL_NAME_RE），因此放行前缀
+    不会打开「写任意顶层键」的口子——`foo:` 之类仍被拒。
+    """
+    if section in AI_SECRET_SECTIONS:
+        return True
+    if not section.startswith(CHANNEL_SECRET_PREFIX):
+        return False
+    return bool(_CHANNEL_NAME_RE.fullmatch(section[len(CHANNEL_SECRET_PREFIX):]))
 
 # 注释态段体行：``#   key: value``（# 后至少两个空格 = 取消注释后仍缩进，即段内键）。
 # 顶格散文注释（``# 说明文字``）只有一个空格，不匹配——靠它把相邻注释块与段体分开。
@@ -1067,7 +1268,7 @@ def set_yaml_secret(path: str, section: str, value: str, key: str = "api_key") -
     走「备份 → 副本 → 校验 → 原子替换」：先在内存里改并确认能解析且值对得上，
     再落 .bak 备份与同目录临时文件，最后 os.replace 原子换入（同文件系统原子）。
     """
-    if section not in AI_SECRET_SECTIONS:
+    if not _is_secret_section(section):
         raise ValueError(f"section 不在白名单内: {section}")
     # 换行会破坏行级改写（且密钥本不该含换行）——在写入边界挡掉
     if "\n" in value or "\r" in value:

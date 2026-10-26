@@ -3,6 +3,32 @@
 本项目遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/) 与[语义化版本](https://semver.org/lang/zh-CN/)（SemVer）。
 ## [Unreleased]
 
+### Added
+
+- **渠道抽象（CMP-284，东哥定调）**：AI 端点不再写死在代码常量里。新增 `Channel`
+  `{name, protocol(systemone|openai), base_url, models[], api_key_ref}`，落
+  `app_config` 的 `channels` 键（复用既有 `ConfigRepository`，零 schema 迁移）。
+  `ad_judge` / `ai_content` / `digest` 三个消费者各有 `settings.<consumer>_channel`，
+  选中后由渠道接管该消费者的 `base_url` + `model` + `api_key`；阈值/模糊区/超时等
+  非端点字段仍在各自段里。面板新增「渠道」tab：增/改/删 + 一键探测（`GET /models`，
+  端点不支持时退化为根路径存活探针——现网 laya 只有 `/v1/systemone` 与
+  `/health/ready`，实测其余全 404）。
+  - **密钥仍在 config.yaml**：`api_key_ref` 存的是**段名**不是密钥，面板默认生成
+    `channel_<渠道名>.api_key`，也可指向既有段复用同一个 key。`_is_secret_section`
+    用「固定白名单 + `channel_` 前缀 + 受限字符集」放行，`/api/ai-secret` 只回布尔位。
+    渠道名限制在 `[A-Za-z0-9_.-]{1,64}`（它同时是 yaml 段名后缀）。
+  - **回退能力**：`*_channel` 为空 → 完全走旧 `base_url/model`（老库升级行为零变化）；
+    渠道被删/未选 → 同样回落且**不**静默换用别的渠道；被消费者引用的渠道拒绝删除
+    （静默删会让该消费者悄悄打回旧端点）。
+  - `AdJudge` 新增 `api_key`（laya 要求 `Authorization: Bearer`，jev 这类本机端点
+    不带 key 时行为与升级前完全一致）；`api_key` 已纳入 `_reconcile_ai_features`
+    的重建键，否则面板换渠道密钥后 `/reload` 沿用旧实例 → 401（与 F10 同款教训）。
+
+- **laya 接入准备**：`systemone` 协议与现网 `noul` 直接兼容，无需适配层。用现网
+  `_INSTRUCTIONS` 原文对 laya 实测 `unsupported=false`：硬广 0.9963 / App 资源
+  0.5497 / 闲聊 0.0141，阈值语义 `>=0.85 广告、[0.60,0.85) fail-open` 不变。
+  **样本量不足，上线前须用真实拦/放样本重标阈值，不照抄 0.85/0.60**（东哥卡内要求）。
+
 ### Fixed
 
 - **F14 解析器加固版自身的回退：落单引号致合法 JSON 漏检（Codex 审查 t_15e9ed46 驳回项）**：加固版用 `_brace_positions` 的 `in_str` 状态机预判字符串边界、跳过「字符串内」的 `{`，但模型回复是**散文 + JSON 的混合体**，散文里的 ASCII 双引号常不成对（`说明 "这是广告 如下`）。一个落单的 `"` 就把状态永久卡在 `True`，后面合法的 `{…}` **整体漏扫** → 返回 `None` → fail-open 放行广告，**比修复前的切片法还弱**（实测 `说明 "这是广告 如下\n{"is_ad": true, "confidence": 0.99}` 旧法得字典、新法得 `None`）。修法：**删掉这层预判，每个 `{` 都直接试 `raw_decode`**——落在字符串内的 `{` 起点本就解码失败并顺移，过滤多余且会误杀。补 2 条回归（单元 + 端到端真拦），并实测旧实现在同一输入上失败、新实现通过，确认守卫会红不是恒绿。

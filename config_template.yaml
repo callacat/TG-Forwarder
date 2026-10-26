@@ -112,16 +112,27 @@ link_checker:
 #   api_key_env: "AXONHUB_API_KEY" # 备选：api_key 留空时读这个环境变量
 #   model: "glm-5.3-flash"
 
-# AI 广告判别器（jev-1.13 System One 决策模型；默认关=现网行为零变化）。
+# AI 渠道（CMP-284）：端点/协议/密钥/候选模型的唯一登记处。
+# 三个 AI 消费者（ad_judge / ai_content / digest）各自从渠道里选 {channel, model}，
+# **代码里不再写死任何端点**——换上游只要在面板改渠道，不再改代码（CMP-281 教训）。
+# 渠道列表由 Web 面板「渠道」tab 维护，落 app_config 的 channels 键（不在本文件）。
+# 本文件只放**密钥**：渠道 api_key_ref 指向的段名（面板默认生成 channel_<渠道名>），
+# 写 channel_<名> 段即可；也可让 api_key_ref 指既有段（ad_judge/ai_content/digest）
+# 复用同一个 key。密钥永不进面板 sqlite、不被任何 GET 回读。
+# channel_laya:
+#   api_key: ""
+
+# AI 广告判别器（默认走下方旧端点；选了渠道则由渠道接管 base_url/model/key）。
 # 转发前判断消息是否广告，是则过滤（位置：should_filter 之后、去重之前）。
-# fail-open：jev 判定模糊/超时/异常 → None → 消息放行，绝不因 AI 不可用丢消息。
+# fail-open：判定模糊/超时/异常 → None → 消息放行，绝不因 AI 不可用丢消息。
 # threshold=广告判定阈值（>= 判广告，默认 0.85；实测硬广 0.98+、正常 0.03-0.07、
 #   「附网盘链接」0.69 在模糊区）；fuzzy_low=模糊区下界（[fuzzy_low, threshold) 放行）。
 # 配置来源二选一：yaml 本段（首次 bootstrap）或 Web 面板「AI 判别」tab（落表后以其为准，
 # 未在面板保存过的键保持 yaml 值）；两者改后均即时热重载生效，无需重启容器。
+# **下面 base_url/model 是「不选渠道」时的回退配置**；面板选了渠道时以渠道为准。
 # ad_judge:
 #   enabled: false
-#   base_url: "http://100.64.0.2:28880"   # 本机 opencode-free 容器（无需 key）
+#   base_url: "http://100.64.0.2:28880"   # 回退端点（现网 jev/open-code-free 容器）
 #   model: "jev-1.13"
 #   threshold: 0.85
 #   fuzzy_low: 0.60                      # 必须 <= threshold（否则模糊区反转，配置校验直接拒绝）

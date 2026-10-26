@@ -60,6 +60,8 @@ def _build_ad_judge(config):
         threshold=float(getattr(aj, "threshold", 0.85) or 0.85),
         fuzzy_low=float(getattr(aj, "fuzzy_low", 0.60) or 0.60),
         timeout=float(getattr(aj, "timeout", 20.0) or 20.0),
+        # 渠道注入的 Bearer key（laya 必须）；None/空 = 不带 Authorization
+        api_key=getattr(aj, "api_key", None),
     )
 
 
@@ -149,6 +151,8 @@ def _reconcile_ai_features(forwarder, new_cfg) -> None:
             float(getattr(aj, "threshold", 0.85) or 0.85),
             float(getattr(aj, "fuzzy_low", 0.60) or 0.60),
             float(getattr(aj, "timeout", 20.0) or 20.0),
+            # CMP-284：渠道密钥也必须入键，否则面板换渠道后 /reload 沿用旧实例 → 401
+            getattr(aj, "api_key", None),
         )
         cur_key = None
         if cur_aj is not None:
@@ -159,6 +163,7 @@ def _reconcile_ai_features(forwarder, new_cfg) -> None:
                     float(getattr(cur_aj, "threshold", 0.85)),
                     float(getattr(cur_aj, "fuzzy_low", 0.60)),
                     float(getattr(cur_aj, "timeout", 20.0)),
+                    getattr(cur_aj, "api_key", None),
                 )
             except Exception:  # noqa: BLE001 —— 兼容假实例/测试替身
                 cur_key = None
@@ -355,6 +360,7 @@ def _sync_web_rules_db(cfg) -> None:
     rules_db.whitelist = cfg.whitelist
     rules_db.content_filter = cfg.content_filter
     rules_db.replacements = dict(cfg.replacements)
+    rules_db.channels = list(cfg.channels)
 
 
 def resolve_bot_credentials(config):

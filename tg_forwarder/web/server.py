@@ -36,12 +36,14 @@ from loguru import logger
 from tg_forwarder.config import (
     AI_SECRET_SECTIONS,
     AdFilterConfig,
+    Channel,
     ContentFilterConfig,
     RulesDatabase,
     SourceConfig,
     SystemSettings,
     TargetDistributionRule,
     WhitelistConfig,
+    _channel_api_key,
     set_yaml_secret,
     yaml_secret_set,
 )
@@ -409,6 +411,132 @@ def create_app(
         await notify_bot("✅ **AI 密钥已更新**\n已热重载生效。")
         # 响应只带布尔位，永不回传明文
         return {"status": "success", "section": payload.section, "api_key_set": True}
+
+    # ------------------------------------------------------------------
+    # CMP-284 渠道：面板增/改/删 + 探测。消费者（ad_judge/ai_content/digest）
+    # 只按名引用渠道，端点不再写死在代码默认值里。
+    # ------------------------------------------------------------------
+
+    async def _save_channels(channels: List[Channel]) -> None:
+        """落表 channels → 触发热重载（消费者按新端点重建）。
+
+        密钥**不在**这里：``channels`` 只存 api_key_ref（指向 config.yaml 的段名），
+        api_key 走既有 /api/ai-secret 只写通道，永不进 app_config。
+        """
+        await config_repo.save("channels", [c.model_dump() for c in channels])
+        rules_db.channels = list(channels)
+        await _reload_runtime()
+
+    def _channel_key(ch: Channel) -> Optional[str]:
+        if not config_path:
+            return None
+        return _channel_api_key(ch, config_path)
+
+    @app.get("/api/channels")
+    async def list_channels(username: str = Depends(require_auth)):
+        # api_key_ref 是段名不是密钥，可回读；密钥明文永不出现在任何响应里。
+        # api_key_set 只回布尔位（与 /api/ai-secret 同纪律），面板据此显示「✓ 已配置」。
+        out = []
+        for c in rules_db.channels:
+            item = c.model_dump()
+            item["api_key_set"] = bool(
+                config_path and c.api_key_ref and yaml_secret_set(config_path, c.api_key_ref)
+            )
+            out.append(item)
+        return {"channels": out}
+
+    @app.post("/api/channels/save")
+    async def save_channel(channel: Channel, username: str = Depends(require_auth)):
+        """新增或按 name 覆盖（改名请删旧建新：消费者按名引用，静默改名会断链）。"""
+        if channel.name not in {c.name for c in rules_db.channels} and len(rules_db.channels) >= 50:
+            raise HTTPException(400, "渠道数量上限 50")
+        merged = [c for c in rules_db.channels if c.name != channel.name] + [channel]
+        merged.sort(key=lambda c: c.name)
+        await _save_channels(merged)
+        await notify_bot(f"✅ **渠道已保存**\n`{channel.name}`（{channel.protocol}）已热重载生效。")
+        return {"status": "success", "channel": channel.model_dump()}
+
+    @app.post("/api/channels/remove")
+    async def remove_channel(data: Dict[str, Any], username: str = Depends(require_auth)):
+        name = str(data.get("name") or "").strip()
+        if not name:
+            raise HTTPException(400, "缺少渠道名")
+        if name not in {c.name for c in rules_db.channels}:
+            raise HTTPException(404, f"渠道 '{name}' 不存在")
+        # 仍被消费者引用时拒绝删除：静默删除会让该消费者回落到旧端点（看着还在跑，
+        # 实际打的是别处）。要删先改选渠道——「渠道是唯一事实源」的护栏。
+        used_by = [
+            k for k in ("ad_judge_channel", "ai_content_channel", "digest_channel")
+            if getattr(rules_db.settings, k, "") == name
+        ]
+        if used_by:
+            raise HTTPException(
+                400, f"渠道 '{name}' 正被 {', '.join(used_by)} 引用，请先改选其它渠道"
+            )
+        await _save_channels([c for c in rules_db.channels if c.name != name])
+        await notify_bot(f"✅ **渠道已删除**\n`{name}`")
+        return {"status": "success"}
+
+    @app.post("/api/channels/probe")
+    async def probe_channel(channel: Channel, username: str = Depends(require_auth)):
+        """探测渠道可用性：先拉 ``GET {base_url}/models``，不支持则退化为存活探针。
+
+        为什么优先 /models：它是零成本只读接口，能一次验通「连得通 + 鉴权过 + 型号
+        清单」。但现网 laya 只提供 /v1/systemone 与 /health/ready（实测两者之外全
+        404），所以 **404/405 不算渠道故障**——退而求其次打 base_url 根路径，只要
+        有 HTTP 响应就说明网络与 DNS 通（鉴权则要靠后续真请求验证）。
+        noul 探针不做：冷启动首请求 23s，不适合放在保存前的按钮里。
+        """
+        import httpx
+
+        key = _channel_key(channel)
+        headers = {"Authorization": f"Bearer {key}"} if key else {}
+        root = channel.base_url.rstrip("/")
+
+        def _models(payload):
+            items = payload.get("data") if isinstance(payload, dict) else payload
+            out = []
+            for it in items or []:
+                mid = it.get("id") if isinstance(it, dict) else it
+                if mid:
+                    out.append(str(mid))
+            return out
+
+        try:
+            async with httpx.AsyncClient(timeout=8.0, follow_redirects=True) as client:
+                resp = await client.get(root + "/models", headers=headers)
+                if resp.status_code < 400:
+                    return {
+                        "ok": True,
+                        "status": resp.status_code,
+                        "models": _models(resp.json()),
+                        "detail": "",
+                    }
+                if resp.status_code in (404, 405):
+                    # 端点没有 /models：用根路径验连通性，模型名由用户手填
+                    alive = await client.get(root, headers=headers)
+                    return {
+                        "ok": alive.status_code < 500,
+                        "status": alive.status_code,
+                        "models": [],
+                        "detail": (
+                            "端点无 /models（HTTP %d），但根路径有响应 → 连通正常，"
+                            "模型名请手填" % resp.status_code
+                        ),
+                    }
+                return {
+                    "ok": False,
+                    "status": resp.status_code,
+                    "models": [],
+                    "detail": f"{resp.status_code}（401/403 = 密钥不对；其余见端点日志）",
+                }
+        except Exception as e:  # noqa: BLE001 —— 探测失败不该 500，面板要显示原因
+            return {
+                "ok": False,
+                "status": None,
+                "models": [],
+                "detail": f"{type(e).__name__}: {e}",
+            }
 
     @app.get("/api/rules")
     async def get_all_rules(username: str = Depends(require_auth)):

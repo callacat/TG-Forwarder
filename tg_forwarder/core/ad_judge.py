@@ -62,11 +62,15 @@ class AdJudge:
         threshold: float = AD_THRESHOLD,
         fuzzy_low: float = FUZZY_LOW,
         timeout: float = 20.0,
+        api_key: Optional[str] = None,
     ) -> None:
         self.base_url = base_url.rstrip("/")
         self.model = model
         self.threshold = threshold
         self.fuzzy_low = fuzzy_low
+        # CMP-284：laya 等渠道要求 Bearer key。None/空 = 不带 Authorization
+        # （jev 这类本机端点无需鉴权，行为与升级前一致）。
+        self.api_key = api_key
         self.timeout = timeout
 
     async def is_ad(self, text: str) -> Optional[bool]:
@@ -113,8 +117,11 @@ class AdJudge:
         }
         url = f"{self.base_url}/v1/systemone"
         try:
+            headers = {}
+            if self.api_key:
+                headers["Authorization"] = f"Bearer {self.api_key}"
             async with httpx.AsyncClient(timeout=self.timeout) as client:
-                resp = await client.post(url, json=payload)
+                resp = await client.post(url, json=payload, headers=headers)
         except Exception as e:
             logger.warning(f"AI 广告判别网络请求失败: {e}")
             return None

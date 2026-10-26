@@ -694,7 +694,19 @@
                                 </div>
                                 <div>
                                     <label for="dgModel" class="block text-xs font-bold text-surface-500">模型 (model)</label>
-                                    <input id="dgModel" type="text" x-model="settings.digest_model" class="app-input font-mono text-sm" placeholder="glm-5.3-flash">
+                                    <input id="dgModel" list="dgChannelModels" type="text" x-model="settings.digest_model" class="app-input font-mono text-sm" placeholder="glm-5.3-flash">
+                                    <datalist id="dgChannelModels">
+                                        <template x-for="m in channelModels('digest_channel')" :key="m"><option :value="m"></option></template>
+                                    </datalist>
+                                </div>
+                                <div>
+                                    <label for="dgChannel" class="block text-xs font-bold text-surface-500">渠道（可选）</label>
+                                    <select id="dgChannel" x-model="settings.digest_channel" class="app-input text-sm">
+                                        <option value="">（不用渠道）</option>
+                                        <template x-for="c in channels.filter(c => c.protocol === 'openai')" :key="c.name">
+                                            <option :value="c.name" x-text="c.name + ' · ' + c.base_url"></option>
+                                        </template>
+                                    </select>
                                 </div>
                                 <div>
                                     <label for="dgApiKey" class="block text-xs font-bold text-surface-500">API 密钥 (api_key)</label>
@@ -751,6 +763,96 @@
             </div>
         </div>
 
+        <!-- ============ Tab: 渠道（CMP-284 · 端点/协议/密钥的唯一事实源） ============ -->
+        <div x-show="currentTab === 'channels'" x-cloak class="glass-card p-8 max-w-3xl mx-auto">
+            <h3 class="text-xl font-bold mb-2 text-surface-900 dark:text-white">AI 渠道</h3>
+            <p class="text-xs text-surface-500 mb-8">
+                渠道 = 一组「端点 + 协议 + 密钥 + 候选模型」。AI 广告判别 / AI 处理 / AI 摘要 各自从这里挑渠道和模型，<b>代码里不再写死任何端点</b>。
+                密钥只写 <code>config.yaml</code> 的渠道段，不进面板库、永不回显。
+            </p>
+            <div class="space-y-6">
+                <!-- 渠道列表 -->
+                <div class="space-y-3">
+                    <template x-for="c in channels" :key="c.name">
+                        <div class="p-4 rounded-xl bg-surface-100 dark:bg-surface-800 flex flex-wrap items-center gap-3">
+                            <div class="flex-1 min-w-48">
+                                <div class="font-mono font-bold text-sm">
+                                    <span x-text="c.name"></span>
+                                    <span class="ml-2 text-xs font-normal px-2 py-0.5 rounded-full"
+                                          :class="c.protocol === 'systemone' ? 'bg-apple-purple/15 text-apple-purple' : 'bg-apple-teal/15 text-apple-teal'"
+                                          x-text="c.protocol"></span>
+                                </div>
+                                <div class="text-xs text-surface-500 font-mono mt-1" x-text="c.base_url"></div>
+                                <div class="text-xs text-surface-400 mt-1">
+                                    <span x-show="c.models && c.models.length" x-text="'模型: ' + c.models.join(', ')"></span>
+                                    <span x-show="c.api_key_set" class="text-green-600 font-medium ml-2">✓ 密钥已配置</span>
+                                    <span x-show="!c.api_key_set" class="text-surface-400 ml-2" x-text="c.api_key_ref ? '密钥未配置' : '无鉴权'"></span>
+                                </div>
+                            </div>
+                            <div class="flex gap-2">
+                                <button @click="editChannel(c)" :disabled="busy" class="btn-sm bg-blue-500 text-white hover:bg-blue-600">编辑</button>
+                                <button @click="removeChannel(c.name)" :disabled="busy" class="btn-sm bg-red-500 text-white hover:bg-red-600">删除</button>
+                            </div>
+                        </div>
+                    </template>
+                    <p x-show="!channels.length" class="text-sm text-surface-500 p-4 rounded-xl bg-surface-100 dark:bg-surface-800">
+                        还没有渠道。先加一个（例如 laya：<code>http://100.64.0.2:8092</code>，协议 <code>systemone</code>），再到「AI 判别」里选中它。
+                    </p>
+                </div>
+
+                <!-- 新增/编辑表单 -->
+                <div class="border-t border-surface-200 dark:border-white/10 pt-6">
+                    <div class="flex items-center justify-between mb-4">
+                        <h4 class="text-sm font-bold text-surface-900 dark:text-white" x-text="channelForm ? '编辑渠道' : '新增渠道'"></h4>
+                        <button x-show="channelForm" @click="channelForm = null" class="text-xs text-surface-500 hover:text-apple-red">取消编辑</button>
+                    </div>
+                    <div class="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                        <div>
+                            <label class="block text-xs font-bold text-surface-500 uppercase mb-1" for="chName">渠道名</label>
+                            <input id="chName" type="text" x-model="channelDraft.name" :disabled="!!channelForm" class="app-input font-mono text-sm" placeholder="laya">
+                            <p class="text-xs text-surface-400 mt-1">字母/数字/下划线/点/连字符；消费者按此名引用，改名请删旧建新。</p>
+                        </div>
+                        <div>
+                            <label class="block text-xs font-bold text-surface-500 uppercase mb-1" for="chProtocol">协议</label>
+                            <select id="chProtocol" x-model="channelDraft.protocol" class="app-input text-sm">
+                                <option value="systemone">systemone（noul 判定，jev/laya）</option>
+                                <option value="openai">openai（/chat/completions）</option>
+                            </select>
+                        </div>
+                        <div class="sm:col-span-2">
+                            <label class="block text-xs font-bold text-surface-500 uppercase mb-1" for="chBaseUrl">端点 (base_url)</label>
+                            <input id="chBaseUrl" type="text" x-model="channelDraft.base_url" class="app-input font-mono text-sm" placeholder="http://100.64.0.2:8092">
+                            <p class="text-xs text-surface-400 mt-1">systemone 自动拼 <code>/v1/systemone</code>；openai 自动拼 <code>/chat/completions</code>（端点需含 <code>/v1</code>）。</p>
+                        </div>
+                        <div class="sm:col-span-2">
+                            <label class="block text-xs font-bold text-surface-500 uppercase mb-1" for="chKey">API 密钥</label>
+                            <div class="flex gap-2">
+                                <input id="chKey" type="password" x-model="channelDraft._key" class="app-input font-mono text-sm flex-1" placeholder="粘贴 Bearer 密钥（可留空）" autocomplete="off">
+                                <button @click="probeChannel()" :disabled="busy" class="btn-base bg-apple-teal text-white px-4">探测</button>
+                            </div>
+                            <p class="text-xs text-surface-400 mt-1">
+                                写入 <code>config.yaml</code> 的 <code x-text="'channel_' + (channelDraft.name || '&lt;name&gt;')"></code> 段——不进仓库、不进面板库、永不回显。
+                                <span x-show="channelProbe" :class="channelProbe.ok ? 'text-green-600' : 'text-apple-red'" class="font-medium ml-1" x-text="channelProbeMsg()"></span>
+                            </p>
+                        </div>
+                        <div class="sm:col-span-2" x-show="channelDraft.models && channelDraft.models.length">
+                            <label class="block text-xs font-bold text-surface-500 uppercase mb-2">可用模型（探测结果，点击加入）</label>
+                            <div class="flex flex-wrap gap-2">
+                                <template x-for="m in channelDraft.models" :key="m">
+                                    <button @click="toggleChannelModel(m)" class="px-2 py-1 rounded text-xs font-mono border"
+                                            :class="(channelDraft._models || []).includes(m) ? 'bg-apple-blue text-white border-apple-blue' : 'border-surface-300 dark:border-surface-600 text-surface-600 dark:text-surface-300'"
+                                            x-text="m"></button>
+                                </template>
+                            </div>
+                        </div>
+                    </div>
+                    <div class="flex gap-3 mt-5">
+                        <button @click="saveChannel()" :disabled="busy" class="btn-base bg-apple-blue text-white hover:bg-blue-600">保存渠道</button>
+                    </div>
+                </div>
+            </div>
+        </div>
+
         <!-- ============ Tab: AI 判别（F13 · jev-1.13，默认关） ============ -->
         <div x-show="currentTab === 'ai'" x-cloak class="glass-card p-8 max-w-2xl mx-auto">
             <h3 class="text-xl font-bold mb-2 text-surface-900 dark:text-white">AI 广告判别（F13）</h3>
@@ -763,6 +865,31 @@
                     </label>
                 </div>
                 <div x-show="settings.ad_judge_enabled" class="space-y-6">
+                    <div class="p-4 rounded-xl border border-apple-blue/30 bg-apple-blue/5 space-y-4">
+                        <div class="flex items-center justify-between">
+                            <span class="text-sm font-bold">从渠道选择（推荐）</span>
+                            <span class="text-xs text-surface-400">选不到就填下面的旧端点</span>
+                        </div>
+                        <div class="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                            <div>
+                                <label class="block text-xs font-bold text-surface-500 uppercase mb-1" for="ajChannel">渠道</label>
+                                <select id="ajChannel" x-model="settings.ad_judge_channel" class="app-input text-sm">
+                                    <option value="">（不用渠道，走下方便捷配置）</option>
+                                    <template x-for="c in channels.filter(c => c.protocol === 'systemone')" :key="c.name">
+                                        <option :value="c.name" x-text="c.name + ' · ' + c.base_url"></option>
+                                    </template>
+                                </select>
+                            </div>
+                            <div>
+                                <label class="block text-xs font-bold text-surface-500 uppercase mb-1" for="ajChannelModel">模型</label>
+                                <input id="ajChannelModel" list="ajChannelModels" type="text" x-model="settings.ad_judge_model" class="app-input font-mono text-sm" placeholder="laya">
+                                <datalist id="ajChannelModels">
+                                    <template x-for="m in channelModels('ad_judge_channel')" :key="m"><option :value="m"></option></template>
+                                </datalist>
+                            </div>
+                        </div>
+                        <p class="text-xs text-surface-500">选渠道后，端点与密钥由渠道提供；模型可手填或从下拉挑。<b>清空渠道 = 一键切回下方便捷配置</b>（原 jev 端点）。</p>
+                    </div>
                     <div>
                         <label class="block text-xs font-bold text-surface-500 uppercase mb-1" for="ajBaseUrl">模型端点 (base_url)</label>
                         <input id="ajBaseUrl" type="text" x-model="settings.ad_judge_base_url" class="app-input font-mono text-sm" placeholder="http://100.64.0.2:28880">
@@ -804,6 +931,31 @@
                     </label>
                 </div>
                 <div x-show="settings.ai_content_enabled" class="space-y-6">
+                    <div class="p-4 rounded-xl border border-apple-teal/30 bg-apple-teal/5 space-y-4">
+                        <div class="flex items-center justify-between">
+                            <span class="text-sm font-bold">从渠道选择（推荐）</span>
+                            <span class="text-xs text-surface-400">选不到就填下面的旧端点</span>
+                        </div>
+                        <div class="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                            <div>
+                                <label class="block text-xs font-bold text-surface-500 uppercase mb-1" for="acChannel">渠道</label>
+                                <select id="acChannel" x-model="settings.ai_content_channel" class="app-input text-sm">
+                                    <option value="">（不用渠道，走下方便捷配置）</option>
+                                    <template x-for="c in channels.filter(c => c.protocol === 'openai')" :key="c.name">
+                                        <option :value="c.name" x-text="c.name + ' · ' + c.base_url"></option>
+                                    </template>
+                                </select>
+                            </div>
+                            <div>
+                                <label class="block text-xs font-bold text-surface-500 uppercase mb-1" for="acChannelModel">模型</label>
+                                <input id="acChannelModel" list="acChannelModels" type="text" x-model="settings.ai_content_model" class="app-input font-mono text-sm" placeholder="glm-5.3-flash">
+                                <datalist id="acChannelModels">
+                                    <template x-for="m in channelModels('ai_content_channel')" :key="m"><option :value="m"></option></template>
+                                </datalist>
+                            </div>
+                        </div>
+                        <p class="text-xs text-surface-500">选渠道后，端点与密钥由渠道提供（仅列 openai 协议渠道）。</p>
+                    </div>
                     <div>
                         <label class="block text-xs font-bold text-surface-500 uppercase mb-1" for="acBaseUrl">模型端点 (base_url)</label>
                         <input id="acBaseUrl" type="text" x-model="settings.ai_content_base_url" class="app-input font-mono text-sm" placeholder="http://100.64.0.2:8091/v1">
@@ -890,8 +1042,11 @@
                 currentTab: 'status',
                 stats: {}, status: { accounts: [], message_stats: {} },
                 rules: { sources: [], distribution_rules: [] },
-                settings: { dedup_retention_days: 30, forwarding_mode: 'copy', forward_new_only: true, mark_as_read: false, mark_target_as_read: false, default_target: '', default_topic_id: null, digest_enabled: false, digest_interval_seconds: 1800, digest_base_url: 'http://100.64.0.2:8091/v1', digest_model: 'glm-5.3-flash', translate_enabled: false, translate_sources: [], semantic_dedup_enabled: false, semantic_dedup_threshold: 0.85, ad_judge_enabled: false, ad_judge_base_url: 'http://100.64.0.2:28880', ad_judge_model: 'jev-1.13', ad_judge_threshold: 0.85, ad_judge_fuzzy_low: 0.6, ad_judge_timeout: 20, ai_content_enabled: false, ai_content_base_url: 'http://100.64.0.2:8091/v1', ai_content_model: 'glm-5.3-flash', ai_content_threshold: 0.85, ai_content_clean_enabled: true, ai_content_timeout: 8 },
+                settings: { dedup_retention_days: 30, forwarding_mode: 'copy', forward_new_only: true, mark_as_read: false, mark_target_as_read: false, default_target: '', default_topic_id: null, digest_enabled: false, digest_interval_seconds: 1800, digest_base_url: 'http://100.64.0.2:8091/v1', digest_model: 'glm-5.3-flash', digest_channel: '', translate_enabled: false, translate_sources: [], semantic_dedup_enabled: false, semantic_dedup_threshold: 0.85, ad_judge_enabled: false, ad_judge_base_url: 'http://100.64.0.2:28880', ad_judge_model: 'jev-1.13', ad_judge_threshold: 0.85, ad_judge_fuzzy_low: 0.6, ad_judge_timeout: 20, ad_judge_channel: '', ai_content_enabled: false, ai_content_base_url: 'http://100.64.0.2:8091/v1', ai_content_model: 'glm-5.3-flash', ai_content_threshold: 0.85, ai_content_clean_enabled: true, ai_content_timeout: 8, ai_content_channel: '' },
                 appVersion: '',
+                // CMP-284 渠道：列表来自 /api/channels（api_key_set 是布尔位，明文永不回传）
+                channels: [], channelForm: null, channelProbe: null,
+                channelDraft: { name: '', protocol: 'systemone', base_url: '', models: [], api_key_ref: '', _key: '', _models: [] },
                 // AI 密钥只写：set 是后端回的布尔位（明文永不回传），input 是本次待提交的明文
                 aiSecretSet: { ai_content: false, translate: false, digest: false },
                 aiSecretInput: { ai_content: '', translate: '', digest: '' },
@@ -907,6 +1062,7 @@
                     { id: 'status', name: '仪表盘' }, { id: 'sources', name: '监控源' },
                     { id: 'rules', name: '转发规则' }, { id: 'filter_replace', name: '过滤与替换' },
                     { id: 'blacklist', name: '黑名单' }, { id: 'whitelist', name: '白名单' },
+                    { id: 'channels', name: '渠道' },
                     { id: 'ai', name: 'AI 判别' },
                     { id: 'ai_content', name: 'AI 处理' },
                     { id: 'settings', name: '系统设置' }
@@ -1088,6 +1244,7 @@
                             this.api('/api/content_filter'), this.api('/api/replacements'),
                             this.api('/api/status'), this.api('/api/version'),
                         ]);
+                        this.loadChannels().catch(() => {});
                         this.rules = rules; this.stats = stats || {}; this.settings = sysSettings;
                         this.appVersion = (ver && ver.version) || '';
                         this.blacklist.substring = this.arrayToText(bl.keywords_substring);
@@ -1128,6 +1285,92 @@
                     this.showToast(msg, '已保存并热重载生效', 'success');
                     await this.refreshRules();
                     this.fetchLive();
+                },
+
+                // --- CMP-284 渠道 ---
+                async loadChannels() {
+                    const d = await this.api('/api/channels');
+                    this.channels = (d && d.channels) || [];
+                },
+                emptyChannelDraft() {
+                    return { name: '', protocol: 'systemone', base_url: '', models: [], api_key_ref: '', _key: '', _models: [] };
+                },
+                editChannel(c) {
+                    this.channelForm = c.name;
+                    this.channelProbe = null;
+                    this.channelDraft = { ...c, _key: '', _models: [...(c.models || [])] };
+                },
+                resetChannelForm() {
+                    this.channelForm = null;
+                    this.channelProbe = null;
+                    this.channelDraft = this.emptyChannelDraft();
+                },
+                channelModels(settingKey) {
+                    const name = this.settings && this.settings[settingKey];
+                    const c = this.channels.find(x => x.name === name);
+                    return (c && c.models) || [];
+                },
+                toggleChannelModel(m) {
+                    const list = this.channelDraft._models || (this.channelDraft._models = []);
+                    const i = list.indexOf(m);
+                    if (i >= 0) list.splice(i, 1); else list.push(m);
+                },
+                probeChannelMsg() {
+                    const p = this.channelProbe;
+                    if (!p) return '';
+                    if (p.ok) return '✓ 可达，' + (p.models.length ? p.models.length + ' 个模型' : '但 /models 为空');
+                    return '✗ ' + (p.detail || ('HTTP ' + p.status));
+                },
+                async probeChannel() {
+                    return this._guard(async () => {
+                        try {
+                            this.channelProbe = await this.api('/api/channels/probe', 'POST', {
+                                name: this.channelDraft.name || 'probe',
+                                protocol: this.channelDraft.protocol || 'systemone',
+                                base_url: this.channelDraft.base_url,
+                                models: [],
+                                api_key_ref: this.channelDraft.api_key_ref || ('channel_' + (this.channelDraft.name || 'probe')),
+                                _key: this.channelDraft._key || '',
+                            });
+                            if (this.channelProbe.ok && this.channelProbe.models.length) {
+                                this.channelDraft.models = this.channelProbe.models;
+                                if (!this.channelDraft._models.length) this.channelDraft._models = [...this.channelProbe.models];
+                            }
+                        } catch (e) {
+                            this.channelProbe = { ok: false, detail: e.message };
+                        }
+                    });
+                },
+                async saveChannel() {
+                    return this._guard(async () => {
+                        const d = this.channelDraft;
+                        if (!d.name || !d.base_url) { this.showToast('保存失败', '渠道名和端点必填', 'error'); return; }
+                        const ref = d.api_key_ref || ('channel_' + d.name);
+                        try {
+                            await this.api('/api/channels/save', 'POST', {
+                                name: d.name, protocol: d.protocol, base_url: d.base_url,
+                                models: d._models || d.models || [], api_key_ref: ref,
+                            });
+                            // 密钥单独走只写通道（写 config.yaml），never 进 /api/channels
+                            if (d._key) {
+                                await this.api('/api/ai-secret', 'POST', { section: ref, api_key: d._key });
+                            }
+                            this.resetChannelForm();
+                            await this.loadChannels();
+                            this.showToast('渠道已保存', '已热重载生效');
+                        } catch (e) { this.showToast('保存失败', e.message, 'error'); }
+                    });
+                },
+                async removeChannel(name) {
+                    if (!confirm('确认删除渠道 ' + name + ' ?')) return;
+                    return this._guard(async () => {
+                        try {
+                            await this.api('/api/channels/remove', 'POST', { name });
+                            if (this.channelForm === name) this.resetChannelForm();
+                            await this.loadChannels();
+                            this.showToast('渠道已删除', '');
+                        } catch (e) { this.showToast('删除失败', e.message, 'error'); }
+                    });
                 },
 
                 // 密钥状态只取布尔位（端点不回传明文），失败静默：端点不可用不该打断面板
