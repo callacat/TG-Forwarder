@@ -30,6 +30,13 @@
     「面板能选 openai 渠道但 ad_judge 照样打 `/v1/systemone`」。面板 ad_judge
     渠道下拉也不再只列 `systemone`（换模型不必先改代码）。`protocol` 已纳入
     热重载重建键。
+  - **openai 协议兼容推理模型**：`glm-5.3` 一类模型把答案写 `content`、思考写
+    `reasoning_content`。两处必须处理，否则静默毁掉判别：① `max_tokens` 给 40 会
+    被思考吃光（实测单次 144 reasoning token）→ `content` 空串 → 全程 fail-open，
+    表现为「开关是开的、一条都不拦」；故放宽到 1024 且 `content` 为空时回落
+    `reasoning_content`。② reasoning 会先复述提示词样例（`回 {"is_ad": true} 或
+    {"is_ad": false}`），取首个 JSON 会把样例当结论、把资源判成广告（09-23 误杀
+    形态）；改为取**最后一个**可解析的 `is_ad`。
 
 - **laya 接入准备：协议兼容，但默认阈值在真实样本上不可用（阻塞项）**。
   `systemone` 协议与现网 `noul` 直接兼容，无需适配层——laya 的 `noul` 分支靠
