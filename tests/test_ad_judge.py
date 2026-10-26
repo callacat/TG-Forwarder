@@ -434,3 +434,74 @@ class TestForwarderIntegration:
         assert seen == ["普通消息"]
         assert fwd._msg_stats["filtered"] == 0
         await db.close()
+
+
+# ---------------------------------------------------------------------------
+# CMP-284：渠道协议（systemone / openai）。同一份阈值语义，端点与载荷不同。
+# ---------------------------------------------------------------------------
+
+
+def _chat_resp(content):
+    return _FakeResp({"choices": [{"message": {"content": content}}]})
+
+
+class TestAdJudgeProtocol:
+    """渠道 protocol=openai 时必须走 /chat/completions，不得再打 /v1/systemone。"""
+
+    def test_openai_hits_chat_completions(self, monkeypatch):
+        fake = _patch_httpx(monkeypatch, _chat_resp('{"is_ad": true}'))
+        out = asyncio.run(_judge(protocol="openai").is_ad("限时开户送500"))
+        assert out is True
+        assert fake.calls[0]["url"].endswith("/chat/completions")
+        assert "systemone" not in fake.calls[0]["url"]
+
+    def test_openai_false_returns_false(self, monkeypatch):
+        _patch_httpx(monkeypatch, _chat_resp('{"is_ad": false}'))
+        out = asyncio.run(_judge(protocol="openai").is_ad("空白资源分享"))
+        assert out is False
+
+    def test_openai_unparseable_is_none_not_ad(self, monkeypatch):
+        _patch_httpx(monkeypatch, _chat_resp("我觉得还行"))
+        assert asyncio.run(_judge(protocol="openai").is_ad("随便")) is None
+
+    def test_openai_http_error_is_none(self, monkeypatch):
+        _patch_httpx(monkeypatch, _FakeResp({"detail": "boom"}, status=500))
+        assert asyncio.run(_judge(protocol="openai").is_ad("随便")) is None
+
+    def test_openai_sends_bearer_when_key_set(self, monkeypatch):
+        import httpx
+
+        seen = {}
+
+        class _Recorder(_FakeHttpx):
+            async def post(self, url, json=None, **kw):
+                seen.update(kw)
+                return await super().post(url, json=json, **kw)
+
+        fake = _Recorder(_chat_resp('{"is_ad": true}'))
+        monkeypatch.setattr(httpx, "AsyncClient", lambda **kw: fake)
+        asyncio.run(_judge(protocol="openai", api_key="sk-test").is_ad("x"))
+        assert seen["headers"]["Authorization"] == "Bearer sk-test"
+
+    def test_default_protocol_still_systemone(self, monkeypatch):
+        fake = _patch_httpx(monkeypatch, _noul_resp(0.99))
+        out = asyncio.run(_judge().is_ad("限时开户送500"))
+        assert out is True
+        assert fake.calls[0]["url"].endswith("/v1/systemone")
+
+    def test_channel_protocol_overrides_ad_judge_section(self, tmp_path):
+        """面板选 openai 渠道 → AdJudgeConfig.protocol 跟着变（热重载据此重建）。"""
+        from tg_forwarder.config import Channel, RuntimeConfig, _apply_channel_selection
+
+        cfg = RuntimeConfig()
+        cfg.channels = [
+            Channel(name="axon", protocol="openai", base_url="http://gw/v1",
+                    models=["glm-5.3-flash"])
+        ]
+        cfg.settings.ad_judge_channel = "axon"
+        yaml_path = tmp_path / "config.yaml"
+        yaml_path.write_text("{}\n", encoding="utf-8")
+        _apply_channel_selection(cfg, str(yaml_path))
+        assert cfg.ad_judge.protocol == "openai"
+        assert cfg.ad_judge.base_url == "http://gw/v1"
+        assert cfg.ad_judge.model == "glm-5.3-flash"

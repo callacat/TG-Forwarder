@@ -23,6 +23,13 @@
   - `AdJudge` 新增 `api_key`（laya 要求 `Authorization: Bearer`，jev 这类本机端点
     不带 key 时行为与升级前完全一致）；`api_key` 已纳入 `_reconcile_ai_features`
     的重建键，否则面板换渠道密钥后 `/reload` 沿用旧实例 → 401（与 F10 同款教训）。
+  - **渠道协议真正生效**：`AdJudge` 新增 `protocol`，`openai` 渠道走
+    `/chat/completions` + 判据提示词、要模型回 `{"is_ad": true|false}` 再映射成
+    0/1 分（复用同一套阈值语义；解析不出明确布尔 → None 放行，绝不当广告）；
+    `systemone` 渠道行为不变。此前 `protocol` 只做了校验、消费者未消费，等于
+    「面板能选 openai 渠道但 ad_judge 照样打 `/v1/systemone`」。面板 ad_judge
+    渠道下拉也不再只列 `systemone`（换模型不必先改代码）。`protocol` 已纳入
+    热重载重建键。
 
 - **laya 接入准备：协议兼容，但默认阈值在真实样本上不可用（阻塞项）**。
   `systemone` 协议与现网 `noul` 直接兼容，无需适配层——laya 的 `noul` 分支靠

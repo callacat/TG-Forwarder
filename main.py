@@ -57,6 +57,7 @@ def _build_ad_judge(config):
     return AdJudge(
         base_url=aj.base_url,
         model=aj.model,
+        protocol=getattr(aj, "protocol", "systemone") or "systemone",
         threshold=float(getattr(aj, "threshold", 0.85) or 0.85),
         fuzzy_low=float(getattr(aj, "fuzzy_low", 0.60) or 0.60),
         timeout=float(getattr(aj, "timeout", 20.0) or 20.0),
@@ -153,6 +154,8 @@ def _reconcile_ai_features(forwarder, new_cfg) -> None:
             float(getattr(aj, "timeout", 20.0) or 20.0),
             # CMP-284：渠道密钥也必须入键，否则面板换渠道后 /reload 沿用旧实例 → 401
             getattr(aj, "api_key", None),
+            # 协议同理：systemone ↔ openai 换渠道后不重建会把请求打到错端点
+            str(getattr(aj, "protocol", "systemone") or "systemone"),
         )
         cur_key = None
         if cur_aj is not None:
@@ -164,6 +167,7 @@ def _reconcile_ai_features(forwarder, new_cfg) -> None:
                     float(getattr(cur_aj, "fuzzy_low", 0.60)),
                     float(getattr(cur_aj, "timeout", 20.0)),
                     getattr(cur_aj, "api_key", None),
+                    str(getattr(cur_aj, "protocol", "systemone") or "systemone"),
                 )
             except Exception:  # noqa: BLE001 —— 兼容假实例/测试替身
                 cur_key = None

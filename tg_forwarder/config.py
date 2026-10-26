@@ -214,6 +214,9 @@ class AdJudgeConfig(BaseModel):
     fuzzy_low: float = 0.60
     timeout: float = 20.0
     api_key: Optional[str] = None
+    # 渠道协议：由 ``_apply_channel_selection`` 按渠道写入；空/默认值 = systemone
+    # （jev/laya 的 noul 决策）。openai = /chat/completions + 提示词要 JSON。
+    protocol: str = "systemone"
 
     @field_validator("threshold", "fuzzy_low")
     @classmethod
@@ -965,6 +968,8 @@ def _apply_channel_selection(cfg: RuntimeConfig, yaml_path: str) -> None:
         # 密钥按 api_key_ref 从 config.yaml 的对应段取；None = 该段没配 → 无鉴权。
         section.api_key = _channel_api_key(ch, yaml_path)
         section.model = _channel_model(ch, getattr(section, "model", ""))
+        if hasattr(section, "protocol"):
+            section.protocol = ch.protocol
         # 候选列表外的旧默认模型（如 jev-1.13）会被渠道首个模型替换
         logger.info(
             f"渠道 '{ch.name}' 接管 {key[: -len('_channel')]}: "

@@ -875,8 +875,8 @@
                                 <label class="block text-xs font-bold text-surface-500 uppercase mb-1" for="ajChannel">渠道</label>
                                 <select id="ajChannel" x-model="settings.ad_judge_channel" class="app-input text-sm">
                                     <option value="">（不用渠道，走下方便捷配置）</option>
-                                    <template x-for="c in channels.filter(c => c.protocol === 'systemone')" :key="c.name">
-                                        <option :value="c.name" x-text="c.name + ' · ' + c.base_url"></option>
+                                    <template x-for="c in channels" :key="c.name">
+                                        <option :value="c.name" x-text="c.name + ' · ' + c.protocol + ' · ' + c.base_url"></option>
                                     </template>
                                 </select>
                             </div>

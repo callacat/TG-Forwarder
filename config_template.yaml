@@ -116,6 +116,10 @@ link_checker:
 # 三个 AI 消费者（ad_judge / ai_content / digest）各自从渠道里选 {channel, model}，
 # **代码里不再写死任何端点**——换上游只要在面板改渠道，不再改代码（CMP-281 教训）。
 # 渠道列表由 Web 面板「渠道」tab 维护，落 app_config 的 channels 键（不在本文件）。
+# 渠道有两种 protocol：
+#   systemone = POST {base_url}/v1/systemone（noul 决策，jev/laya 同族）；
+#   openai    = POST {base_url}/chat/completions（把判据写进提示词，要模型回 JSON；
+#               openai 渠道的 base_url 应含 /v1）。AI 判别两者都支持。
 # 本文件只放**密钥**：渠道 api_key_ref 指向的段名（面板默认生成 channel_<渠道名>），
 # 写 channel_<名> 段即可；也可让 api_key_ref 指既有段（ad_judge/ai_content/digest）
 # 复用同一个 key。密钥永不进面板 sqlite、不被任何 GET 回读。

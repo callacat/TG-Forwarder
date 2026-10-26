@@ -63,11 +63,16 @@ class AdJudge:
         fuzzy_low: float = FUZZY_LOW,
         timeout: float = 20.0,
         api_key: Optional[str] = None,
+        protocol: str = "systemone",
     ) -> None:
         self.base_url = base_url.rstrip("/")
         self.model = model
         self.threshold = threshold
         self.fuzzy_low = fuzzy_low
+        # CMP-284：渠道协议决定打哪个端点。systemone = /v1/systemone 的 noul
+        # 决策（jev/laya 同族）；openai = /chat/completions + 提示词要 JSON
+        # （能读判据措辞的模型走这条——laya 的 noul 分支忽略 instructions）。
+        self.protocol = (protocol or "systemone").strip().lower()
         # CMP-284：laya 等渠道要求 Bearer key。None/空 = 不带 Authorization
         # （jev 这类本机端点无需鉴权，行为与升级前一致）。
         self.api_key = api_key
@@ -97,7 +102,12 @@ class AdJudge:
         return None  # 模糊区 → 放行
 
     async def _call(self, text: str) -> Optional[float]:
-        """调用 /v1/systemone 取 is_ad 得分；失败/异常 → None。"""
+        """取 is_ad 得分；失败/异常 → None。按 self.protocol 选端点。"""
+        if self.protocol == "openai":
+            return await self._call_openai(text)
+        return await self._call_systemone(text)
+
+    async def _call_systemone(self, text: str) -> Optional[float]:
         import httpx
 
         state = f"{_STATE_PREFIX}{text[:MAX_TEXT_CHARS].strip()}"
@@ -143,3 +153,87 @@ class AdJudge:
         except Exception as e:
             logger.warning(f"AI 广告判别响应解析失败: {e}")
             return None
+
+    async def _call_openai(self, text: str) -> Optional[float]:
+        """openai 兼容端点：把判据写进提示词，要模型回 JSON，再映射成 0/1 分。
+
+        与 systemone 的差别只在协议：返回仍是「分数」以复用同一套阈值语义。
+        模型回 true → 1.0、false → 0.0（二值，故 fuzzy_low 区间实际不出现）；
+        解析不出明确布尔 → None（fail-open 放行），绝不当广告处理。
+        """
+        import httpx
+
+        payload = {
+            "model": self.model,
+            "temperature": 0,
+            "max_tokens": 40,
+            "messages": [
+                {
+                    "role": "system",
+                    "content": (
+                        f"{_INSTRUCTIONS}\n"
+                        f"是{_CRITERIA_TRUE}回 {{\"is_ad\": true}}，"
+                        f"{_CRITERIA_FALSE}回 {{\"is_ad\": false}}。"
+                        "只回 JSON，不要解释。"
+                    ),
+                },
+                {"role": "user", "content": text[:MAX_TEXT_CHARS].strip()},
+            ],
+        }
+        url = f"{self.base_url}/chat/completions"
+        headers = {"Content-Type": "application/json"}
+        if self.api_key:
+            headers["Authorization"] = f"Bearer {self.api_key}"
+        try:
+            async with httpx.AsyncClient(timeout=self.timeout) as client:
+                resp = await client.post(url, json=payload, headers=headers)
+        except Exception as e:
+            logger.warning(f"AI 广告判别网络请求失败: {e}")
+            return None
+
+        if resp.status_code >= 400:
+            logger.warning(
+                f"AI 广告判别端点返回 {resp.status_code}: {resp.text[:200]}"
+            )
+            return None
+
+        try:
+            data = resp.json()
+            choices = (data or {}).get("choices") or []
+            if not choices:
+                logger.warning("AI 广告判别响应缺少 choices，按失败处理。")
+                return None
+            content = (choices[0].get("message") or {}).get("content") or ""
+        except Exception as e:
+            logger.warning(f"AI 广告判别响应解析失败: {e}")
+            return None
+
+        verdict = _parse_is_ad(content)
+        if verdict is None:
+            logger.warning(
+                f"AI 广告判别响应无法解析为 is_ad 布尔，按失败处理: {content[:120]}"
+            )
+            return None
+        return 1.0 if verdict else 0.0
+
+
+def _parse_is_ad(content: str) -> Optional[bool]:
+    """从模型回复里取 is_ad 布尔；找不到明确布尔 → None。"""
+    import json
+    import re
+
+    m = re.search(r"\{.*?\}", content or "", re.S)
+    if m:
+        try:
+            v = json.loads(m.group(0)).get("is_ad")
+        except Exception:
+            v = None
+        if isinstance(v, bool):
+            return v
+        if isinstance(v, str):
+            low = v.strip().lower()
+            if low in ("true", "yes", "是"):
+                return True
+            if low in ("false", "no", "否"):
+                return False
+    return None
