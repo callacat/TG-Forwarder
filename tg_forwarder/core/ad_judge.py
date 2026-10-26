@@ -166,7 +166,10 @@ class AdJudge:
         payload = {
             "model": self.model,
             "temperature": 0,
-            "max_tokens": 40,
+            # 上限要够推理模型把 reasoning_content 写完再落 content：
+            # 实测 glm-5.3 一次判定烧 144 个 reasoning token，max_tokens 给 40 时
+            # content 会被截成空串 → 解析不出布尔 → 全程 fail-open，广告判别静默失效。
+            "max_tokens": 1024,
             "messages": [
                 {
                     "role": "system",
@@ -203,7 +206,12 @@ class AdJudge:
             if not choices:
                 logger.warning("AI 广告判别响应缺少 choices，按失败处理。")
                 return None
-            content = (choices[0].get("message") or {}).get("content") or ""
+            msg = choices[0].get("message") or {}
+            content = msg.get("content") or ""
+            # 推理模型（glm-5.3 等）把答案写进 content、把思考写进 reasoning_content；
+            # content 为空时（max_tokens 被思考吃光）仍可从 reasoning 尾部捞出答案。
+            if not content:
+                content = msg.get("reasoning_content") or ""
         except Exception as e:
             logger.warning(f"AI 广告判别响应解析失败: {e}")
             return None
@@ -218,22 +226,28 @@ class AdJudge:
 
 
 def _parse_is_ad(content: str) -> Optional[bool]:
-    """从模型回复里取 is_ad 布尔；找不到明确布尔 → None。"""
+    """从模型回复里取 is_ad 布尔；找不到明确布尔 → None。
+
+    取**最后一个**可解析的 is_ad，不是第一个：推理模型的 reasoning 里会先复述
+    提示词样例（如「输出 {"is_ad": true} 或 {"is_ad": false}」），首个匹配往往是
+    样例而非结论 —— 按首个解析会把「资源」误判成广告，正是 09-23 误杀形态。
+    结论总在最后，所以取末尾。
+    """
     import json
     import re
 
-    m = re.search(r"\{.*?\}", content or "", re.S)
-    if m:
+    verdict = None
+    for m in re.finditer(r"\{[^{}]*\}", content or "", re.S):
         try:
             v = json.loads(m.group(0)).get("is_ad")
         except Exception:
-            v = None
+            continue
         if isinstance(v, bool):
-            return v
-        if isinstance(v, str):
+            verdict = v
+        elif isinstance(v, str):
             low = v.strip().lower()
             if low in ("true", "yes", "是"):
-                return True
-            if low in ("false", "no", "否"):
-                return False
-    return None
+                verdict = True
+            elif low in ("false", "no", "否"):
+                verdict = False
+    return verdict

@@ -505,3 +505,35 @@ class TestAdJudgeProtocol:
         assert cfg.ad_judge.protocol == "openai"
         assert cfg.ad_judge.base_url == "http://gw/v1"
         assert cfg.ad_judge.model == "glm-5.3-flash"
+
+
+class TestReasoningModelQuirks:
+    """推理模型（glm-5.3 等）会把 token 烧在 reasoning_content 上，且 reasoning
+    里会复述提示词样例。两条都必须处理，否则要么全程 fail-open，要么误杀资源。"""
+
+    def test_reasoning_fallback_when_content_empty(self, monkeypatch):
+        """content 被截空时，从 reasoning_content 尾部捞结论。"""
+        _patch_httpx(monkeypatch, _FakeResp({"choices": [{"message": {
+            "content": "",
+            "reasoning_content": '提示词要求回 {"is_ad": true} 或 {"is_ad": false}。'
+                                 '这条是硬广，结论 {"is_ad": true}',
+        }}]}))
+        assert asyncio.run(_judge(protocol="openai").is_ad("加微信领涨粉秘籍")) is True
+
+    def test_last_json_wins_not_prompt_echo(self, monkeypatch):
+        """reasoning 先复述样例 {"is_ad": true}，结论是 false → 必须取 false。
+
+        取首个匹配会把资源误判成广告（09-23 误杀形态）。
+        """
+        _patch_httpx(monkeypatch, _FakeResp({"choices": [{"message": {
+            "content": "",
+            "reasoning_content": '格式应为 {"is_ad": true} 或 {"is_ad": false}。'
+                                 '这是资源分享，不算广告。{"is_ad": false}',
+        }}]}))
+        assert asyncio.run(_judge(protocol="openai").is_ad("电视影院TV_9.1 资源")) is False
+
+    def test_max_tokens_roomy_enough_for_reasoning(self, monkeypatch):
+        """max_tokens 必须给推理模型留够空间，40 会被思考吃光导致 content 空。"""
+        fake = _patch_httpx(monkeypatch, _chat_resp('{"is_ad": true}'))
+        asyncio.run(_judge(protocol="openai").is_ad("限时开户送500"))
+        assert fake.calls[0]["json"]["max_tokens"] >= 512
